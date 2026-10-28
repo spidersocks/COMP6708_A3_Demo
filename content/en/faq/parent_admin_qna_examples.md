@@ -1,0 +1,92 @@
+---
+language: en
+type: faq
+canonical: ParentAdminQnAExamples
+folder: faq
+aliases: native speaker; teacher qualification; assessment fee; class size; makeup policy; typhoon; rainstorm; payment; FPS; Christmas hours; writing class; interview class; timetable; speech training; class logistics; drop-off; sibling attendance; WhatsApp consultant
+---
+# Parent–Admin Q&A (Gold Standard Responses)
+
+Q: Is your teacher a native English speaker? / Is your tutor a native English speaker? / What are your teachers’ qualifications?  
+A: All our teachers are qualified bilingual teachers.
+
+Q: I am interested in your course for my son. / Do you have a speech training class?  
+A: Thank you for your inquiry. Are you interested in English, Cantonese, Mandarin, or Math? We’ll arrange a short assessment and recommend a suitable class.
+
+Q: My friend recommended you for interview training. / I’m interested in your phonics course. / Is there any available English group class?  
+A: Thanks for your interest. Please complete the registration form. After you return the form, we will arrange an assessment with our director and your child. Based on the results, we’ll offer the most suitable class. A HK$650 non‑refundable assessment fee will be incurred. More info: https://www.brightnest-hk.example/
+
+Q: How many kids are there in a group/class?  
+A: We normally have 4–6 students in a group.
+
+Q: What is your make-up/absence policy?  
+A: For every 8 paid classes, you are entitled to 2 free make‑ups; for every 10 paid classes, 3 free make‑ups (no extra charge). All courses must be completed within 3 months from the first lesson. We recommend taking make‑ups to stay on track.
+
+Q: Sorry, we cannot meet your offered timeslot. Any other time?  
+A: The offered class is the most suitable one. Please note the assessment result is valid for 3 months; it becomes invalid afterwards.
+
+Q: How much is your English course fee?  
+A: English group course fee is HK$4,500 for 8 sessions (45 minutes/session), or HK$7,500–$8,500 for 10 sessions (1 hour/session), depending on the teacher.
+
+Q: Can you send me your English class timetable?  
+A: We first conduct a short assessment. After that, we can offer an available timetable for a suitable class.
+
+Q: Typhoon/Rainstorm — will class continue?  
+A: We operate during Amber/Red rainstorms and during Typhoon Signals T1 and T3. If travel is unsafe for young children, please contact us for arrangements. We do not hold classes when Black Rain or Typhoon Signal No. 8 (or higher) is hoisted.
+
+Q: Please send your FPS / payment method.  
+A: 1) Direct deposit — Bank: Chong Hing Bank Limited; Account name: “BrightNest Learning Centre”; Bank code: 041; Account No.: 256-20-369786-0. 2) FPS ID: hello@brightnest-hk.example
+
+Q: Is there a regular writing class for P.2 students?  
+A: Yes. We offer a regular P1–P2 writing class (ideas & planning, sentence/paragraph structure, vocabulary & grammar, editing). Small groups, weekly lessons, feedback + homework.
+
+Q: How was the first lesson today?  
+A: We’ll check with the teacher‑in‑charge and get back to you shortly.
+
+Q: Is it necessary for my child to have the make‑up lesson?  
+A: We recommend make‑up lessons. They help ensure children don’t fall behind in the curriculum; by catching up on the missed lesson, children feel more confident when they rejoin the class.
+
+Q: Why do you assign reading?  
+A: Reading aloud helps children practise pronunciation, pacing, and intonation. Teachers give feedback, which makes learning more efficient.
+
+Q: How long does it take to finish all the phonics classes?  
+A: Our phonics programme has 8 levels and typically takes about 1.5 years to complete. Actual pace varies with practice.
+
+Q: How many stages are in the SmartSpell Programme?  
+A: There are 8 stages. We’ll conduct a placement assessment to determine the best starting level.
+
+Q: What do children learn in Little Linguist?  
+A: They develop communication skills in English and recognise the alphabet. Fine‑motor, cognitive, and social skills are also part of the curriculum.
+
+Q: What’s the difference between Sound Explorers and Smart Spell?  
+A: Both are phonics programmes for children who can name all the letters. Sound Explorers suits children who need more fine‑motor development for tracing; children who can write independently are advised to join Smart Spell.
+
+Q: When can children start writing short stories?  
+A: After Smart Spell Level 4, children can start writing short sentences. After Level 5, they learn to compose a short story on their own.
+
+---
+
+# Class logistics / sibling attendance
+
+Q: My older child may have sports practice on Saturday and I’m not sure of the time. Can I bring my younger child to class first?  
+A: Yes — you can drop the younger child first and wait in our 2/F lounge. Please arrive a few minutes early so we can note the staggered pickup. If both need overlapping rooms, tell us the ages and we’ll suggest the smoothest pairing.
+
+---
+
+# Scheduling / Leave — Examples & Policy Reply Rules
+
+For dated leave / cancel notifications, acknowledge + share makeup policy (do not only stay silent):
+- “Need to take leave next week.” → “Noted — please share the exact date/time. Makeup policy: typically 2 makeups per 8-lesson package with advance notice; admin will update the register.”
+- “Sorry 11/5 Julian can’t attend lesson.” → same pattern with the date confirmed.
+- “Can you cancel this Friday 3pm class?” → confirm we’ll update the register + point to makeup rules.
+
+For policy questions (may reply with policy; avoid making arrangements):
+- “Tristan will be away on 19 Dec. What’s your rescheduling policy?”  
+  Suggested bullet points (from Absence & Make‑up Policy):
+  - Please notify us at least 4 hours in advance for cancellations;
+  - Make‑ups should be scheduled within the course period (typical free quota: 8 sessions → 2, 10 sessions → 3);
+  - Missed classes without notice are charged and not made up;
+  - Sick leave requires a doctor’s certificate for make‑up;
+  - All courses must be completed within 3 months from the first lesson.  
+  (Do not make or confirm any bookings via chat; staff will follow up.)
+---

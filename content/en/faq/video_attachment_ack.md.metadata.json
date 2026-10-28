@@ -1,0 +1,27 @@
+{
+  "metadataAttributes": {
+    "language": {
+      "value": { "type": "STRING", "stringValue": "en" },
+      "includeForEmbedding": true
+    },
+    "type": {
+      "value": { "type": "STRING", "stringValue": "faq" },
+      "includeForEmbedding": true
+    },
+    "canonical": {
+      "value": { "type": "STRING", "stringValue": "VideoAttachmentAcknowledgement" },
+      "includeForEmbedding": true
+    },
+    "folder": {
+      "value": { "type": "STRING", "stringValue": "faq" },
+      "includeForEmbedding": true
+    },
+    "aliases": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "🎥; video attachment; video; clip; recording; voice note; voice message; sent video; uploaded video; video attached; here is the video; this is the video"
+      },
+      "includeForEmbedding": true
+    }
+  }
+}

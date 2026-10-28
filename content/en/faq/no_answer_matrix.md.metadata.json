@@ -1,0 +1,15 @@
+{
+  "metadataAttributes": {
+    "language": { "value": { "type": "STRING", "stringValue": "en" }, "includeForEmbedding": true },
+    "type": { "value": { "type": "STRING", "stringValue": "faq" }, "includeForEmbedding": true },
+    "canonical": { "value": { "type": "STRING", "stringValue": "NoAnswerMatrix" }, "includeForEmbedding": true },
+    "folder": { "value": { "type": "STRING", "stringValue": "faq" }, "includeForEmbedding": true },
+    "aliases": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "no answer; [NO_ANSWER]; admin handled; homework feedback; pass to teacher; availability; timetable; schedule; time slot; teacher availability; start date; post assessment; reschedule; cancellation; take leave; absence; placement; suitability; mixed age"
+      },
+      "includeForEmbedding": true
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "metadataAttributes": {
+    "language": {
+      "value": { "type": "STRING", "stringValue": "zh-CN" },
+      "includeForEmbedding": true
+    },
+    "type": {
+      "value": { "type": "STRING", "stringValue": "faq" },
+      "includeForEmbedding": true
+    },
+    "canonical": {
+      "value": { "type": "STRING", "stringValue": "VideoAttachmentAcknowledgement" },
+      "includeForEmbedding": true
+    },
+    "folder": {
+      "value": { "type": "STRING", "stringValue": "faq" },
+      "includeForEmbedding": true
+    },
+    "aliases": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "🎥; 视频; 录影; 录音; 语音; 发视频; 上传视频; 视频已上传; 视频已发送; 附上视频; 这里是视频; 这是视频; 视频附件"
+      },
+      "includeForEmbedding": true
+    }
+  }
+}

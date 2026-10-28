@@ -1,0 +1,10 @@
+[
+  {
+    "source": "/COMP6708_A3_Demo",
+    "destination": "/comp6708-a3-demo.html"
+  },
+  {
+    "source": "/COMP6708_A3_Demo/:path*",
+    "destination": "/comp6708-a3-demo.html"
+  }
+]

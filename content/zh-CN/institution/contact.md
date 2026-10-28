@@ -1,0 +1,31 @@
+---
+language: zh-CN
+type: institution
+canonical: contact
+folder: institution
+category: contact
+aliases: 联系; 联系方式; 联系资料; 怎么联系; 如何联系; 找你们; 找你们电话; 电话; 电话号码; 致电; 打电话; 微信; 微信号; 微信号码; 加微信; WhatsApp; whatsapp; 邮箱; 电子邮箱; email; 地址; 地点; 位置; 中心在哪; 在哪里; 在哪儿; 地图; 地图链接; google map; 路线; 怎么去; 如何去; 交通; 导航; find us
+---
+# 联系方式
+
+关键词：联系, 电话, 微信, WhatsApp, 邮箱, 地址, 位置, 地图, 路线
+
+如果家长只问「电话 / 邮箱 / 联系」→ 仅回复电话与邮箱（各一行）。  
+明确询问地址 / 位置 / 地图 → 再加入地址与地图链接。
+
+电话：+852 2123 4567（致电）  
+WhatsApp：+852 9123 4567（仅 WhatsApp）  
+邮箱：hello@brightnest-hk.example  
+地址：香港上環荷李活道233號荷李活中心一樓
+地图 / 路线：https://share.google/LSbst50FiX5qk5ceB
+
+社交媒体（家长明确要求时提供）：
+- Facebook: BrightNest Learning Centre  
+  https://www.facebook.com/profile.php?id=100083139431885#
+- Instagram: brightnestcreativeworkshop  
+  https://www.instagram.com/brightnestcreativeworkshop/
+- 官网: https://www.brightnest-hk.example/
+
+备注：
+- 「怎么联系」「电话多少」「WhatsApp 号码」「微信号」→ 只返回电话 + 邮箱。
+- 问「地址在哪 / 有地图吗 / 怎么去」→ 可附地址 + 地图。
