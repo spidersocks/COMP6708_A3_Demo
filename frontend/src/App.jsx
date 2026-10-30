@@ -1,6 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+const API_BASE = (
+  import.meta.env.VITE_API_BASE_URL ||
+  import.meta.env.VITE_BRIGHTNEST_API_URL ||
+  "/brightnest-api"
+).replace(/\/$/, "");
 
 const SUGGESTIONS = [
   "What are your opening hours?",

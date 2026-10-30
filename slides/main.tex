@@ -1,0 +1,271 @@
+% BrightNest — COMP6708 A3 supporting slides (PolyU collegeBeamer)
+% Compile with pdfLaTeX on Overleaf (same as pre.tex).
+% Slides are supporting material only — the 5-minute live demo carries the grade.
+\documentclass{beamer}
+\usepackage[polyu,en]{collegeBeamer}
+\usetikzlibrary{positioning,arrows.meta}
+
+% Short talk: skip automatic section TOC interstitial pages
+\AtBeginSection[]{}
+
+% meta-data — edit group number / co-authors before submission
+\title{BrightNest Learning Centre\\Assistant}
+\subtitle{COMP6708 Assignment~3 · Mini Demo · Group~X}
+\author{Sean Fontaine\\[0.3em]\footnotesize Co-authors: \textit{(add names)}}
+\date{25 November 2026\\[0.4em]
+\footnotesize Live demo: \bhref{https://seanfontaine.dev/COMP6708_A3_Demo}{seanfontaine.dev/COMP6708\_A3\_Demo}}
+
+% compact callout used as a ``switch to the live UI'' cue
+\newcommand{\democue}[1]{%
+  \begin{block}{\textbf{\textcolor{maincolor}{$\rightarrow$ LIVE DEMO}}}
+    \small #1
+  \end{block}%
+}
+
+\begin{document}
+
+\maketitle
+
+% ------------------------------------------------------------------
+\section{Setup}
+% ------------------------------------------------------------------
+
+\begin{frame}{What we will cover in 5 minutes}{\thesection \, \secname}
+  \begin{columns}[T]
+    \begin{column}{0.52\textwidth}
+      \textbf{Slides (brief)}
+      \begin{enumerate}
+        \item Problem \& scenario
+        \item Why RAG (+ tools)
+        \item Architecture snapshot
+        \item Impact / wrap
+      \end{enumerate}
+    \end{column}
+    \begin{column}{0.46\textwidth}
+      \textbf{Live system (majority)}
+      \begin{enumerate}
+        \item Hours / holiday tool path
+        \item RAG answer + citations
+        \item Trial booking dialogue
+        \item Soft gap $\rightarrow$ admin to-do
+      \end{enumerate}
+    \end{column}
+  \end{columns}
+  \vspace{0.6em}
+  \democue{Keep \bhref{https://seanfontaine.dev/COMP6708_A3_Demo}{the demo} open fullscreen beside these slides. Reset chat once before starting.}
+\end{frame}
+
+\begin{frame}{Problem \& application scenario}{\thesection \, \secname}
+  \textbf{Scenario.} Fictional HK bilingual kids' centre (\ctextbf{BrightNest / 亮巢學習中心}).
+  \begin{itemize}
+    \item Parents ask repetitive questions after hours: fees, hours, holidays, trials
+    \item Staff cannot sit on WhatsApp 24/7; wrong fee/hours answers are costly
+    \item Opportunity: an LLM assistant that is \cemph{grounded} in centre knowledge and can capture provisional bookings
+  \end{itemize}
+  \vspace{0.4em}
+  \begin{block}{Training-free requirement (assignment)}
+    We use \btextbf{RAG} (not fine-tuning) plus light structured tools --- docs can change without retraining.
+  \end{block}
+\end{frame}
+
+\begin{frame}{Technique choice: RAG + tools}{\thesection \, \secname}
+  \begin{columns}[T]
+    \begin{column}{0.55\textwidth}
+      \textbf{Why RAG}
+      \begin{itemize}
+        \item KB changes weekly; no model retrain
+        \item Auditable retrieve $\rightarrow$ generate path
+        \item Citations in the UI (``Sources used'')
+      \end{itemize}
+      \vspace{0.5em}
+      \textbf{Why also tools}
+      \begin{itemize}
+        \item Opening hours / HKO weather / public holidays
+        \item Availability + booking / cancel dialogues
+        \item Facts that should not be ``guessed'' by the LLM
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.42\textwidth}
+      \begin{block}{Self-built pipeline}
+        \scriptsize
+        chunk markdown\\
+        $\downarrow$\\
+        embed (DashScope)\\
+        $\downarrow$\\
+        Chroma top-$k$\\
+        $\downarrow$\\
+        Qwen generate\\[0.4em]
+        \textit{Not a managed black-box KB.}
+      \end{block}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Architecture (one picture)}{\thesection \, \secname}
+  \centering
+  \begin{tikzpicture}[
+    font=\footnotesize,
+    box/.style={draw=maincolor, rounded corners=2pt, align=center,
+      inner sep=4pt, minimum height=0.85cm, thick},
+    arr/.style={-{Latex}, thick, darkgray}
+  ]
+    \node[box, fill=morelightgray] (ui) {React UI\\seanfontaine.dev};
+    \node[box, fill=morelightgray, right=1.1cm of ui] (api) {FastAPI\\Alibaba SAE};
+    \node[box, below left=0.85cm and -0.1cm of api] (tools) {Hours / weather\\Booking tools};
+    \node[box, below right=0.85cm and -0.1cm of api] (rag) {RAG + Chroma\\content/*.md};
+    \node[box, below=0.7cm of rag] (ds) {DashScope\\Qwen + embeddings};
+
+    \draw[arr] (ui) -- (api);
+    \draw[arr] (api) -- (tools);
+    \draw[arr] (api) -- (rag);
+    \draw[arr] (rag) -- (ds);
+  \end{tikzpicture}
+
+  \vspace{0.5em}
+  \small Multilingual KB: \texttt{en} / \texttt{zh-HK} / \texttt{zh-CN} · CSV admin sheets as the ``spreadsheet'' stand-in
+\end{frame}
+
+% ------------------------------------------------------------------
+\section{Live demonstration}
+% ------------------------------------------------------------------
+
+\begin{frame}{Live demo map --- what to look at}{\thesection \, \secname}
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \textbf{Left --- Parent chat}
+      \begin{itemize}
+        \item Messaging-style UI
+        \item Demo probes (quick chips)
+        \item Book / cancel dialogue
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \textbf{Right --- System inspector}
+      \begin{itemize}
+        \item Hours / holiday / weather path
+        \item RAG retrieval + sources
+        \item Class register (CSV sheets)
+        \item Admin to-do (soft gaps)
+        \item Session memory
+      \end{itemize}
+    \end{column}
+  \end{columns}
+  \vspace{0.6em}
+  \democue{Say: ``Most of the next minutes is the live UI --- slides only cue each beat.''}
+\end{frame}
+
+\begin{frame}{Beat 1 --- Operational facts as tools}{\thesection \, \secname}
+  \textbf{Goal.} Show that hours / holidays are not free-form LLM guesses.
+  \begin{itemize}
+    \item Probe: \btexttt{Hours} / \btexttt{Tomorrow} / \btexttt{Christmas}
+    \item Inspector: \textbf{Date · holiday · weather} lights up
+    \item Mention HKO severe-weather awareness + HK public holidays
+  \end{itemize}
+  \vspace{0.4em}
+  \democue{%
+    Switch to the demo $\rightarrow$ click \textbf{Hours}, then \textbf{Christmas}.\\
+    Point at the inspector panel while the answer streams.
+  }
+\end{frame}
+
+\begin{frame}{Beat 2 --- RAG with visible grounding}{\thesection \, \secname}
+  \textbf{Goal.} Show retrieve-then-generate on the centre knowledge base.
+  \begin{itemize}
+    \item Probe: \btexttt{Phonics fee} (or ``How much is phonics?'')
+    \item Expand \textbf{Sources used} / RAG retrieval in the inspector
+    \item Emphasise: we implemented chunk $\rightarrow$ embed $\rightarrow$ retrieve $\rightarrow$ generate
+  \end{itemize}
+  \vspace{0.4em}
+  \democue{%
+    Switch to the demo $\rightarrow$ \textbf{Phonics fee}.\\
+    Open the RAG / sources panel; name one retrieved document aloud.
+  }
+\end{frame}
+
+\begin{frame}{Beat 3 --- Trial booking as a structured tool}{\thesection \, \secname}
+  \textbf{Goal.} Capture a provisional after-hours booking without inventing seats.
+  \begin{itemize}
+    \item Identity from demo WhatsApp number $\rightarrow$ Demo Parent / Jason Chan
+    \item Probe: \btexttt{Book Jason} \textit{or} Booking tool $\rightarrow$ Start booking dialogue
+    \item Availability comes from CSV admin sheets (sessions / trial slots)
+    \item Optional: \btexttt{Cancel class} for the multi-turn cancel path
+  \end{itemize}
+  \vspace{0.3em}
+  \democue{%
+    Switch to the demo $\rightarrow$ run booking for Jason.\\
+    Show confirmation / booking id; note ``no payment --- hand-off for staff''.
+  }
+\end{frame}
+
+\begin{frame}{Beat 4 --- Soft gaps become staff work}{\thesection \, \secname}
+  \textbf{Goal.} Honest behaviour when the KB cannot ground an answer.
+  \begin{itemize}
+    \item Probe: \btexttt{Unknown ask} (or a niche question with weak coverage)
+    \item Parent still gets a short, careful reply
+    \item System appends a row to \texttt{admin\_todos.csv} for staff review
+  \end{itemize}
+  \vspace{0.4em}
+  \democue{%
+    Switch to the demo $\rightarrow$ \textbf{Unknown ask}.\\
+    Expand \textbf{Admin to-do} and show the new open item.
+  }
+\end{frame}
+
+% ------------------------------------------------------------------
+\section{Wrap-up}
+% ------------------------------------------------------------------
+
+\begin{frame}{Implementation highlights (say in 20s)}{\thesection \, \secname}
+  \begin{itemize}
+    \item Isolated demo stack (not production tutoring infrastructure)
+    \item Self-built RAG on Alibaba \btextbf{DashScope / Qwen} + Chroma
+    \item Tool router: hours, schedule, booking / cancel dialogues
+    \item Multilingual markdown KB + synthetic admin CSV sheets
+    \item Deployed: FastAPI on SAE; UI on developer site (HTTPS proxy)
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Expected impact \& evaluation stance}{\thesection \, \secname}
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \textbf{Impact}
+      \begin{itemize}
+        \item 24/7 parent triage
+        \item Fewer wrong fee/hours answers via grounding
+        \item After-hours lead capture (provisional book)
+        \item Soft gaps routed to staff, not hallucinated
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \textbf{Evaluation (qualitative)}
+      \begin{itemize}
+        \item Live correctness of tool paths
+        \item Citations for KB questions
+        \item Demo latency ``feel'' with Qwen
+        \item \textit{No formal user study required}
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Backup probes \& closing line}{\thesection \, \secname}
+  \textbf{If a probe fails}, try instead:
+  \begin{itemize}
+    \item ``Where are you located?''
+    \item ``Tell me about your teachers''
+    \item ``What can you help with?''
+    \item zh-HK: \texttt{營業時間} / \texttt{學費}
+  \end{itemize}
+  \vspace{0.5em}
+  \begin{block}{Closing ( $\approx$ 15s )}
+    Grounded after-hours help for parents: \ctextbf{RAG} for knowledge, \ctextbf{tools} for facts and bookings, \ctextbf{admin to-dos} when we should not invent an answer.
+  \end{block}
+  \vspace{0.3em}
+  {\footnotesize Demo: \bhref{https://seanfontaine.dev/COMP6708_A3_Demo}{seanfontaine.dev/COMP6708\_A3\_Demo}
+  \quad|\quad
+  Repo: \texttt{COMP6708\_A3\_Demo}}
+\end{frame}
+
+\QApage
+
+\end{document}

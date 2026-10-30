@@ -6,6 +6,8 @@ flowchart TB
   API[FastAPI backend]
   OH[Opening hours tool]
   BK[Availability and booking]
+  ESC[Staff escalation]
+  MSG[staff_messages inbox]
   RAG[RAG pipeline]
   CH[Chroma store]
   DS[DashScope Qwen]
@@ -13,13 +15,20 @@ flowchart TB
 
   UI -->|POST /chat| API
   UI -->|POST /bookings| BK
+  UI -->|GET /admin/messages| MSG
   API --> OH
   API --> BK
+  API --> ESC
+  ESC --> MSG
   API --> RAG
   RAG --> CH
   RAG --> DS
   MD -->|ingest| CH
 ```
+
+## Staff escalation
+
+Before RAG, the router detects ask-for-human / anger / safety cues (`services/escalation.py`). Parents get a calm acknowledgement (no mention of internal sheets). Staff see a row under **Admin → Messages** (`services/staff_messages.py`). Soft KB gaps still use the separate admin to-do path.
 
 ## RAG details
 

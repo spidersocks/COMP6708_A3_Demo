@@ -31,7 +31,9 @@ from services import admin_todos
 from services import booking as booking_svc
 from services import booking_dialogue as dialogue_svc
 from services import cancel_dialogue as cancel_svc
+from services import escalation as escalation_svc
 from services import families
+from services import staff_messages
 
 router = APIRouter()
 
@@ -239,6 +241,7 @@ def chat(req: ChatRequest) -> ChatResponse:
         and not dialogue_svc.is_booking_request(message)
     )
 
+    esc_preview = escalation_svc.detect_escalation(message)
     route_guess = (
         "opening_hours"
         if hours_intent
@@ -249,12 +252,16 @@ def chat(req: ChatRequest) -> ChatResponse:
                 "greeting"
                 if is_greeting(message)
                 else (
-                    "unknown_programme"
-                    if unknown_programme
+                    "staff_escalation"
+                    if esc_preview
                     else (
-                        "booking_dialogue"
-                        if dialogue_hit
-                        else ("booking_tool" if avail_hit and not force_rag else "rag")
+                        "unknown_programme"
+                        if unknown_programme
+                        else (
+                            "booking_dialogue"
+                            if dialogue_hit
+                            else ("booking_tool" if avail_hit and not force_rag else "rag")
+                        )
                     )
                 )
             )
@@ -271,9 +278,14 @@ def chat(req: ChatRequest) -> ChatResponse:
         "session_id": session_id,
         "history": {
             "enabled": use_history,
+            # Prior messages loaded for this turn (excludes the message just typed).
             "turns_loaded": len(history),
             "limit": SETTINGS.chat_history_limit,
-            "preview": history_context[-600:] if history_context else "",
+            # Preview must match turns_loaded — do not append the new user turn here
+            # (history_context includes it for the LLM prompt, which confused the inspector).
+            "preview": (
+                build_context_string(history, include_new=False)[-600:] if history else ""
+            ),
         },
         "routing": {
             "hours_intent": hours_intent,
@@ -455,6 +467,20 @@ def chat(req: ChatRequest) -> ChatResponse:
         _persist_turn(session_id, message, answer, lang, use_history)
         return resp
 
+    def _family_names() -> tuple[str, str]:
+        fam: Dict[str, Any] = {}
+        try:
+            fam = families.list_family_by_phone(phone) or {}
+        except Exception:
+            fam = {}
+        p = parent_name or fam.get("parent_name") or ""
+        c = child_name
+        if not c:
+            kids = fam.get("children") or []
+            if len(kids) == 1:
+                c = kids[0].get("child_name") or ""
+        return p, c
+
     # Deterministic greeting — never RAG-dump or admin-flag "Hello"/"Hi"
     if is_greeting(message):
         steps.append(_step("greeting", "Greeting short-circuit", "done", "welcome"))
@@ -473,6 +499,53 @@ def chat(req: ChatRequest) -> ChatResponse:
         _persist_turn(session_id, message, _GREETING_REPLY, lang, use_history)
         return resp
 
+    # Human hand-off → message the centre boss (never mention internal sheets to parents)
+    esc = escalation_svc.detect_escalation(message)
+    if esc:
+        todo_parent, todo_child = _family_names()
+        topic = escalation_svc.topic_hint_from_message(message, esc["category"])
+        answer = escalation_svc.parent_reply(
+            category=esc["category"], topic_hint=topic
+        )
+        staff_msg = staff_messages.add_message(
+            category=esc["category"],
+            priority=esc.get("priority") or "normal",
+            parent_message=message,
+            summary_for_boss=esc.get("summary") or topic,
+            bot_reply=answer,
+            phone=phone,
+            parent_name=todo_parent,
+            child_name=todo_child,
+            session_id=session_id,
+        )
+        if dialogue_active:
+            dialogue_svc.clear_state(session_id)
+        if cancel_active:
+            cancel_svc.clear_state(session_id)
+        steps.append(
+            _step(
+                "staff_escalate",
+                "Message centre boss",
+                "done",
+                f"{esc['category']} · {staff_msg.get('id')}",
+            )
+        )
+        steps.append(_step("rag", "RAG retrieve → generate", "skipped", "staff escalation"))
+        steps.append(_step("admin_todo", "Flag for admin to-do", "skipped", "staff message instead"))
+        trace["route"] = "staff_escalation"
+        trace["staff_message"] = staff_msg
+        trace["latency_ms"] = int((time.perf_counter() - t0) * 1000)
+        resp = ChatResponse(
+            answer=answer,
+            citations=[],
+            provider="staff_escalation",
+            session_id=session_id,
+            debug={"escalation": esc, "staff_message": staff_msg},
+            trace=trace,
+        )
+        _persist_turn(session_id, message, answer, lang, use_history)
+        return resp
+
     # Deterministic: we do not teach scuba/piano/etc. — never dump unrelated FAQs
     unk = unknown_programme
     if not unk and _CONFUSED_RE.match((message or "").strip()) and history:
@@ -483,26 +556,22 @@ def chat(req: ChatRequest) -> ChatResponse:
                     break
                 break
     if unk:
-        fam = {}
-        try:
-            fam = families.list_family_by_phone(phone) or {}
-        except Exception:
-            fam = {}
-        todo_parent = parent_name or fam.get("parent_name") or ""
-        todo_child = child_name
+        todo_parent, todo_child = _family_names()
         label = unk.lower()
+        # Parent-facing: no mention of internal admin sheets
         answer = (
             f"We don't offer **{label}** at BrightNest — sorry about the confusion.\n\n"
             f"Our programmes are {_OFFERED_PROGRAMMES}. "
-            "I've added this to the admin to-do list so staff can follow up if you meant "
-            "something else (or a partner activity)."
+            "If you tell me your child's age, I can suggest a better fit — "
+            "or ask to speak with our team and someone will reach out during working hours."
         )
         admin_todo = admin_todos.add_todo(
             question=message if unknown_programme else f"{message} (re: {label})",
             reply=answer,
             info_needed=(
                 f"Parent asked about {label} — confirm we do not offer it, "
-                "or whether a partner / referral applies."
+                "or whether a partner / referral applies. Quiet flag only "
+                "(parent was not told about the to-do sheet)."
             ),
             reason="unknown_programme",
             phone=phone,
@@ -590,7 +659,8 @@ def chat(req: ChatRequest) -> ChatResponse:
             kids = fam.get("children") or []
             if len(kids) == 1:
                 todo_child = kids[0].get("child_name") or ""
-        # Don't leave parents with an off-topic FAQ dump
+        # Don't leave parents with an off-topic FAQ dump.
+        # Never mention internal to-do sheets — invite a human hand-off instead.
         gap_reason = rag_debug.get("gap_reason") or ""
         if gap_reason in {
             "off_topic_retrieval",
@@ -600,13 +670,24 @@ def chat(req: ChatRequest) -> ChatResponse:
         }:
             answer = (
                 "I don't have a solid answer for that in our centre materials yet. "
-                "I'll flag it for our admin team so they can follow up with you."
+                "If you'd like, ask to speak with our team and somebody will reach out "
+                "during working hours."
             )
-        elif "logged for our admin team" not in answer.lower():
-            answer = (
-                answer.rstrip()
-                + "\n\nI've also logged this for our admin team to follow up if anything's still missing."
-            )
+        else:
+            low = answer.lower()
+            if "admin to-do" in low or "admin team" in low or "to-do list" in low:
+                # Strip accidental internal wording from model output
+                answer = re.sub(
+                    r"(?is)\n*.{0,40}(admin to-?do( list)?|admin team|to-?do list).*$",
+                    "",
+                    answer,
+                ).rstrip()
+            if "reach out" not in answer.lower() and "working hours" not in answer.lower():
+                answer = (
+                    answer.rstrip()
+                    + "\n\nIf anything is still unclear, ask to speak with our team and "
+                    "somebody will reach out during working hours."
+                )
         admin_todo = admin_todos.add_todo(
             question=message,
             reply=answer,
@@ -667,12 +748,14 @@ def reset_history(session_id: str):
     clear_history(session_id)
     dialogue_svc.clear_state(session_id)
     cancel_svc.clear_state(session_id)
-    # Demo Reset also clears the admin to-do sheet so each run starts clean
+    # Demo Reset also clears admin sheets so each run starts clean
     cleared = admin_todos.clear_todos()
+    msgs_cleared = staff_messages.clear_messages()
     return {
         "ok": True,
         "session_id": session_id,
         "admin_todos_cleared": cleared,
+        "staff_messages_cleared": msgs_cleared,
     }
 
 
@@ -689,6 +772,23 @@ def complete_admin_todo(todo_id: str):
     row = admin_todos.complete_todo(todo_id)
     if not row:
         raise HTTPException(status_code=404, detail="To-do not found")
+    return row
+
+
+@router.get("/admin/messages")
+def get_staff_messages(status: str = "open", limit: int = 50):
+    """Inbox of direct bot → centre-boss notices (human hand-off)."""
+    return {
+        "messages": staff_messages.list_messages(status=status or None, limit=limit),
+        "sheet": "staff_messages.csv",
+    }
+
+
+@router.post("/admin/messages/{message_id}/ack")
+def ack_staff_message(message_id: str):
+    row = staff_messages.acknowledge(message_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Staff message not found")
     return row
 
 

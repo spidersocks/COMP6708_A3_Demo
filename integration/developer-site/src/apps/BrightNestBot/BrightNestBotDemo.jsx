@@ -2,10 +2,12 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import WaMarkdown from "./WaMarkdown.jsx";
 import "./brightnest.css";
 
+// Prefer same-origin `/brightnest-api` (Vercel rewrite → SAE) so HTTPS pages
+// are not blocked by mixed content when talking to the HTTP EIP.
 const API_BASE = (
   import.meta.env.VITE_BRIGHTNEST_API_URL ||
   import.meta.env.VITE_API_BASE_URL ||
-  "http://47.242.157.72:8000"
+  "/brightnest-api"
 ).replace(/\/$/, "");
 
 const LOGO_SRC = "/projects/brightnest/logo.png";
@@ -26,6 +28,8 @@ const DEMO_PROBES = [
   { label: "Cancel class", text: "Can I cancel Jason's class next Tuesday?" },
   { label: "Unknown ask", text: "Does BrightNest offer scuba diving for toddlers?" },
   { label: "Private 1:1", text: "How much is private English tuition?" },
+  { label: "Talk to staff", text: "Can I speak to a real person please?" },
+  { label: "Angry parent", text: "This is unacceptable — I'm furious about today's class!" },
 ];
 
 function getOrCreateSessionId() {
@@ -68,6 +72,12 @@ function routeMeta(route) {
   if (route === "rag") {
     return { label: "RAG retrieve → generate", tone: "rag" };
   }
+  if (route === "staff_escalation") {
+    return { label: "Staff escalation → boss inbox", tone: "book" };
+  }
+  if (route === "unknown_programme") {
+    return { label: "Unknown programme (quiet admin flag)", tone: "rag" };
+  }
   return { label: "Waiting for a query", tone: "idle" };
 }
 
@@ -101,6 +111,7 @@ export default function BrightNestBotDemo() {
   const [schedule, setSchedule] = useState(null);
   const [scheduleTeacherId, setScheduleTeacherId] = useState("all");
   const [adminTodos, setAdminTodos] = useState([]);
+  const [staffMessages, setStaffMessages] = useState([]);
 
   const chatWindowRef = useRef(null);
   const textAreaRef = useRef(null);
@@ -127,6 +138,7 @@ export default function BrightNestBotDemo() {
       .then((d) => setSchedule(d))
       .catch(() => setSchedule(null));
     refreshAdminTodos();
+    refreshStaffMessages();
   }, []);
 
   function refreshAdminTodos() {
@@ -136,12 +148,30 @@ export default function BrightNestBotDemo() {
       .catch(() => setAdminTodos([]));
   }
 
+  function refreshStaffMessages() {
+    fetch(`${API_BASE}/admin/messages?status=open`)
+      .then((r) => r.json())
+      .then((d) => setStaffMessages(d.messages || []))
+      .catch(() => setStaffMessages([]));
+  }
+
   async function markTodoDone(id) {
     try {
       await fetch(`${API_BASE}/admin/todos/${encodeURIComponent(id)}/done`, {
         method: "POST",
       });
       refreshAdminTodos();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function ackStaffMessage(id) {
+    try {
+      await fetch(`${API_BASE}/admin/messages/${encodeURIComponent(id)}/ack`, {
+        method: "POST",
+      });
+      refreshStaffMessages();
     } catch {
       /* ignore */
     }
@@ -169,9 +199,11 @@ export default function BrightNestBotDemo() {
       setPendingSlot(null);
       setTrace(null);
       setAdminTodos([]);
+      setStaffMessages([]);
       localStorage.removeItem("bn_bot_session_id");
       setSessionLabel(shortSessionLabel());
       refreshAdminTodos();
+      refreshStaffMessages();
     };
     if (sid) {
       fetch(`${API_BASE}/chat/history/${encodeURIComponent(sid)}`, {
@@ -218,6 +250,7 @@ export default function BrightNestBotDemo() {
       setSessionLabel(shortSessionLabel());
       setTrace(data.trace || null);
       if (data.trace?.admin_todo) refreshAdminTodos();
+      if (data.trace?.staff_message) refreshStaffMessages();
       // Keep form identity in sync when dialogue resolves a child
       const resolvedChild =
         data.trace?.booking?.child_name || data.trace?.cancel?.child_name;
@@ -673,14 +706,15 @@ export default function BrightNestBotDemo() {
             title="Admin to-do"
             summary={
               adminTodos.length
-                ? `${adminTodos.length} open · follow-ups from unanswered asks`
-                : "Empty — gaps appear here when RAG can't answer"
+                ? `${adminTodos.length} open · quiet KB / programme gaps`
+                : "Empty — quiet flags when RAG can't answer"
             }
             defaultOpen={Boolean(trace?.admin_todo) || adminTodos.length > 0}
           >
             <p className="bn-note">
-              When the bot lacks solid KB coverage it still replies to the parent, then
-              appends a row to <code>admin_todos.csv</code> for staff review.
+              Internal research queue (<code>admin_todos.csv</code>). Parents are{" "}
+              <strong>never</strong> told about this sheet — they only hear a helpful
+              reply (and can ask to speak with our team).
             </p>
             {adminTodos.length === 0 ? (
               <p className="bn-empty">No open to-dos.</p>
@@ -699,6 +733,53 @@ export default function BrightNestBotDemo() {
                     ) : null}
                     <button type="button" className="bn-ghost" onClick={() => markTodoDone(t.id)}>
                       Mark done
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Reveal>
+
+          <Reveal
+            key={`boss-${turnKey}`}
+            title="Admin messages"
+            summary={
+              staffMessages.length
+                ? `${staffMessages.length} open · bot → centre boss`
+                : "Empty — human hand-off notices land here"
+            }
+            defaultOpen={Boolean(trace?.staff_message) || staffMessages.length > 0}
+          >
+            <p className="bn-note">
+              Direct notices to the centre lead (<code>staff_messages.csv</code>) when a
+              parent asks for a real person, is very upset, raises safety concerns, or
+              needs a human decision. Parent hears:{" "}
+              <em>“I've let our team know… somebody will reach out during working hours.”</em>
+            </p>
+            {staffMessages.length === 0 ? (
+              <p className="bn-empty">No open staff messages.</p>
+            ) : (
+              <ul className="bn-todos">
+                {staffMessages.map((m) => (
+                  <li key={m.id}>
+                    <div className="bn-todo-head">
+                      <strong>
+                        {(m.priority || "normal").toUpperCase()} · {m.category || "general"}
+                      </strong>
+                      <code>{m.id}</code>
+                    </div>
+                    <span className="bn-todo-q">
+                      From: {m.parent_name || m.phone || "Unknown"}
+                      {m.child_name ? ` · ${m.child_name}` : ""}
+                    </span>
+                    <span className="bn-todo-need">Boss: {m.summary_for_boss}</span>
+                    <span className="bn-todo-a">Parent said: {(m.parent_message || "").slice(0, 200)}</span>
+                    <button
+                      type="button"
+                      className="bn-ghost"
+                      onClick={() => ackStaffMessage(m.id)}
+                    >
+                      Acknowledge
                     </button>
                   </li>
                 ))}

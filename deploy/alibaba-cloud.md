@@ -114,7 +114,11 @@ docker build -f deploy/Dockerfile.frontend \
   -t brightnest-web:latest .
 ```
 
-## 4. Post-deploy checklist
+## 4. Redeploy
+
+See **[REDEPLOY.md](./REDEPLOY.md)** — stop first, then deploy (`.\deploy\redeploy.ps1 -Tag vN`).
+
+## 5. Post-deploy checklist
 
 - [ ] `GET https://api.../healthz` → `{ "ok": true }`
 - [ ] `POST /chat` with `{ "message": "opening hours" }` returns hours
@@ -122,7 +126,7 @@ docker build -f deploy/Dockerfile.frontend \
 - [ ] `GET /availability?course_key=trial` returns slots; Book creates a booking id
 - [ ] Re-ingest after KB edits: `POST /admin/reindex`
 
-## 5. Cost / demo tips
+## 6. Cost / demo tips
 
 - Prefer `qwen-plus` over `qwen-max` for the live demo to reduce latency/cost.
 - Pre-warm the SAE instance a few minutes before the presentation.

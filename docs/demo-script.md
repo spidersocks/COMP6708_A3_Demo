@@ -18,8 +18,9 @@
 | 1:20–2:20 | Chip: **How much is phonics?** | Expand **Sources used**. “Retrieve from our markdown KB, then generate — we implemented the pipeline, not a managed black-box KB.” |
 | 2:20–3:10 | Chip: **Show trial class availability** | Point at slot cards. “Availability is a structured tool over a seeded timetable.” |
 | 3:10–4:00 | Tap **Book** on a slot | Show confirmation + booking id. “Provisional booking, no payment — good for after-hours capture.” |
-| 4:00–4:40 | Optional: one zh-HK question e.g. `營業時間` or `學費` | “Same stack, language-aware retrieval.” |
-| 4:40–5:00 | Architecture slide | “Impact: 24/7 parent triage + grounded answers + booking hand-off. Next: richer MCP tools / staff console.” |
+| 4:00–4:30 | Optional: one zh-HK question e.g. `營業時間` or `學費` | “Same stack, language-aware retrieval.” |
+| 4:30–4:45 | Optional: “I want to speak to a manager” → open Admin → Messages | “Escalation is a first-class route — staff inbox, not just more RAG.” |
+| 4:45–5:00 | Architecture slide | “Impact: 24/7 parent triage + grounded answers + booking + human hand-off.” |
 
 ## Backup questions if something fails
 
