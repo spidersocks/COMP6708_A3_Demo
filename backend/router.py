@@ -436,27 +436,51 @@ def chat(req: ChatRequest) -> ChatResponse:
 
     # --- Deterministic / tool routes (scored intent) ---
     if route == "staff_escalation":
+        from services import staff_email
+
         esc = decision.debug.get("escalation") or escalation_svc.detect_escalation(message)
         todo_parent, todo_child = _family_names()
         topic = escalation_svc.topic_hint_from_message(message, esc["category"])
         answer = escalation_svc.parent_reply(
             category=esc["category"], topic_hint=topic, lang=lang
         )
+        drafted = staff_email.draft_boss_email(
+            category=esc["category"],
+            priority=esc.get("priority") or "normal",
+            parent_message=message,
+            bot_reply=answer,
+            summary=esc.get("summary") or topic,
+            phone=phone,
+            parent_name=todo_parent,
+            child_name=todo_child,
+        )
         staff_msg = staff_messages.add_message(
             category=esc["category"],
             priority=esc.get("priority") or "normal",
             parent_message=message,
-            summary_for_boss=esc.get("summary") or topic,
+            summary_for_boss=drafted.get("subject") or esc.get("summary") or topic,
+            email_body=drafted.get("body") or "",
             bot_reply=answer,
             phone=phone,
             parent_name=todo_parent,
             child_name=todo_child,
             session_id=session_id,
         )
+        staff_msg["email_provider"] = drafted.get("provider")
         if dialogue_active:
             dialogue_svc.clear_state(session_id)
         if cancel_active:
             cancel_svc.clear_state(session_id)
+        steps.append(
+            _step(
+                "staff_email",
+                "Draft staff email",
+                "done",
+                drafted.get("provider") or "template",
+            )
+        )
+        # Inspector reads staff_message from trace
+        trace["staff_message"] = staff_msg
         return _fact_response(
             route_name="staff_escalation",
             answer=answer,
@@ -469,6 +493,7 @@ def chat(req: ChatRequest) -> ChatResponse:
                 f"{esc['category']} · {staff_msg.get('id')}",
             ),
             debug={"escalation": esc, "staff_message": staff_msg},
+            adapt=False,
         )
 
     if route == "confused":
