@@ -432,26 +432,30 @@ def format_trial_info_answer(lang: str = "en") -> Tuple[str, List[Dict[str, Any]
     ]
     if bucket == "zh-HK":
         answer = (
-            f"我們提供 **試堂評估**（約 {trial['duration_min']} 分鐘，HK${trial['fee']}），"
-            "包括簡短家長面談與適齡學習觀察，方便推薦適合課程。"
+            "**係——如果小朋友未嚟過，請先預約試堂評估**，先至入讀常規班，方便安排程度。"
+            f"試堂約 {trial['duration_min']} 分鐘（HK${trial['fee']}），"
+            "包括簡短家長面談同適齡學習觀察。"
             f"若於 {trial['credit_days']} 天內報讀套餐，試堂費可扣減。"
-            "想查看可預約時段，可以說「show trial availability」或「有冇試堂位」。"
+            "想睇時段可以講「有冇試堂位」。"
         )
     elif bucket == "zh-CN":
         answer = (
-            f"我们提供 **试听评估**（约 {trial['duration_min']} 分钟，HK${trial['fee']}），"
-            "包括简短家长面谈与适龄学习观察，方便推荐适合课程。"
+            "**是——如果小朋友没来过，请先预约试听评估**，再入读常规班，方便安排程度。"
+            f"试听约 {trial['duration_min']} 分钟（HK${trial['fee']}），"
+            "包括简短家长面谈与适龄学习观察。"
             f"若于 {trial['credit_days']} 天内报读套餐，试听费可扣减。"
-            "若要查看可预约时段，可以说「show trial availability」。"
+            "若要查看时段，可以说「show trial availability」。"
         )
     else:
         answer = (
-            f"Yes — we offer a **Trial Assessment** (~{trial['duration_min']} minutes, "
-            f"**HK${trial['fee']}**). It includes a short parent chat and an age-appropriate "
-            "learning check so we can recommend a good fit. "
+            "**Yes — if your child has not attended before, please book a Trial Assessment "
+            "first** before joining a regular class. That helps us place them at the right level.\n\n"
+            f"The assessment is ~{trial['duration_min']} minutes (**HK${trial['fee']}**) and includes "
+            "a short parent chat plus an age-appropriate learning check. "
             f"If you enrol within **{trial['credit_days']} days**, the fee is credited "
             "toward your first package.\n\n"
-            "If you want open seats, ask for **trial availability** or tap Show availability."
+            "When you’re ready to pick a time, ask for **trial availability** "
+            "(or tap Show availability)."
         )
     return answer, cites
 

@@ -41,7 +41,9 @@ _OFF_TOPIC_RE = re.compile(
     r"\b(how\s+much|fee|fees|price|pricing|cost|tuition|學費|学费|幾錢|多少钱)\b|"
     r"\b(opening\s+hours?|what\s+time\s+do\s+you|holiday|weather)\b|"
     r"\b(refund|discontinu|policy|policies|allergy|allergies|homework|progress)\b|"
-    r"\b(where\s+are\s+you|address|location|parking)\b"
+    r"\b(where\s+are\s+you|address|location|parking)\b|"
+    r"\b(need\s+to\s+book|do\s+i\s+need|must\s+i|before\s+class|first\s+time|"
+    r"not\s+attended|never\s+attended)\b.{0,40}\b(trial|assessment)\b"
     r")",
     re.I,
 )
@@ -141,8 +143,30 @@ def clear_state(session_id: str) -> None:
             c.commit()
 
 
+def is_trial_policy_question(text: str) -> bool:
+    """Whether a trial is required / comes before class — not a seat-booking request."""
+    return bool(
+        re.search(
+            r"("
+            r"\b(do\s+i|do\s+we|does\s+(he|she|my\s+(kid|child))|must\s+i|have\s+to|"
+            r"need\s+to|required|necessary|should\s+i)\b.{0,50}\b(trial|assessment)\b|"
+            r"\b(trial|assessment)\b.{0,50}\b(first|before\s+(class|enrol|enroll|joining)|"
+            r"required|necessary)\b|"
+            r"\b(not\s+attended|never\s+attended|first\s+time|hasn'?t\s+attended)\b"
+            r".{0,60}\b(trial|assessment)\b|"
+            r"要不要先(試堂|试听)|需(不|唔)?需要(先)?(試堂|试听)|要先(試堂|试听)"
+            r")",
+            text or "",
+            re.I,
+        )
+    )
+
+
 def is_booking_request(text: str) -> bool:
-    return bool(_BOOK_REQUEST_RE.search(text or ""))
+    t = text or ""
+    if is_trial_policy_question(t):
+        return False
+    return bool(_BOOK_REQUEST_RE.search(t))
 
 
 def is_active(session_id: str) -> bool:
@@ -183,6 +207,8 @@ def should_yield_to_rag(session_id: str, text: str) -> bool:
     st = get_state(session_id)
     active = bool(st and st.get("stage") and st.get("stage") != "done")
     if unknown_programme(text):
+        return True
+    if is_trial_policy_question(text):
         return True
     if _OFF_TOPIC_RE.search(text or ""):
         return True

@@ -550,6 +550,11 @@ def chat(req: ChatRequest) -> ChatResponse:
         )
 
     if route == "trial_info":
+        # Don't leave a half-open booking loop after a policy answer
+        try:
+            dialogue_svc.clear_state(session_id)
+        except Exception:
+            pass
         answer, cites = centre_facts.format_trial_info_answer(lang)
         return _fact_response(
             route_name="trial_info",

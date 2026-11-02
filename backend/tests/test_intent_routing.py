@@ -49,6 +49,8 @@ def test_weather_vs_hours(msg: str, expected: str):
         ("Fever of 39C — bring to class?", "illness"),
         ("Can my dog sit in on the trial?", "pets_policy"),
         ("Do you offer a trial for my 5 year old?", "trial_info"),
+        ("If my kid has not attended before, does he need to book a trial assessment first?", "trial_info"),
+        ("But do I need to book the trial assessment before class?", "trial_info"),
         ("Show trial class availability", "booking_tool"),
         ("I want to book a trial class", "booking_dialogue"),
         ("huh?", "confused"),

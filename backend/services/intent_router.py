@@ -51,6 +51,23 @@ _TRIAL_INFO_RE = re.compile(
     r")",
     re.I,
 )
+# Policy / process questions — NOT a request to start booking seats
+_TRIAL_POLICY_RE = re.compile(
+    r"("
+    r"\b(do\s+i|do\s+we|does\s+(he|she|my\s+(kid|child|son|daughter))|"
+    r"must\s+i|have\s+to|need\s+to|required|necessary|should\s+i)\b"
+    r".{0,50}\b(trial|assessment)\b|"
+    r"\b(trial|assessment)\b.{0,50}\b("
+    r"first|before\s+(class|enrol|enroll|joining|starting|the\s+course)|"
+    r"required|necessary|mandatory)\b|"
+    r"\b(not\s+attended|never\s+attended|new\s+(family|student|child)|first\s+time|"
+    r"hasn'?t\s+attended|have\s+not\s+attended)\b.{0,60}\b(trial|assessment)\b|"
+    r"\bbefore\s+(class|the\s+class|enrol|enrolling|joining)\b.{0,40}\b(trial|assessment)\b|"
+    r"要不要先(試堂|试听)|需(不|唔)?需要(先)?(試堂|试听)|要先(試堂|试听)|"
+    r"未上過.?要不要|没上过.?要不要"
+    r")",
+    re.I,
+)
 _PETS_RE = re.compile(
     r"\b(dogs?|cats?|pets?|pupp(?:y|ies)|kittens?)\b|寵物|宠物|(?<![A-Za-z])狗(?![A-Za-z])|(?<![A-Za-z])貓(?![A-Za-z])|(?<![A-Za-z])猫(?![A-Za-z])",
     re.I,
@@ -123,6 +140,11 @@ class IntentDecision:
     debug: Dict[str, Any] = field(default_factory=dict)
 
 
+def is_trial_policy_question(message: str) -> bool:
+    """True when parent asks whether a trial is required / comes first."""
+    return bool(_TRIAL_POLICY_RE.search(message or ""))
+
+
 def is_trial_info(message: str) -> bool:
     m = message or ""
     if re.search(
@@ -134,6 +156,15 @@ def is_trial_info(message: str) -> bool:
         return False
     if _BOOK_VERB_RE.search(m) and _AVAIL_STRONG_RE.search(m):
         return False
+    # Explicit seat-booking intent (not "need to book … first?" policy)
+    if (
+        _BOOK_VERB_RE.search(m)
+        and re.search(r"\b(trial|assessment)\b", m, re.I)
+        and not is_trial_policy_question(m)
+    ):
+        return False
+    if is_trial_policy_question(m):
+        return True
     return bool(_TRIAL_INFO_RE.search(m))
 
 
@@ -310,12 +341,22 @@ def score_intents(
         scores.pop("booking_tool", None)
         scores.pop("availability", None)
 
-    # Explicit book/enrol verbs beat trial explainer
-    if scores.get("booking_dialogue") and scores.get("trial_info") and _BOOK_VERB_RE.search(
-        message or ""
+    # Explicit book/enrol verbs beat trial explainer — except policy "need to book first?"
+    if (
+        scores.get("booking_dialogue")
+        and scores.get("trial_info")
+        and _BOOK_VERB_RE.search(message or "")
+        and not is_trial_policy_question(message)
     ):
         debug["conflicts"].append("booking>trial_info")
         scores.pop("trial_info", None)
+    if scores.get("trial_info") and scores.get("booking_dialogue") and is_trial_policy_question(
+        message
+    ):
+        debug["conflicts"].append("trial_policy>booking")
+        scores.pop("booking_dialogue", None)
+        scores.pop("booking_tool", None)
+        scores.pop("availability", None)
 
     # Pets beat booking/availability
     if scores.get("pets_policy"):
