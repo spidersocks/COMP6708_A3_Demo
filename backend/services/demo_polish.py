@@ -24,6 +24,20 @@ def polish_gap_reply(
     }
     if not SETTINGS.arbiter_gap_rewrite or not cheap_llm.enabled():
         return out
+    draft_s = (draft or "").strip()
+    # Already-fluent DashScope answers must NOT pay for a second full generation.
+    soft_gap = gap_reason in {
+        "no_retrieval",
+        "model_no_answer",
+        "generic_fallback",
+        "model_admin_gap",
+    }
+    if not soft_gap and len(draft_s) >= 140:
+        out["reason"] = "skip_fluent"
+        return out
+    if len(draft_s) >= 320 and "admin to-do" not in draft_s.lower():
+        out["reason"] = "skip_fluent"
+        return out
     out["called"] = True
     prompt = (
         "BrightNest COMP6708 live demo — rewrite the draft parent reply so it sounds "

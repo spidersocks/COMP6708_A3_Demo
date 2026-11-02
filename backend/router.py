@@ -638,6 +638,18 @@ def chat(req: ChatRequest) -> ChatResponse:
             extra_step=_step("facts", "Sibling discount", "done", "structured"),
         )
 
+    if route == "guest_policy":
+        answer, cites = centre_facts.format_guest_answer(lang)
+        # Fluent card already — skip main-model rewrite for latency
+        return _fact_response(
+            route_name="guest_policy",
+            answer=answer,
+            citations=cites,
+            provider="centre_facts",
+            extra_step=_step("facts", "Guest / friend policy", "done", "structured"),
+            adapt=False,
+        )
+
     if route == "waiting":
         answer, cites = centre_facts.format_waiting_answer(lang)
         return _fact_response(
@@ -899,9 +911,8 @@ def chat(req: ChatRequest) -> ChatResponse:
             question=message if unknown_programme else f"{message} (re: {label})",
             reply=answer,
             info_needed=(
-                f"Parent asked about {label} — confirm we do not offer it, "
-                "or whether a partner / referral applies. Quiet flag only "
-                "(parent was not told about the to-do sheet)."
+                f"Parent asked about {label}. Please confirm we do not offer it, "
+                "and whether we can suggest a partner or referral."
             ),
             reason="unknown_programme",
             phone=phone,

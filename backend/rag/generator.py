@@ -4,10 +4,13 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
-import httpx
-
 from config import SETTINGS
-from rag.dashscope_native import auth_headers, native_api_base
+from rag.dashscope_native import (
+    auth_headers,
+    generation_parameters,
+    http_client,
+    native_api_base,
+)
 
 PERSONA = {
     "en": (
@@ -252,7 +255,11 @@ def adapt_structured_fact(
         "Reply:"
     )
     try:
-        raw = _dashscope_generation_http(prompt)
+        raw = _dashscope_generation_http(
+            prompt,
+            max_tokens=min(220, SETTINGS.gen_max_tokens),
+            temperature=0.25,
+        )
         meta = sanitize_answer_meta(raw, lang)
         adapted = (meta.get("answer") or "").strip()
         if not adapted or meta.get("used_fallback") or len(adapted) < 20:
@@ -303,7 +310,14 @@ def generate_answer_meta(
     return meta
 
 
-def _dashscope_generation_http(prompt: str) -> str:
+def _dashscope_generation_http(
+    prompt: str,
+    *,
+    max_tokens: Optional[int] = None,
+    temperature: Optional[float] = None,
+) -> str:
+    import time
+
     model = SETTINGS.llm_model
     multimodal = _is_multimodal_model(model)
     path = (
@@ -312,6 +326,8 @@ def _dashscope_generation_http(prompt: str) -> str:
         else "services/aigc/text-generation/generation"
     )
     url = f"{native_api_base()}/{path}"
+    tok = int(max_tokens if max_tokens is not None else SETTINGS.gen_max_tokens)
+    temp = float(temperature if temperature is not None else SETTINGS.gen_temperature)
 
     system = (
         "You are a helpful centre admin assistant. "
@@ -331,19 +347,19 @@ def _dashscope_generation_http(prompt: str) -> str:
     payload = {
         "model": model,
         "input": {"messages": messages},
-        "parameters": {
-            "result_format": "message",
-            "temperature": SETTINGS.gen_temperature,
-            "max_tokens": SETTINGS.gen_max_tokens,
-        },
+        "parameters": generation_parameters(max_tokens=tok, temperature=temp),
     }
-    print(f"[GEN] POST {url} model={model} multimodal={multimodal}", flush=True)
-    with httpx.Client(timeout=90.0) as client:
-        resp = client.post(url, headers=auth_headers(), json=payload)
-        try:
-            data = resp.json()
-        except Exception:
-            raise RuntimeError(f"Generation HTTP {resp.status_code}: {resp.text[:500]}") from None
+    t0 = time.perf_counter()
+    print(
+        f"[GEN] POST {url} model={model} multimodal={multimodal} "
+        f"think=off tokens≤{tok}",
+        flush=True,
+    )
+    resp = http_client(timeout=60.0).post(url, headers=auth_headers(), json=payload)
+    try:
+        data = resp.json()
+    except Exception:
+        raise RuntimeError(f"Generation HTTP {resp.status_code}: {resp.text[:500]}") from None
 
     code = data.get("code")
     request_ok = resp.status_code == 200 and (not code or str(code).lower() in ("success", "null"))
@@ -355,6 +371,8 @@ def _dashscope_generation_http(prompt: str) -> str:
             f"message={data.get('message') or data} url={url}"
         )
 
+    ms = int((time.perf_counter() - t0) * 1000)
+    print(f"[GEN] ok {ms}ms", flush=True)
     return _extract_text(data)
 
 

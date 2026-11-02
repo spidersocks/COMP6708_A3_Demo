@@ -44,7 +44,8 @@ class Settings:
     collection_name: str = os.environ.get("CHROMA_COLLECTION", "brightnest_kb")
 
     # Generation
-    gen_max_tokens: int = int(os.environ.get("GEN_MAX_TOKENS", "500"))
+    # Keep short for live demo latency (thinking is also forced off in generation_parameters).
+    gen_max_tokens: int = int(os.environ.get("GEN_MAX_TOKENS", "280"))
     gen_temperature: float = float(os.environ.get("GEN_TEMPERATURE", "0.3"))
 
     # Cheap DashScope demo arbiters (turbo). Master switch + per-use toggles.

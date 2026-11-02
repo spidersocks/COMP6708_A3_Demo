@@ -83,6 +83,17 @@ _SIBLING_RE = re.compile(
     r")",
     re.I,
 )
+# Guest / friend in class — NOT sibling discount (discount has its own intent)
+_GUEST_RE = re.compile(
+    r"("
+    r"\bbring\s+(my\s+|a\s+|our\s+)?(friend|friends|guest|classmate|cousin)\b|"
+    r"\bcan\s+(my\s+|a\s+)?(friend|guest|classmate)\s+(come|join|sit|attend|visit)\b|"
+    r"\b(friend|guest|classmate)\s+(come|join|sit|attend)\s+(to\s+|with\s+|in\s+)?(class|lesson|trial)?\b|"
+    r"\bguest\s+child\b|\bbring\s+someone\b|"
+    r"帶朋友|带朋友|帶同學|带同学|朋友一齊|朋友一起|可以帶人|可以带人"
+    r")",
+    re.I,
+)
 _WAITING_RE = re.compile(
     r"("
     r"\b(wait(?:ing)?\s*list|waitlist|class\s+(is\s+)?full|no\s+seats?|full\s+class)\b|"
@@ -196,6 +207,14 @@ def is_makeup_intent(message: str) -> bool:
 
 def is_sibling_intent(message: str) -> bool:
     return bool(_SIBLING_RE.search(message or ""))
+
+
+def is_guest_intent(message: str) -> bool:
+    """Bring a friend/guest to class — not sibling-discount wording."""
+    m = message or ""
+    if is_sibling_intent(m) and re.search(r"discount|rate|offer|price|折扣", m, re.I):
+        return False
+    return bool(_GUEST_RE.search(m))
 
 
 def is_waiting_intent(message: str) -> bool:
@@ -717,6 +736,38 @@ def format_sibling_answer(lang: str = "en") -> Tuple[str, List[Dict[str, Any]]]:
             f"**Sibling discount:** **{pct}%** off the lower package when two siblings "
             "enrol in the same term.\n"
             "Ask for full tuition ranges if you’d like the programme fee table."
+        )
+    return answer, cites
+
+
+def format_guest_answer(lang: str = "en") -> Tuple[str, List[Dict[str, Any]]]:
+    """Bring a friend / guest — grounded in parent attendance + observation FAQs."""
+    bucket = _lang_bucket(lang)
+    cites = [
+        {"source": "faq/parent_attendance", "title": "Parent / Family Attendance"},
+        {"source": "faq/class_observation_visits", "title": "Class Observation & Visits"},
+        {"source": "faq/birthdays_celebrations", "title": "Birthdays & Celebrations"},
+    ]
+    if bucket.startswith("zh"):
+        answer = (
+            "關於帶朋友／訪客：\n\n"
+            "- **另一位小朋友：** 常規班只給已報讀學生。朋友想試堂的話，可以預約 **試堂評估**。\n"
+            "- **大人陪同：** 只有 **Playgroup** 容許家長／照顧者留在課室；其他班小朋友獨立上課，"
+            "大人可在 2 樓休息區等候。\n"
+            "- **慶祝／小禮物：** 請至少提前 **24 小時** 通知老師；勿帶花生類分享小食或嘈音氣球。\n\n"
+            "想幫朋友約試堂，定係想了解觀課安排？告訴我一聲即可。"
+        )
+    else:
+        answer = (
+            "Thanks for asking — it depends who your friend is:\n\n"
+            "- **Another child:** Regular classes are for enrolled students. "
+            "We can book a **Trial Assessment** if your friend wants to try a lesson.\n"
+            "- **Adult accompanying your child:** Only **Playgroup** allows a parent/carer "
+            "in the room; other classes are independent (lounge wait on 2/F is fine).\n"
+            "- **Celebration treats / small gifts:** Please give the teacher **24 hours’** "
+            "notice; no peanut sharing snacks or loud popping balloons.\n\n"
+            "Tell me if this is a child trial, sitting in, or a birthday treat — "
+            "I’ll point you to the next step."
         )
     return answer, cites
 

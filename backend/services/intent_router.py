@@ -106,6 +106,7 @@ _PRIORITY: List[str] = [
     "pickup",
     "waiting",
     "sibling",
+    "guest_policy",
     "location",
     "payment",
     "fees",
@@ -265,6 +266,8 @@ def score_intents(
         scores["waiting"] = 0.96
     if centre_facts.is_sibling_intent(message):
         scores["sibling"] = 0.96
+    if centre_facts.is_guest_intent(message):
+        scores["guest_policy"] = 0.96
 
     if is_pets_question(message):
         scores["pets_policy"] = 0.95
@@ -452,30 +455,44 @@ def decide_intent(
     try:
         from services import intent_arbiter
 
-        hist_preview = ""
-        if history:
-            bits = []
-            for turn in history[-4:]:
-                role = turn.get("role") or turn.get("speaker") or ""
-                content = turn.get("content") or turn.get("message") or ""
-                if content:
-                    bits.append(f"{role}: {content}")
-            hist_preview = "\n".join(bits)
-        verdict = intent_arbiter.review_intent(
-            message,
-            proposed_route=route,
-            scores=cleaned,
-            debug=debug,
-            history_preview=hist_preview,
-        )
-        debug["arbiter"] = verdict
-        if verdict.get("action") in {"rag", "reroute"} and verdict.get("route"):
-            new_route = str(verdict["route"])
-            if new_route != route:
-                debug["arbiter_override"] = {"from": route, "to": new_route}
-                cleaned = dict(cleaned)
-                cleaned[new_route] = max(float(cleaned.get(new_route) or 0), 0.99)
-                route = new_route
+        top_score = max(cleaned.values()) if cleaned else 0.0
+        # High-confidence structured picks: skip the extra LLM round-trip
+        if (
+            top_score >= 0.9
+            and not (debug.get("conflicts") or [])
+            and route not in {"confused", "off_domain", "rag"}
+        ):
+            debug["arbiter"] = {
+                "action": "keep",
+                "route": route,
+                "reason": "high_confidence_skip",
+                "called": False,
+            }
+        else:
+            hist_preview = ""
+            if history:
+                bits = []
+                for turn in history[-4:]:
+                    role = turn.get("role") or turn.get("speaker") or ""
+                    content = turn.get("content") or turn.get("message") or ""
+                    if content:
+                        bits.append(f"{role}: {content}")
+                hist_preview = "\n".join(bits)
+            verdict = intent_arbiter.review_intent(
+                message,
+                proposed_route=route,
+                scores=cleaned,
+                debug=debug,
+                history_preview=hist_preview,
+            )
+            debug["arbiter"] = verdict
+            if verdict.get("action") in {"rag", "reroute"} and verdict.get("route"):
+                new_route = str(verdict["route"])
+                if new_route != route:
+                    debug["arbiter_override"] = {"from": route, "to": new_route}
+                    cleaned = dict(cleaned)
+                    cleaned[new_route] = max(float(cleaned.get(new_route) or 0), 0.99)
+                    route = new_route
     except Exception as e:
         debug["arbiter"] = {"action": "keep", "route": route, "reason": f"error:{e}"}
 

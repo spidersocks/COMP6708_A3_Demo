@@ -6,10 +6,13 @@ import re
 import time
 from typing import Any, Dict, Optional
 
-import httpx
-
 from config import SETTINGS
-from rag.dashscope_native import auth_headers, native_api_base
+from rag.dashscope_native import (
+    auth_headers,
+    generation_parameters,
+    http_client,
+    native_api_base,
+)
 
 _JSON_RE = re.compile(r"\{[^{}]*\}", re.S)
 
@@ -67,21 +70,21 @@ def complete_text(
     payload = {
         "model": model,
         "input": {"messages": messages},
-        "parameters": {
-            "result_format": "message",
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        },
+        "parameters": generation_parameters(
+            max_tokens=max_tokens,
+            temperature=temperature,
+        ),
     }
     t0 = time.perf_counter()
     try:
-        with httpx.Client(timeout=SETTINGS.intent_arbiter_timeout_s) as client:
-            resp = client.post(url, headers=auth_headers(), json=payload)
-            try:
-                data = resp.json()
-            except Exception:
-                print(f"[CHEAP_LLM] HTTP {resp.status_code} non-JSON", flush=True)
-                return None
+        resp = http_client(timeout=SETTINGS.intent_arbiter_timeout_s).post(
+            url, headers=auth_headers(), json=payload
+        )
+        try:
+            data = resp.json()
+        except Exception:
+            print(f"[CHEAP_LLM] HTTP {resp.status_code} non-JSON", flush=True)
+            return None
         code = data.get("code")
         ok = resp.status_code == 200 and (not code or str(code).lower() in ("success", "null"))
         if resp.status_code == 200 and data.get("output"):
@@ -96,7 +99,7 @@ def complete_text(
         text = _extract_text(data) or None
         ms = int((time.perf_counter() - t0) * 1000)
         print(
-            f"[CHEAP_LLM] ok model={model} multimodal={multimodal} "
+            f"[CHEAP_LLM] ok model={model} multimodal={multimodal} think=off "
             f"tokens≤{max_tokens} {ms}ms",
             flush=True,
         )
