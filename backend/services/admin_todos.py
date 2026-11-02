@@ -140,6 +140,34 @@ def complete_todo(todo_id: str) -> Optional[Dict[str, Any]]:
     return found
 
 
+_EDITABLE = ("info_needed", "parent_name", "child_name")
+
+
+def update_todo(todo_id: str, **fields: Any) -> Optional[Dict[str, Any]]:
+    """Patch editable fields on an open to-do (demo Staff desk sheet)."""
+    rows = _read()
+    found = None
+    for r in rows:
+        if r.get("id") != todo_id:
+            continue
+        if r.get("status") != "open":
+            return None
+        for key in _EDITABLE:
+            if key not in fields or fields[key] is None:
+                continue
+            val = str(fields[key]).strip()
+            if key == "info_needed":
+                val = val[:400]
+            else:
+                val = val[:120]
+            r[key] = val
+        found = dict(r)
+        break
+    if found:
+        _write(rows)
+    return found
+
+
 def clear_todos() -> int:
     """Wipe the admin to-do sheet (demo Reset). Returns previous row count."""
     _ensure()

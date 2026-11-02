@@ -1133,6 +1133,24 @@ def complete_admin_todo(todo_id: str):
     return row
 
 
+class AdminTodoPatch(BaseModel):
+    info_needed: Optional[str] = None
+    parent_name: Optional[str] = None
+    child_name: Optional[str] = None
+
+
+@router.patch("/admin/todos/{todo_id}")
+def patch_admin_todo(todo_id: str, body: AdminTodoPatch):
+    """Update editable cells on an open admin to-do (Staff desk sheet)."""
+    payload = body.model_dump(exclude_unset=True)
+    if not payload:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    row = admin_todos.update_todo(todo_id, **payload)
+    if not row:
+        raise HTTPException(status_code=404, detail="Open to-do not found")
+    return row
+
+
 @router.get("/admin/messages")
 def get_staff_messages(status: str = "open", limit: int = 50):
     """Inbox of direct bot → centre-boss notices (human hand-off)."""

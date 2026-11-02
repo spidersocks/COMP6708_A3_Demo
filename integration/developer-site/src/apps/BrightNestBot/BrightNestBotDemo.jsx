@@ -81,6 +81,28 @@ function routeMeta(route) {
   return { label: "Waiting for a query", tone: "idle" };
 }
 
+function sheetWhen(iso) {
+  if (!iso) return "—";
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return String(iso).slice(0, 16);
+    return d.toLocaleString([], {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return String(iso).slice(0, 16);
+  }
+}
+
+function clip(text, n = 72) {
+  const s = (text || "").trim();
+  if (s.length <= n) return s;
+  return `${s.slice(0, n - 1)}…`;
+}
+
 function Reveal({ title, summary, defaultOpen = false, children }) {
   return (
     <details className="bn-reveal" defaultOpen={defaultOpen}>
@@ -112,6 +134,8 @@ export default function BrightNestBotDemo() {
   const [scheduleTeacherId, setScheduleTeacherId] = useState("all");
   const [adminTodos, setAdminTodos] = useState([]);
   const [staffMessages, setStaffMessages] = useState([]);
+  const [rightView, setRightView] = useState("system"); // system | staff
+  const [selectedMsgId, setSelectedMsgId] = useState(null);
 
   const chatWindowRef = useRef(null);
   const textAreaRef = useRef(null);
@@ -166,11 +190,27 @@ export default function BrightNestBotDemo() {
     }
   }
 
+  async function patchTodoField(id, fields) {
+    try {
+      const res = await fetch(`${API_BASE}/admin/todos/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(fields),
+      });
+      if (!res.ok) return;
+      const updated = await res.json();
+      setAdminTodos((prev) => prev.map((t) => (t.id === id ? { ...t, ...updated } : t)));
+    } catch {
+      /* ignore */
+    }
+  }
+
   async function ackStaffMessage(id) {
     try {
       await fetch(`${API_BASE}/admin/messages/${encodeURIComponent(id)}/ack`, {
         method: "POST",
       });
+      setSelectedMsgId((cur) => (cur === id ? null : cur));
       refreshStaffMessages();
     } catch {
       /* ignore */
@@ -200,6 +240,8 @@ export default function BrightNestBotDemo() {
       setTrace(null);
       setAdminTodos([]);
       setStaffMessages([]);
+      setSelectedMsgId(null);
+      setRightView("system");
       localStorage.removeItem("bn_bot_session_id");
       setSessionLabel(shortSessionLabel());
       refreshAdminTodos();
@@ -249,8 +291,17 @@ export default function BrightNestBotDemo() {
       const data = await res.json();
       setSessionLabel(shortSessionLabel());
       setTrace(data.trace || null);
-      if (data.trace?.admin_todo) refreshAdminTodos();
-      if (data.trace?.staff_message) refreshStaffMessages();
+      const hitTodo = Boolean(data.trace?.admin_todo);
+      const hitBoss =
+        Boolean(data.trace?.staff_message) || data.trace?.route === "staff_escalation";
+      if (hitTodo) refreshAdminTodos();
+      if (hitBoss) {
+        refreshStaffMessages();
+        if (data.trace?.staff_message?.id) {
+          setSelectedMsgId(data.trace.staff_message.id);
+        }
+      }
+      if (hitTodo || hitBoss) setRightView("staff");
       // Keep form identity in sync when dialogue resolves a child
       const resolvedChild =
         data.trace?.booking?.child_name || data.trace?.cancel?.child_name;
@@ -369,6 +420,13 @@ export default function BrightNestBotDemo() {
     const n = rag?.hit_count ?? hits.length;
     return `${n} chunk${n === 1 ? "" : "s"} · ${rag?.embedding_mode || "embed"}`;
   }, [rag, hits.length]);
+
+  const selectedMsg = useMemo(() => {
+    if (!staffMessages.length) return null;
+    return staffMessages.find((m) => m.id === selectedMsgId) || staffMessages[0];
+  }, [staffMessages, selectedMsgId]);
+
+  const sheetCols = ["A", "B", "C", "D", "E", "F", "G"];
 
   return (
     <div className="bn-app">
@@ -504,10 +562,237 @@ export default function BrightNestBotDemo() {
           </div>
         </aside>
 
-        {/* Inspector */}
+        {/* Inspector / Staff desk */}
         <section className="bn-inspector">
-          <p className="bn-col-label">System inspector</p>
+          <div className="bn-right-head">
+            <p className="bn-col-label">
+              {rightView === "staff" ? "Staff desk" : "System inspector"}
+            </p>
+            <div className="bn-view-toggle" role="tablist" aria-label="Right panel">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={rightView === "system"}
+                className={rightView === "system" ? "active" : ""}
+                onClick={() => setRightView("system")}
+              >
+                System
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={rightView === "staff"}
+                className={rightView === "staff" ? "active" : ""}
+                onClick={() => setRightView("staff")}
+              >
+                Staff desk
+                {(adminTodos.length > 0 || staffMessages.length > 0) && (
+                  <span className="bn-view-badge">
+                    {adminTodos.length + staffMessages.length}
+                  </span>
+                )}
+              </button>
+            </div>
+          </div>
 
+          {rightView === "staff" ? (
+            <div className="bn-staff-desk">
+              {/* Google Sheets–style admin to-do */}
+              <div className="bn-sheet-widget">
+                <div className="bn-sheet-menubar">
+                  <div className="bn-sheet-doc">
+                    <span className="bn-sheet-icon" aria-hidden="true" />
+                    <div>
+                      <strong>admin_todos</strong>
+                      <small>Research queue · parents never see this</small>
+                    </div>
+                  </div>
+                  <span className="bn-sheet-count">
+                    {adminTodos.length} open
+                  </span>
+                </div>
+                <div className="bn-sheet-formula">
+                  <span className="bn-sheet-fx">fx</span>
+                  <code>admin_todos.csv</code>
+                  <span className="bn-sheet-hint">Edit “Info needed”, tick Status when done</span>
+                </div>
+                <div className="bn-sheet-scroll">
+                  <table className="bn-sheet-grid">
+                    <thead>
+                      <tr>
+                        <th className="bn-sheet-corner" />
+                        {sheetCols.map((c) => (
+                          <th key={c}>{c}</th>
+                        ))}
+                      </tr>
+                      <tr className="bn-sheet-labels">
+                        <th />
+                        <th>Status</th>
+                        <th>Parent</th>
+                        <th>Child</th>
+                        <th>Question</th>
+                        <th>Info needed</th>
+                        <th>Reason</th>
+                        <th>When</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {adminTodos.length === 0 ? (
+                        <tr>
+                          <td className="bn-sheet-rownum">1</td>
+                          <td colSpan={7} className="bn-sheet-empty">
+                            No open to-dos — quiet flags appear when RAG can’t answer.
+                          </td>
+                        </tr>
+                      ) : (
+                        adminTodos.map((t, i) => (
+                          <tr key={t.id}>
+                            <td className="bn-sheet-rownum">{i + 1}</td>
+                            <td className="bn-sheet-check">
+                              <input
+                                type="checkbox"
+                                title="Mark done"
+                                aria-label={`Mark ${t.id} done`}
+                                onChange={() => markTodoDone(t.id)}
+                              />
+                            </td>
+                            <td title={t.phone || ""}>{t.parent_name || t.phone || "—"}</td>
+                            <td>{t.child_name || "—"}</td>
+                            <td className="bn-sheet-q" title={t.question}>
+                              {clip(t.question, 90)}
+                            </td>
+                            <td className="bn-sheet-edit">
+                              <input
+                                type="text"
+                                defaultValue={t.info_needed || ""}
+                                key={`${t.id}-${t.info_needed || ""}`}
+                                placeholder="What staff should look up…"
+                                onBlur={(e) => {
+                                  const next = e.target.value.trim();
+                                  if (next !== (t.info_needed || "").trim()) {
+                                    patchTodoField(t.id, { info_needed: next });
+                                  }
+                                }}
+                              />
+                            </td>
+                            <td>
+                              <code>{t.reason || "—"}</code>
+                            </td>
+                            <td>{sheetWhen(t.created_at)}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Gmail-style boss inbox */}
+              <div className="bn-inbox-widget">
+                <div className="bn-inbox-bar">
+                  <div>
+                    <strong>Inbox</strong>
+                    <span> · centre boss</span>
+                  </div>
+                  <span className="bn-inbox-unread">
+                    {staffMessages.length} open
+                  </span>
+                </div>
+                <div className="bn-inbox-body">
+                  <div className="bn-inbox-list" role="listbox" aria-label="Staff messages">
+                    {staffMessages.length === 0 ? (
+                      <p className="bn-inbox-empty">
+                        No hand-off notices. Escalations (angry parent, ask for human, safety)
+                        land here.
+                      </p>
+                    ) : (
+                      staffMessages.map((m) => {
+                        const active = selectedMsg?.id === m.id;
+                        return (
+                          <button
+                            key={m.id}
+                            type="button"
+                            role="option"
+                            aria-selected={active}
+                            className={`bn-inbox-row ${active ? "active" : ""}`}
+                            onClick={() => setSelectedMsgId(m.id)}
+                          >
+                            <span
+                              className={`bn-prio bn-prio-${m.priority || "normal"}`}
+                            >
+                              {(m.priority || "normal").slice(0, 1).toUpperCase()}
+                            </span>
+                            <span className="bn-inbox-row-main">
+                              <strong>
+                                {m.parent_name || m.phone || "Unknown parent"}
+                              </strong>
+                              <em>{m.category || "general"}</em>
+                              <span>{clip(m.summary_for_boss || m.parent_message, 64)}</span>
+                            </span>
+                            <time>{sheetWhen(m.created_at)}</time>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                  <div className="bn-inbox-read">
+                    {!selectedMsg ? (
+                      <p className="bn-inbox-empty">Select a message to read.</p>
+                    ) : (
+                      <>
+                        <div className="bn-inbox-read-head">
+                          <h3>{selectedMsg.summary_for_boss || "Staff notice"}</h3>
+                          <div className="bn-inbox-meta">
+                            <span
+                              className={`bn-prio-pill bn-prio-${selectedMsg.priority || "normal"}`}
+                            >
+                              {(selectedMsg.priority || "normal").toUpperCase()}
+                            </span>
+                            <span>{selectedMsg.category || "general"}</span>
+                            <code>{selectedMsg.id}</code>
+                          </div>
+                          <p>
+                            From{" "}
+                            <strong>
+                              {selectedMsg.parent_name || selectedMsg.phone || "Unknown"}
+                            </strong>
+                            {selectedMsg.child_name ? ` · ${selectedMsg.child_name}` : ""}
+                            {selectedMsg.phone ? (
+                              <>
+                                {" "}
+                                · <code>{selectedMsg.phone}</code>
+                              </>
+                            ) : null}
+                          </p>
+                          <time>{sheetWhen(selectedMsg.created_at)}</time>
+                        </div>
+                        <div className="bn-inbox-read-body">
+                          <h4>Parent said</h4>
+                          <p>{selectedMsg.parent_message || "—"}</p>
+                          {selectedMsg.bot_reply ? (
+                            <>
+                              <h4>Bot promised</h4>
+                              <p>{selectedMsg.bot_reply}</p>
+                            </>
+                          ) : null}
+                        </div>
+                        <div className="bn-inbox-actions">
+                          <button
+                            type="button"
+                            className="bn-inbox-ack"
+                            onClick={() => ackStaffMessage(selectedMsg.id)}
+                          >
+                            Acknowledge
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <>
           <div className="bn-route-card">
             <div className="bn-route-main">
               <span className={`bn-pill bn-pill-${meta.tone}`}>{meta.label}</span>
@@ -702,92 +987,6 @@ export default function BrightNestBotDemo() {
           </Reveal>
 
           <Reveal
-            key={`admin-${turnKey}`}
-            title="Admin to-do"
-            summary={
-              adminTodos.length
-                ? `${adminTodos.length} open · quiet KB / programme gaps`
-                : "Empty — quiet flags when RAG can't answer"
-            }
-            defaultOpen={Boolean(trace?.admin_todo) || adminTodos.length > 0}
-          >
-            <p className="bn-note">
-              Internal research queue (<code>admin_todos.csv</code>). Parents are{" "}
-              <strong>never</strong> told about this sheet — they only hear a helpful
-              reply (and can ask to speak with our team).
-            </p>
-            {adminTodos.length === 0 ? (
-              <p className="bn-empty">No open to-dos.</p>
-            ) : (
-              <ul className="bn-todos">
-                {adminTodos.map((t) => (
-                  <li key={t.id}>
-                    <div className="bn-todo-head">
-                      <strong>{t.parent_name || t.phone || "Unknown parent"}</strong>
-                      <code>{t.id}</code>
-                    </div>
-                    <span className="bn-todo-q">Q: {t.question}</span>
-                    <span className="bn-todo-a">A: {(t.reply || "").slice(0, 160)}</span>
-                    {t.info_needed ? (
-                      <span className="bn-todo-need">Need: {t.info_needed}</span>
-                    ) : null}
-                    <button type="button" className="bn-ghost" onClick={() => markTodoDone(t.id)}>
-                      Mark done
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Reveal>
-
-          <Reveal
-            key={`boss-${turnKey}`}
-            title="Admin messages"
-            summary={
-              staffMessages.length
-                ? `${staffMessages.length} open · bot → centre boss`
-                : "Empty — human hand-off notices land here"
-            }
-            defaultOpen={Boolean(trace?.staff_message) || staffMessages.length > 0}
-          >
-            <p className="bn-note">
-              Direct notices to the centre lead (<code>staff_messages.csv</code>) when a
-              parent asks for a real person, is very upset, raises safety concerns, or
-              needs a human decision. Parent hears:{" "}
-              <em>“I've let our team know… somebody will reach out during working hours.”</em>
-            </p>
-            {staffMessages.length === 0 ? (
-              <p className="bn-empty">No open staff messages.</p>
-            ) : (
-              <ul className="bn-todos">
-                {staffMessages.map((m) => (
-                  <li key={m.id}>
-                    <div className="bn-todo-head">
-                      <strong>
-                        {(m.priority || "normal").toUpperCase()} · {m.category || "general"}
-                      </strong>
-                      <code>{m.id}</code>
-                    </div>
-                    <span className="bn-todo-q">
-                      From: {m.parent_name || m.phone || "Unknown"}
-                      {m.child_name ? ` · ${m.child_name}` : ""}
-                    </span>
-                    <span className="bn-todo-need">Boss: {m.summary_for_boss}</span>
-                    <span className="bn-todo-a">Parent said: {(m.parent_message || "").slice(0, 200)}</span>
-                    <button
-                      type="button"
-                      className="bn-ghost"
-                      onClick={() => ackStaffMessage(m.id)}
-                    >
-                      Acknowledge
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Reveal>
-
-          <Reveal
             key={`book-${turnKey}`}
             title="Booking tool"
             summary={
@@ -920,6 +1119,8 @@ export default function BrightNestBotDemo() {
               ))}
             </div>
           </Reveal>
+            </>
+          )}
         </section>
       </div>
     </div>
