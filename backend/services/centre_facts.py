@@ -7,7 +7,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-_FACTS_DIR = Path(__file__).resolve().parent.parent / "data" / "facts"
+# Curated JSON lives under /app/facts (NOT /app/data — SAE mounts a volume there)
+_FACTS_DIR = Path(__file__).resolve().parent.parent / "facts"
 
 _FEE_RE = re.compile(
     r"("

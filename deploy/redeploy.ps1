@@ -43,7 +43,8 @@ function Load-DotEnv {
 
 function Require-Env([string[]]$names) {
   foreach ($n in $names) {
-    if (-not (Get-Item "Env:$n" -ErrorAction SilentlyContinue)?.Value) {
+    $item = Get-Item "Env:$n" -ErrorAction SilentlyContinue
+    if (-not $item -or [string]::IsNullOrWhiteSpace([string]$item.Value)) {
       throw "Missing env var $n (set in repo-root .env)"
     }
   }
@@ -173,7 +174,9 @@ if (-not $SkipBuild) {
     -t $imgPublic `
     -t "brightnest-api:$Tag" `
     .
+  if ($LASTEXITCODE -ne 0) { throw "docker build failed (exit $LASTEXITCODE)" }
   docker push $imgPublic
+  if ($LASTEXITCODE -ne 0) { throw "docker push failed (exit $LASTEXITCODE)" }
 } else {
   Write-Host "`n[3/5] SkipBuild — using existing ACR image $imgPublic"
 }

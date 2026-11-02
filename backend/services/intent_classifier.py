@@ -12,12 +12,14 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-_FACTS = Path(__file__).resolve().parent.parent / "data" / "facts" / "intent_prototypes.json"
+_FACTS = Path(__file__).resolve().parent.parent / "facts" / "intent_prototypes.json"
 _TOKEN_RE = re.compile(r"[A-Za-z\u4e00-\u9fff]{2,}")
 
 
 @lru_cache(maxsize=1)
 def _prototypes() -> Dict[str, List[str]]:
+    if not _FACTS.is_file():
+        return {}
     return json.loads(_FACTS.read_text(encoding="utf-8"))
 
 

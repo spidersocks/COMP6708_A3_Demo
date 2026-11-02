@@ -20,9 +20,7 @@ backend/data/chroma/
 backend/data/*.db
 backend/data/sheets/*.csv
 backend/data/sheets/.seed_version
-# Keep curated fact JSON + sheet README in git (needed by SAE image + teammates)
-!backend/data/facts/
-!backend/data/facts/**/*.json
+# Keep sheet README; curated facts live in backend/facts/ (outside the SAE data volume)
 !backend/data/sheets/README.txt
 *.db
 
