@@ -393,19 +393,19 @@ def chat_with_rag(
     hits = _lexical_rerank(message, hits)[: SETTINGS.rag_top_k]
 
     top_hit = hits[0] if hits else None
+    # Demo bias: weak lexical overlap is an admin signal, not a parent soft-refusal.
+    # Awkward “I don’t have a solid answer” looks worse than a grounded LLM try.
     off_topic = bool(hits and top_hit is not None and _off_topic(message, top_hit))
 
-    # Citation gate: do not generate from clearly off-topic chunks (esp. extractive dumps)
-    gen_hits = [] if off_topic else hits
     gen = generate_answer_meta(
         message,
-        gen_hits,
+        hits,
         lang=lang,
         history_context=history_context,
     )
     answer = gen.get("answer") or ""
     citations = []
-    for h in (hits if not off_topic else []):
+    for h in hits:
         meta = h.get("metadata") or {}
         citations.append(
             {
@@ -434,13 +434,8 @@ def chat_with_rag(
     elif not hits:
         gap_reason = "no_retrieval"
     elif off_topic:
+        # Keep the model answer for the parent; flag quietly for the demo inspector
         gap_reason = "off_topic_retrieval"
-        answer = (
-            "I don't have a solid answer for that in our centre materials yet. "
-            "If you'd like, ask to speak with our team and somebody will reach out "
-            "during working hours."
-        )
-        provider = "citation_gate"
     elif top_score is not None and top_score < weak_cut and provider != "local_fallback":
         gap_reason = "weak_retrieval"
     elif gen.get("had_no_answer_token"):

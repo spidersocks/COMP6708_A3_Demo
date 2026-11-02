@@ -25,6 +25,7 @@ from llm.hours_intent import (
 )
 from llm.lang import get_language_code
 from llm.opening_hours import _get_opening_facts, compute_opening_answer
+from rag.generator import adapt_structured_fact
 from rag.pipeline import chat_with_rag, is_greeting
 from services import admin_todos
 from services import answer_cache
@@ -32,10 +33,24 @@ from services import booking as booking_svc
 from services import booking_dialogue as dialogue_svc
 from services import cancel_dialogue as cancel_svc
 from services import centre_facts
+from services import demo_polish
 from services import escalation as escalation_svc
 from services import families
 from services import intent_router
 from services import staff_messages
+
+# Demo: polish these canned providers with adapt_structured_fact (not just centre_facts)
+_ADAPT_PROVIDERS = {
+    "centre_facts",
+    "deterministic_opening_hours",
+    "unsupported_facility",
+    "unknown_programme",
+    "staff_escalation",
+    "booking_tool",
+    "greeting",
+    "confused",
+    "off_domain",
+}
 
 router = APIRouter()
 
@@ -244,6 +259,27 @@ def chat(req: ChatRequest) -> ChatResponse:
             f"{route} · scores={decision.scores}",
         )
     )
+    arb = (decision.debug or {}).get("arbiter") or {}
+    if arb:
+        override = (decision.debug or {}).get("arbiter_override")
+        if override:
+            steps.append(
+                _step(
+                    "intent_arbiter",
+                    "LLM intent review",
+                    "done",
+                    f"{override.get('from')} → {override.get('to')} · {arb.get('reason') or arb.get('action')}",
+                )
+            )
+        else:
+            steps.append(
+                _step(
+                    "intent_arbiter",
+                    "LLM intent review",
+                    "done" if arb.get("action") == "keep" else "skipped",
+                    f"{arb.get('action') or 'keep'} · {arb.get('reason') or 'n/a'}",
+                )
+            )
 
     trace: Dict[str, Any] = {
         "language": lang,
@@ -291,22 +327,58 @@ def chat(req: ChatRequest) -> ChatResponse:
         extra_step: Optional[Dict[str, str]] = None,
         slots: Optional[List[Dict[str, Any]]] = None,
         debug: Optional[Dict[str, Any]] = None,
+        adapt: bool = True,
     ) -> ChatResponse:
         if extra_step:
             steps.append(extra_step)
+        final = answer
+        final_provider = provider
+        # Demo fluency: always polish centre_facts; optionally other stiff templates
+        should_adapt = adapt and (
+            provider == "centre_facts"
+            or (SETTINGS.arbiter_adapt_extra and provider in _ADAPT_PROVIDERS)
+        )
+        if should_adapt:
+            polished = adapt_structured_fact(
+                message,
+                answer,
+                lang=lang,
+                history_context=history_context,
+                route=route_name,
+            )
+            if polished.get("adapted"):
+                final = polished["answer"]
+                final_provider = f"{provider}+llm"
+                steps.append(
+                    _step(
+                        "adapt",
+                        "LLM adapt fact card",
+                        "done",
+                        polished.get("provider") or "dashscope",
+                    )
+                )
+            else:
+                steps.append(
+                    _step(
+                        "adapt",
+                        "LLM adapt fact card",
+                        "skipped",
+                        polished.get("provider") or "passthrough",
+                    )
+                )
         steps.append(_step("rag", "RAG retrieve → generate", "skipped", route_name))
         trace["route"] = route_name
         trace["latency_ms"] = int((time.perf_counter() - t0) * 1000)
         resp = ChatResponse(
-            answer=answer,
+            answer=final,
             citations=citations,
-            provider=provider,
+            provider=final_provider,
             slots=slots,
             session_id=session_id,
             debug=debug or {},
             trace=trace,
         )
-        _persist_turn(session_id, message, answer, lang, use_history)
+        _persist_turn(session_id, message, final, lang, use_history)
         return resp
 
     # --- Deterministic / tool routes (scored intent) ---
@@ -474,7 +546,7 @@ def chat(req: ChatRequest) -> ChatResponse:
         )
 
     if route == "teachers":
-        answer, cites = centre_facts.format_teachers_answer(lang)
+        answer, cites = centre_facts.format_teachers_answer(lang, message=message)
         return _fact_response(
             route_name="teachers",
             answer=answer,
@@ -820,30 +892,37 @@ def chat(req: ChatRequest) -> ChatResponse:
             kids = fam.get("children") or []
             if len(kids) == 1:
                 todo_child = kids[0].get("child_name") or ""
-        # Don't leave parents with an off-topic FAQ dump.
-        # Never mention internal to-do sheets — invite a human hand-off instead.
+        # Demo bias: keep a useful model answer whenever we have one.
+        # Only soft-refuse when retrieval was empty — never overwrite a fluent reply
+        # just because lexical overlap looked weak.
         gap_reason = rag_debug.get("gap_reason") or ""
-        if gap_reason in {
-            "off_topic_retrieval",
-            "no_retrieval",
-            "weak_extractive",
-            "generic_fallback",
-        }:
+        low = answer.lower()
+        if "admin to-do" in low or "admin team" in low or "to-do list" in low:
+            answer = re.sub(
+                r"(?is)\n*.{0,40}(admin to-?do( list)?|admin team|to-?do list).*$",
+                "",
+                answer,
+            ).rstrip()
+        if gap_reason == "no_retrieval" and (
+            not answer.strip()
+            or "happy to help. based on what we usually share" in low
+        ):
             answer = (
-                "I don't have a solid answer for that in our centre materials yet. "
-                "If you'd like, ask to speak with our team and somebody will reach out "
+                "I’m not finding that in our centre materials yet. "
+                "If you’d like, ask to speak with our team and somebody will reach out "
                 "during working hours."
             )
-        else:
-            low = answer.lower()
-            if "admin to-do" in low or "admin team" in low or "to-do list" in low:
-                # Strip accidental internal wording from model output
-                answer = re.sub(
-                    r"(?is)\n*.{0,40}(admin to-?do( list)?|admin team|to-?do list).*$",
-                    "",
-                    answer,
-                ).rstrip()
-            if "reach out" not in answer.lower() and "working hours" not in answer.lower():
+        # Demo: polish awkward gap copy (don't stack a long trailer onto a good answer)
+        polished = demo_polish.polish_gap_reply(
+            message, answer, gap_reason=gap_reason, lang=lang
+        )
+        if polished.get("polished"):
+            answer = polished["answer"]
+            steps.append(
+                _step("gap_polish", "LLM polish gap reply", "done", polished.get("reason") or "ok")
+            )
+        elif gap_reason and "reach out" not in answer.lower() and "working hours" not in answer.lower():
+            if len(answer) < 280:
                 answer = (
                     answer.rstrip()
                     + "\n\nIf anything is still unclear, ask to speak with our team and "

@@ -69,6 +69,8 @@ CASES: List[Dict[str, Any]] = [
     {"id": "facilities", "cat": "faq", "msg": "What facilities does the centre have?"},
     {"id": "registration", "cat": "faq", "msg": "Is there a registration fee or deposit?"},
     {"id": "age_4", "cat": "faq", "msg": "What programmes do you recommend for a 4 year old?"},
+    {"id": "age_phonics5", "cat": "faq", "msg": "Do you offer phonics classes for 5 year olds?", "expect_any": ["phonic", "5"], "forbid_any": ["solid answer"]},
+    {"id": "teachers_ph", "cat": "facts", "msg": "which teachers do you have available to teach phonics?", "expect_route": "teachers", "expect_any": ["Avery"], "forbid_any": ["Wei Lin"]},
     {"id": "summer", "cat": "faq", "msg": "Do you run summer holiday courses?"},
     {"id": "private", "cat": "faq", "msg": "Do you offer private 1:1 classes and how much?"},
     # --- Edges / safety ---

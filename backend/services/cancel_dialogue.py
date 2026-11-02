@@ -123,13 +123,42 @@ def _detect_course(text: str) -> Optional[str]:
     return None
 
 
+def _detect_day_of_month(text: str) -> Optional[int]:
+    """Parse 'Tue 10', '10 Nov', 'Nov 10', 'the 10th' → day-of-month."""
+    t = text or ""
+    patterns = (
+        r"\b(?:mon|tue|wed|thu|fri|sat|sun)\w*\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b",
+        r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\b",
+        r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+(\d{1,2})(?:st|nd|rd|th)?\b",
+        r"\b(?:on\s+)?(?:the\s+)(\d{1,2})(?:st|nd|rd|th)\b",
+        r"\b(\d{1,2})(?:st|nd|rd|th)\b",
+    )
+    for pat in patterns:
+        m = re.search(pat, t, re.I)
+        if not m:
+            continue
+        day = int(m.group(1))
+        if 1 <= day <= 31:
+            return day
+    return None
+
+
 def _detect_index(text: str, n: int) -> Optional[int]:
-    m = re.search(r"\b(?:option\s*)?(\d{1,2})\b", text or "")
-    if m:
-        i = int(m.group(1)) - 1
-        if 0 <= i < n:
-            return i
-    # "the tuesday one" etc. left to course/weekday filters
+    """
+    Option picker only — never steal calendar day numbers from 'Tue 10' / '10 Nov'.
+    Accepts: '2', '2.', '#2', 'option 2', 'number 2'.
+    """
+    t = text or ""
+    m = re.search(r"\b(?:option|number|choice)\s*#?\s*(\d{1,2})\b", t, re.I)
+    if not m and _detect_day_of_month(t) is None:
+        m = re.fullmatch(r"\s*#?\s*(\d{1,2})\s*[.)]?\s*", t)
+        if not m:
+            m = re.search(r"^\s*(\d{1,2})\s*(please|thanks|thx)?\s*$", t, re.I)
+    if not m:
+        return None
+    i = int(m.group(1)) - 1
+    if 0 <= i < n:
+        return i
     return None
 
 
@@ -207,6 +236,18 @@ def _filter_targets(
                 continue
         out = filtered
     out = _filter_by_teacher(out, text)
+    day = _detect_day_of_month(text)
+    if day is not None:
+        by_day = []
+        for x in out:
+            try:
+                st = datetime.fromisoformat(str(x.get("slot_start") or ""))
+                if st.day == day:
+                    by_day.append(x)
+            except Exception:
+                continue
+        if by_day:
+            out = by_day
     # Match display fragment from message
     low = (text or "").lower()
     for token in re.findall(r"\b(\d{1,2}:\d{2})\b", low):
@@ -220,9 +261,11 @@ def _has_refining_signal(text: str) -> bool:
         return True
     if book_dlg._detect_weekday(text) is not None:  # noqa: SLF001
         return True
+    if _detect_day_of_month(text) is not None:
+        return True
     if _teacher_tokens(text):
         return True
-    if re.search(r"\b(?:option\s*)?\d{1,2}\b", text or ""):
+    if _detect_index(text, 8) is not None:
         return True
     if re.search(r"\b\d{1,2}:\d{2}\b", text or ""):
         return True
@@ -238,7 +281,9 @@ def _list_options_answer(child_name: str, pool: List[Dict[str, Any]], *, preface
         lines.append(
             f"{i}. {s['slot_display']} — {s['course_label']} · {s.get('teacher_name')}"
         )
-    lines.append("\nReply with a number, or name the course/day (e.g. “Tuesday phonics”).")
+    lines.append(
+        "\nReply with a number (e.g. **2**), or a date like **Tue 10** / **10 Nov**."
+    )
     return "\n".join(lines)
 
 
@@ -426,10 +471,19 @@ def handle_turn(
             "state": state,
         }
 
-    candidates = _filter_targets(upcoming, course_key=course, weekday=weekday, text=text)
-    idx = _detect_index(
-        text, len(state.get("candidates") or candidates or upcoming)
+    prior_pool = list(state.get("candidates") or [])
+    search_pool = prior_pool or upcoming
+    candidates = _filter_targets(
+        search_pool, course_key=course, weekday=weekday, text=text
     )
+    # If weekday+day wiped the list (e.g. "Tue 10" but only Wed/Thu booked),
+    # retry day-of-month alone against all upcoming — parents name the date they see.
+    if not candidates and _detect_day_of_month(text) is not None:
+        candidates = _filter_targets(
+            upcoming, course_key=course, weekday=None, text=text
+        )
+    refined = _has_refining_signal(text)
+    idx = _detect_index(text, len(prior_pool or candidates or upcoming))
 
     # Confirm path
     if state.get("stage") == "confirm" and state.get("selected"):
@@ -502,12 +556,27 @@ def handle_turn(
         }
 
     # Select by index from previous candidate list
-    if state.get("candidates") and idx is not None:
-        pool = state["candidates"]
-        if 0 <= idx < len(pool):
-            candidates = [pool[idx]]
+    if prior_pool and idx is not None:
+        if 0 <= idx < len(prior_pool):
+            candidates = [prior_pool[idx]]
 
-    if len(candidates) == 1 or (state.get("candidates") and idx is not None and candidates):
+    # Demo: cheap LLM pick when date/course refine still left 0 or many rows
+    if len(candidates) != 1 and (refined or state.get("stage") == "need_which"):
+        pick_pool = candidates if len(candidates) > 1 else (prior_pool or upcoming)
+        if pick_pool:
+            try:
+                from services import demo_polish
+
+                verdict = demo_polish.pick_cancel_candidate(text, pick_pool)
+                if verdict.get("action") == "pick" and verdict.get("index") is not None:
+                    i = int(verdict["index"])
+                    if 0 <= i < len(pick_pool):
+                        candidates = [pick_pool[i]]
+                        state["arbiter_pick"] = verdict
+            except Exception as e:
+                print(f"[CANCEL] pick arbiter failed: {e}", flush=True)
+
+    if len(candidates) == 1:
         sel = candidates[0]
         state["selected"] = sel
         state["stage"] = "confirm"
@@ -529,18 +598,38 @@ def handle_turn(
             "state": state,
         }
 
-    # Need clarification — list options
-    pool = candidates if candidates else upcoming
+    # Need clarification — never silently expand a failed refine back to "everything"
+    if candidates:
+        pool = candidates
+        preface = ""
+    elif refined and prior_pool:
+        pool = prior_pool
+        preface = (
+            f"I couldn’t match that to a listed session for **{child_name}**. "
+            "Which of these?"
+        )
+    elif refined:
+        pool = upcoming
+        preface = (
+            f"I don’t see a class matching that for **{child_name}**. "
+            "Here are their upcoming sessions — which one?"
+        )
+    else:
+        pool = upcoming
+        preface = ""
+
     state["candidates"] = pool[:8]
     state["stage"] = "need_which"
     save_state(session_id, state)
     return {
-        "answer": _list_options_answer(child_name, pool),
+        "answer": _list_options_answer(child_name, pool, preface=preface),
         "provider": "cancel_dialogue",
         "trace_cancel": {
             "stage": "need_which",
             "child_name": child_name,
             "options": len(pool),
+            "refined": refined,
+            "matched": len(candidates),
         },
         "state": state,
     }

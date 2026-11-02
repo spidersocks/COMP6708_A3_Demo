@@ -447,4 +447,36 @@ def decide_intent(
     if not cleaned:
         cleaned = {"rag": 0.5}
     route = _pick_route({k: v for k, v in cleaned.items() if k != "availability"})
+
+    # Cheap DashScope second look — demo fluency over rigid keyword locks
+    try:
+        from services import intent_arbiter
+
+        hist_preview = ""
+        if history:
+            bits = []
+            for turn in history[-4:]:
+                role = turn.get("role") or turn.get("speaker") or ""
+                content = turn.get("content") or turn.get("message") or ""
+                if content:
+                    bits.append(f"{role}: {content}")
+            hist_preview = "\n".join(bits)
+        verdict = intent_arbiter.review_intent(
+            message,
+            proposed_route=route,
+            scores=cleaned,
+            debug=debug,
+            history_preview=hist_preview,
+        )
+        debug["arbiter"] = verdict
+        if verdict.get("action") in {"rag", "reroute"} and verdict.get("route"):
+            new_route = str(verdict["route"])
+            if new_route != route:
+                debug["arbiter_override"] = {"from": route, "to": new_route}
+                cleaned = dict(cleaned)
+                cleaned[new_route] = max(float(cleaned.get(new_route) or 0), 0.99)
+                route = new_route
+    except Exception as e:
+        debug["arbiter"] = {"action": "keep", "route": route, "reason": f"error:{e}"}
+
     return IntentDecision(route, cleaned, debug)

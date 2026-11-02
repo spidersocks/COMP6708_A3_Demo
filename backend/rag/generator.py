@@ -204,6 +204,68 @@ def _extractive_fallback(
     return f"{body}{footer}"
 
 
+def adapt_structured_fact(
+    question: str,
+    fact_card: str,
+    *,
+    lang: str = "en",
+    history_context: Optional[str] = None,
+    route: str = "centre_facts",
+) -> Dict[str, Any]:
+    """
+    Demo-friendly rewrite: take a deterministic fact card and answer the actual
+    parent question naturally. Prefer a fluent reply over a rigid template dump.
+    """
+    card = (fact_card or "").strip()
+    out: Dict[str, Any] = {
+        "answer": card,
+        "provider": "passthrough",
+        "adapted": False,
+    }
+    if not card or not (question or "").strip():
+        return out
+    if not SETTINGS.has_dashscope:
+        return out
+
+    persona = PERSONA.get(lang, PERSONA["en"])
+    history_block = ""
+    if history_context and history_context.strip():
+        history_block = (
+            "Recent conversation (keep continuity):\n"
+            f"{history_context.strip()}\n\n"
+        )
+    prompt = (
+        f"{persona}\n\n"
+        "BrightNest is a COMP6708 live demo — sound like a sharp centre admin, "
+        "not a policy PDF. You are given a verified fact card.\n"
+        "Goals:\n"
+        "- Answer the parent's actual question first (narrow when they named a "
+        "programme, age, or detail).\n"
+        "- Stay faithful to the card for fees, names, IDs, and times you mention; "
+        "do not invent new published numbers or staff.\n"
+        "- Drop irrelevant roster/fee rows; add a short helpful next step when natural.\n"
+        "- Warm, spoken, concise. No template/meta talk. No [[ADMIN_GAP]] / NO_ANSWER.\n\n"
+        f"{history_block}"
+        f"Route: {route}\n\n"
+        f"Fact card:\n---\n{card}\n---\n\n"
+        f"Parent question: {question}\n\n"
+        "Reply:"
+    )
+    try:
+        raw = _dashscope_generation_http(prompt)
+        meta = sanitize_answer_meta(raw, lang)
+        adapted = (meta.get("answer") or "").strip()
+        if not adapted or meta.get("used_fallback") or len(adapted) < 20:
+            return out
+        out["answer"] = adapted
+        out["provider"] = "dashscope"
+        out["adapted"] = True
+        return out
+    except Exception as e:
+        print(f"[GEN] adapt_structured_fact failed ({e}); raw card.", flush=True)
+        return out
+
+
 def generate_answer(
     question: str,
     contexts: List[Dict[str, Any]],

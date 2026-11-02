@@ -77,6 +77,18 @@ def test_change_teachers_not_roster():
     assert _route("Can we change teachers mid-term?") != "teachers"
 
 
+def test_phonics_teachers_filtered_not_full_roster():
+    from services import centre_facts
+
+    answer, _ = centre_facts.format_teachers_answer(
+        "en", message="which teachers do you have available to teach phonics?"
+    )
+    low = answer.lower()
+    assert "avery" in low or "jordan" in low
+    assert "wei lin" not in low  # Mandarin lead — not a phonics-tagged dump
+    assert "sofia" not in low
+
+
 def test_weather_beats_hours_in_scores():
     scores, debug = score_intents(
         "Are you open during T8?", lang="en", session_id="t"

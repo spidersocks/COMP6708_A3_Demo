@@ -482,6 +482,29 @@ def handle_turn(
     course = _detect_course(text)
     teacher = _detect_teacher(text)
     when_bits = _parse_when(text)
+    # Demo: cheap LLM fill-in when regex missed course / when / teacher
+    if not course or not when_bits or not teacher:
+        try:
+            from services import demo_polish
+
+            hints = demo_polish.parse_booking_hints(text)
+            if hints.get("ok"):
+                state["arbiter_booking"] = hints
+                if not course and hints.get("course_key"):
+                    course = hints["course_key"]
+                if not when_bits:
+                    soft_when: Dict[str, Any] = {}
+                    if hints.get("window"):
+                        soft_when["window"] = hints["window"]
+                    if hints.get("weekday") is not None:
+                        soft_when["weekday"] = hints["weekday"]
+                    if soft_when:
+                        when_bits = soft_when
+                if not teacher and hints.get("teacher_hint"):
+                    # Map free-text hint through existing teacher detector if possible
+                    teacher = _detect_teacher(str(hints["teacher_hint"])) or teacher
+        except Exception as e:
+            print(f"[BOOKING] parse arbiter failed: {e}", flush=True)
     if course:
         state["course_key"] = course
     if teacher:

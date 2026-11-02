@@ -47,6 +47,36 @@ class Settings:
     gen_max_tokens: int = int(os.environ.get("GEN_MAX_TOKENS", "500"))
     gen_temperature: float = float(os.environ.get("GEN_TEMPERATURE", "0.3"))
 
+    # Cheap DashScope demo arbiters (turbo). Master switch + per-use toggles.
+    intent_arbiter_enabled: bool = os.environ.get("INTENT_ARBITER_ENABLED", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    intent_arbiter_model: str = os.environ.get("INTENT_ARBITER_MODEL", "qwen-turbo")
+    intent_arbiter_timeout_s: float = float(os.environ.get("INTENT_ARBITER_TIMEOUT_S", "6"))
+    # Extra demo polish paths (still gated by intent_arbiter_enabled + DashScope key)
+    arbiter_adapt_extra: bool = os.environ.get("ARBITER_ADAPT_EXTRA", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    arbiter_gap_rewrite: bool = os.environ.get("ARBITER_GAP_REWRITE", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    arbiter_cancel_pick: bool = os.environ.get("ARBITER_CANCEL_PICK", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    arbiter_booking_parse: bool = os.environ.get("ARBITER_BOOKING_PARSE", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
     # Multi-turn memory (~5 user/bot turns ≈ 10 messages)
     chat_history_enabled: bool = os.environ.get("CHAT_HISTORY_ENABLED", "true").lower() in (
         "1",

@@ -587,18 +587,68 @@ def format_payment_answer(lang: str = "en") -> Tuple[str, List[Dict[str, Any]]]:
     return answer, cites
 
 
-def format_teachers_answer(lang: str = "en") -> Tuple[str, List[Dict[str, Any]]]:
+def _detect_programme_focus(message: str) -> Optional[str]:
+    """Programme named in a teachers/fees ask — skip trial/private (not roster keys)."""
+    focus = _detect_fee_focus(message)
+    if focus in {None, "trial", "private"}:
+        return None
+    return focus
+
+
+def format_teachers_answer(
+    lang: str = "en", message: str = ""
+) -> Tuple[str, List[Dict[str, Any]]]:
     t = _ops()["teachers"]
     bucket = _lang_bucket(lang)
     cites = [
         {"source": "data/facts/centre_ops.json", "title": "Teachers"},
+        {"source": "data/sheets/teachers.csv", "title": "Teacher register"},
         {"source": "institution/teachers", "title": "Our Teachers"},
     ]
+    programme = _detect_programme_focus(message)
+    if programme:
+        # Prefer live register rows tagged with that course (not the full highlight dump)
+        from services import booking as booking_svc  # local import avoids cycles
+
+        matched = [
+            teach
+            for teach in booking_svc.list_teachers()
+            if programme in (teach.get("courses") or [])
+        ]
+        label = {
+            "phonics": "Phonics",
+            "mandarin": "Mandarin",
+            "writing": "Writing",
+            "playgroup": "Playgroup",
+            "math": "Early Math",
+        }.get(programme, programme.title())
+        if matched:
+            bullets = "\n".join(
+                f"- **{teach['name']}** — {teach.get('role') or label}"
+                f"{(' · ' + teach['room_default']) if teach.get('room_default') else ''}"
+                for teach in matched
+            )
+            if bucket.startswith("zh"):
+                answer = (
+                    f"而家 **{label}** 相關導師（行政班表）：\n{bullets}\n\n"
+                    f"想睇邊位有空堂，可以問「show {programme} availability」。"
+                )
+            else:
+                answer = (
+                    f"Teachers currently tagged for **{label}** on the centre register:\n"
+                    f"{bullets}\n\n"
+                    f"Ask “show {programme} availability” if you’d like open seats and who is teaching them."
+                )
+            return answer, cites
+
     bullets = "\n".join(f"- {h}" for h in t["highlights"])
     if bucket.startswith("zh"):
         answer = f"我哋嘅老師都係雙語幼教／小學經驗導師，並完成校內 safeguarding 培訓。\n{bullets}"
     else:
-        answer = f"{t['summary']}\n{bullets}\n\nAsk for a programme’s availability if you’d like to see who is teaching open seats."
+        answer = (
+            f"{t['summary']}\n{bullets}\n\n"
+            "Ask for a programme’s availability if you’d like to see who is teaching open seats."
+        )
     return answer, cites
 
 
