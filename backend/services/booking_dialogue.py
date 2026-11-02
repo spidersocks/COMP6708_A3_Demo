@@ -488,8 +488,8 @@ def handle_turn(
             from services import demo_polish
 
             hints = demo_polish.parse_booking_hints(text)
+            state["arbiter_booking"] = hints
             if hints.get("ok"):
-                state["arbiter_booking"] = hints
                 if not course and hints.get("course_key"):
                     course = hints["course_key"]
                 if not when_bits:

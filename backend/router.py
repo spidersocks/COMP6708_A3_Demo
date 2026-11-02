@@ -39,17 +39,12 @@ from services import families
 from services import intent_router
 from services import staff_messages
 
-# Demo: polish these canned providers with adapt_structured_fact (not just centre_facts)
+# Extra canned providers that get a main-LLM fact rewrite (centre_facts always does).
+# Keep this short — soft refuses / greetings stay template-clean for the demo.
 _ADAPT_PROVIDERS = {
-    "centre_facts",
     "deterministic_opening_hours",
     "unsupported_facility",
-    "unknown_programme",
-    "staff_escalation",
     "booking_tool",
-    "greeting",
-    "confused",
-    "off_domain",
 }
 
 router = APIRouter()
@@ -170,6 +165,48 @@ def _step(step_id: str, label: str, status: str, detail: str = "") -> Dict[str, 
     return {"id": step_id, "label": label, "status": status, "detail": detail}
 
 
+def _llm_trace_summary(
+    routing_debug: Dict[str, Any],
+    steps: List[Dict[str, str]],
+    answer_provider: str,
+) -> Dict[str, Any]:
+    """Compact inspector payload: what the cheap vs main model did this turn."""
+    arb = (routing_debug or {}).get("arbiter") or {}
+    uses: List[str] = []
+    for s in steps:
+        if s.get("status") != "done":
+            continue
+        sid = s.get("id") or ""
+        if sid == "intent_arbiter":
+            uses.append("intent_review")
+        elif sid == "gap_polish":
+            uses.append("gap_polish")
+        elif sid == "cancel_pick":
+            uses.append("cancel_pick")
+        elif sid == "booking_parse":
+            uses.append("booking_parse")
+        elif sid == "adapt":
+            uses.append("fact_rewrite")
+    cheap_called = bool(arb.get("called")) or any(
+        s.get("id") in {"gap_polish", "cancel_pick", "booking_parse"}
+        and s.get("status") in {"done", "error"}
+        for s in steps
+    )
+    cheap_model = arb.get("model") or (
+        SETTINGS.intent_arbiter_model if cheap_called else None
+    )
+    return {
+        "answer_provider": answer_provider,
+        "main_model": SETTINGS.llm_model,
+        "cheap_model": cheap_model,
+        "cheap_called": cheap_called,
+        "uses": uses,
+        "same_workspace_model": bool(
+            SETTINGS.llm_model and cheap_model and cheap_model == SETTINGS.llm_model
+        ),
+    }
+
+
 @router.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
     t0 = time.perf_counter()
@@ -262,24 +299,31 @@ def chat(req: ChatRequest) -> ChatResponse:
     arb = (decision.debug or {}).get("arbiter") or {}
     if arb:
         override = (decision.debug or {}).get("arbiter_override")
+        called = bool(arb.get("called"))
+        reason = str(arb.get("reason") or "")
+        if not called or reason == "skipped":
+            arb_status = "skipped"
+        elif reason.startswith("error") or reason in {"llm_empty", "parse_fail"}:
+            arb_status = "error"
+        else:
+            arb_status = "done"
         if override:
-            steps.append(
-                _step(
-                    "intent_arbiter",
-                    "LLM intent review",
-                    "done",
-                    f"{override.get('from')} → {override.get('to')} · {arb.get('reason') or arb.get('action')}",
-                )
+            detail = (
+                f"{override.get('from')} → {override.get('to')} · "
+                f"{arb.get('reason') or arb.get('action')}"
             )
         else:
-            steps.append(
-                _step(
-                    "intent_arbiter",
-                    "LLM intent review",
-                    "done" if arb.get("action") == "keep" else "skipped",
-                    f"{arb.get('action') or 'keep'} · {arb.get('reason') or 'n/a'}",
-                )
+            detail = f"{arb.get('action') or 'keep'} · {arb.get('reason') or 'n/a'}"
+            if arb.get("model"):
+                detail = f"{detail} · {arb['model']}"
+        steps.append(
+            _step(
+                "intent_arbiter",
+                "Cheap LLM intent review",
+                arb_status,
+                detail,
             )
+        )
 
     trace: Dict[str, Any] = {
         "language": lang,
@@ -352,23 +396,32 @@ def chat(req: ChatRequest) -> ChatResponse:
                 steps.append(
                     _step(
                         "adapt",
-                        "LLM adapt fact card",
+                        "Main LLM fact rewrite",
                         "done",
-                        polished.get("provider") or "dashscope",
+                        f"{SETTINGS.llm_model} · {polished.get('provider') or 'dashscope'}",
                     )
                 )
             else:
                 steps.append(
                     _step(
                         "adapt",
-                        "LLM adapt fact card",
+                        "Main LLM fact rewrite",
                         "skipped",
                         polished.get("provider") or "passthrough",
                     )
                 )
         steps.append(_step("rag", "RAG retrieve → generate", "skipped", route_name))
         trace["route"] = route_name
+        trace["provider"] = final_provider
+        trace["answer_provider"] = final_provider
+        trace["llm"] = _llm_trace_summary(decision.debug or {}, steps, final_provider)
         trace["latency_ms"] = int((time.perf_counter() - t0) * 1000)
+        # Surface dialogue traces the inspector reads from `trace`, not only `debug`
+        dbg = debug or {}
+        if dbg.get("cancel") and "cancel" not in trace:
+            trace["cancel"] = dbg["cancel"]
+        if dbg.get("dialogue") and "booking" not in trace:
+            trace["booking"] = dbg["dialogue"]
         resp = ChatResponse(
             answer=final,
             citations=citations,
@@ -696,7 +749,29 @@ def chat(req: ChatRequest) -> ChatResponse:
             lang=lang,
         )
         answer = result["answer"]
-        tc = result.get("trace_cancel") or {}
+        tc = dict(result.get("trace_cancel") or {})
+        st = result.get("state") or {}
+        if st.get("arbiter_pick") and "arbiter_pick" not in tc:
+            tc["arbiter_pick"] = st["arbiter_pick"]
+        pick = tc.get("arbiter_pick")
+        extra_steps = [
+            _step(
+                "cancel_dialogue",
+                "Cancel session dialogue",
+                "done",
+                tc.get("stage") or "turn",
+            )
+        ]
+        if pick and pick.get("called"):
+            steps.append(
+                _step(
+                    "cancel_pick",
+                    "Cheap LLM cancel pick",
+                    "done" if pick.get("action") == "pick" else "skipped",
+                    f"{pick.get('action')} · {pick.get('reason') or 'n/a'}"
+                    + (f" · {pick.get('model')}" if pick.get("model") else ""),
+                )
+            )
         return _fact_response(
             route_name="cancel_dialogue",
             answer=answer,
@@ -705,13 +780,9 @@ def chat(req: ChatRequest) -> ChatResponse:
                 {"source": "services/cancellations", "title": "Cancellations sheet"},
             ],
             provider="cancel_dialogue",
-            extra_step=_step(
-                "cancel_dialogue",
-                "Cancel session dialogue",
-                "done",
-                tc.get("stage") or "turn",
-            ),
+            extra_step=extra_steps[0],
             debug={"cancel": tc},
+            adapt=False,
         )
 
     if route == "booking_dialogue":
@@ -736,6 +807,31 @@ def chat(req: ChatRequest) -> ChatResponse:
             trace["booking"] = tb
             route = "rag"
         else:
+            tb = dict(tb)
+            st = result.get("state") or {}
+            if st.get("arbiter_booking") and "arbiter_booking" not in tb:
+                tb["arbiter_booking"] = st["arbiter_booking"]
+            hints = tb.get("arbiter_booking")
+            if hints and hints.get("called"):
+                if hints.get("ok"):
+                    bp_status = "done"
+                    bp_detail = f"ok · conf={hints.get('confidence')}"
+                elif hints.get("reason") == "parse_fail":
+                    bp_status = "error"
+                    bp_detail = "parse_fail"
+                else:
+                    bp_status = "skipped"
+                    bp_detail = f"no_fill · conf={hints.get('confidence')}"
+                if hints.get("model"):
+                    bp_detail = f"{bp_detail} · {hints['model']}"
+                steps.append(
+                    _step(
+                        "booking_parse",
+                        "Cheap LLM booking parse",
+                        bp_status,
+                        bp_detail,
+                    )
+                )
             return _fact_response(
                 route_name="booking_dialogue",
                 answer=result["answer"],
@@ -752,6 +848,7 @@ def chat(req: ChatRequest) -> ChatResponse:
                 ),
                 slots=result.get("slots"),
                 debug={"dialogue": tb},
+                adapt=False,
             )
 
     if route == "booking_tool":
@@ -822,7 +919,10 @@ def chat(req: ChatRequest) -> ChatResponse:
         )
         steps.append(_step("rag", "RAG retrieve → generate", "skipped", "unknown programme"))
         trace["route"] = "unknown_programme"
+        trace["provider"] = "unknown_programme"
+        trace["answer_provider"] = "unknown_programme"
         trace["admin_todo"] = admin_todo
+        trace["llm"] = _llm_trace_summary(decision.debug or {}, steps, "unknown_programme")
         trace["latency_ms"] = int((time.perf_counter() - t0) * 1000)
         resp = ChatResponse(
             answer=answer,
@@ -917,17 +1017,29 @@ def chat(req: ChatRequest) -> ChatResponse:
             message, answer, gap_reason=gap_reason, lang=lang
         )
         if polished.get("polished"):
+            gap_status = "done"
             answer = polished["answer"]
-            steps.append(
-                _step("gap_polish", "LLM polish gap reply", "done", polished.get("reason") or "ok")
+        elif polished.get("called") and polished.get("reason") in {"empty", "parse_fail"}:
+            gap_status = "error"
+        else:
+            gap_status = "skipped"
+        steps.append(
+            _step(
+                "gap_polish",
+                "Cheap LLM gap polish",
+                gap_status,
+                f"{polished.get('reason') or 'skipped'}"
+                + (f" · {polished.get('model')}" if polished.get("model") else ""),
             )
-        elif gap_reason and "reach out" not in answer.lower() and "working hours" not in answer.lower():
-            if len(answer) < 280:
-                answer = (
-                    answer.rstrip()
-                    + "\n\nIf anything is still unclear, ask to speak with our team and "
-                    "somebody will reach out during working hours."
-                )
+        )
+        if not polished.get("polished"):
+            if gap_reason and "reach out" not in answer.lower() and "working hours" not in answer.lower():
+                if len(answer) < 280:
+                    answer = (
+                        answer.rstrip()
+                        + "\n\nIf anything is still unclear, ask to speak with our team and "
+                        "somebody will reach out during working hours."
+                    )
         admin_todo = admin_todos.add_todo(
             question=message,
             reply=answer,
@@ -950,13 +1062,19 @@ def chat(req: ChatRequest) -> ChatResponse:
         )
         trace["admin_todo"] = admin_todo
 
+    rag_provider = result.get("provider") or "rag"
+    if any(s.get("id") == "gap_polish" and s.get("status") == "done" for s in steps):
+        rag_provider = f"{rag_provider}+llm"
     trace["route"] = "rag"
     trace["rag"] = rag_debug
+    trace["provider"] = rag_provider
+    trace["answer_provider"] = rag_provider
+    trace["llm"] = _llm_trace_summary(decision.debug or {}, steps, rag_provider)
     trace["latency_ms"] = int((time.perf_counter() - t0) * 1000)
     resp = ChatResponse(
         answer=answer,
         citations=result.get("citations") or [],
-        provider=result.get("provider"),
+        provider=rag_provider,
         session_id=session_id,
         debug=rag_debug,
         trace=trace,

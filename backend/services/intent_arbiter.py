@@ -119,15 +119,17 @@ def review_intent(
         "route": proposed_route,
         "reason": "skipped",
         "raw": "",
+        "called": False,
     }
     if not should_review(proposed_route, debug=debug):
         return out
 
+    # Demo-safe: referee may only KEEP the proposed route or send to RAG
+    # (never jump to an unrelated tool like cancel/booking).
     soft_only = proposed_route in _RAG_OR_KEEP
-    if soft_only:
-        allowed = sorted({proposed_route, "rag"})
-    else:
-        allowed = sorted((_REVIEWABLE | {"rag"} | {proposed_route}) - {"staff_escalation"})
+    allowed = sorted({proposed_route, "rag"})
+    out["called"] = True
+    out["model"] = cheap_llm.arbiter_model()
     score_block = "\n".join(_top_scores(scores)) or f"- {proposed_route}"
     hist = (history_preview or "").strip()
     hist_block = f"\nRecent chat:\n{hist[-500:]}\n" if hist else ""
@@ -153,10 +155,10 @@ def review_intent(
         "Prefer KEEP when the proposed route can answer well (including filtered fact cards).\n"
         "Choose RAG when the question needs narrative KB detail, age×course fit, curriculum, "
         "or the keyword match is incidental (e.g. 'teachers' in a policy question).\n"
-        "Choose REROUTE only to one of the allowed routes below.\n"
+        "Do NOT invent other routes — only keep the proposed route or send to rag.\n"
         f"{soft_note}"
         "Reply with ONE JSON object only, no markdown:\n"
-        '{"action":"keep"|"rag"|"reroute","route":"<route_id>","reason":"<short>"}\n\n'
+        '{"action":"keep"|"rag","route":"<route_id>","reason":"<short>"}\n\n'
         f"Proposed route: {proposed_route} — {_ROUTE_BLURBS.get(proposed_route, '')}\n"
         f"Matcher notes: {hints}\n"
         f"Top scores:\n{score_block}\n"
@@ -173,24 +175,20 @@ def review_intent(
         )
         if not parsed:
             out["reason"] = "llm_empty"
-            out["model"] = cheap_llm.arbiter_model()
             return out
         out["raw"] = str(parsed)
-        out["model"] = cheap_llm.arbiter_model()
         action = str(parsed.get("action") or "keep").strip().lower()
         route = str(parsed.get("route") or proposed_route).strip()
         reason = str(parsed.get("reason") or "").strip()[:160]
         if action == "keep":
             out.update({"action": "keep", "route": proposed_route, "reason": reason or "keep"})
             return out
-        if action == "rag":
+        if action == "rag" or (action == "reroute" and route == "rag"):
             out.update({"action": "rag", "route": "rag", "reason": reason or "send_to_rag"})
             return out
-        if soft_only:
-            out["reason"] = f"soft_blocked:{action}"
-            return out
-        if action == "reroute" and route in allowed:
-            out.update({"action": "reroute", "route": route, "reason": reason or f"reroute:{route}"})
+        # Treat legacy "reroute" to the same proposed route as keep
+        if action == "reroute" and route == proposed_route:
+            out.update({"action": "keep", "route": proposed_route, "reason": reason or "keep"})
             return out
         out["reason"] = f"invalid_action:{action}"
         return out

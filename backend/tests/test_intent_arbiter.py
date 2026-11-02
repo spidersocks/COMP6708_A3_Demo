@@ -44,3 +44,4 @@ def test_review_reroutes_to_rag(monkeypatch):
         )
     assert out["action"] == "rag"
     assert out["route"] == "rag"
+    assert out["called"] is True

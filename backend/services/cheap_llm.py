@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any, Dict, Optional
 
 import httpx
@@ -72,6 +73,7 @@ def complete_text(
             "max_tokens": max_tokens,
         },
     }
+    t0 = time.perf_counter()
     try:
         with httpx.Client(timeout=SETTINGS.intent_arbiter_timeout_s) as client:
             resp = client.post(url, headers=auth_headers(), json=payload)
@@ -91,7 +93,14 @@ def complete_text(
                 flush=True,
             )
             return None
-        return _extract_text(data) or None
+        text = _extract_text(data) or None
+        ms = int((time.perf_counter() - t0) * 1000)
+        print(
+            f"[CHEAP_LLM] ok model={model} multimodal={multimodal} "
+            f"tokens≤{max_tokens} {ms}ms",
+            flush=True,
+        )
+        return text
     except Exception as e:
         print(f"[CHEAP_LLM] failed: {e}", flush=True)
         return None

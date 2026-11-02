@@ -15,9 +15,16 @@ def polish_gap_reply(
     lang: str = "en",
 ) -> Dict[str, Any]:
     """Turn awkward soft-refuses into a fluent parent reply; keep substance when present."""
-    out = {"answer": draft, "polished": False, "reason": "skipped"}
+    out: Dict[str, Any] = {
+        "answer": draft,
+        "polished": False,
+        "reason": "skipped",
+        "called": False,
+        "model": cheap_llm.arbiter_model() if cheap_llm.enabled() else None,
+    }
     if not SETTINGS.arbiter_gap_rewrite or not cheap_llm.enabled():
         return out
+    out["called"] = True
     prompt = (
         "BrightNest COMP6708 live demo — rewrite the draft parent reply so it sounds "
         "like a sharp centre admin, not a broken bot.\n"
@@ -60,11 +67,14 @@ def pick_cancel_candidate(
         "action": "none",
         "index": None,
         "reason": "skipped",
+        "called": False,
+        "model": cheap_llm.arbiter_model() if cheap_llm.enabled() else None,
     }
     if not SETTINGS.arbiter_cancel_pick or not cheap_llm.enabled():
         return out
     if not candidates:
         return out
+    out["called"] = True
     lines = []
     for i, c in enumerate(candidates[:8], 1):
         lines.append(
@@ -88,11 +98,12 @@ def pick_cancel_candidate(
         idx1 = int(idx_raw) if idx_raw is not None else None
     except (TypeError, ValueError):
         idx1 = None
+    base = {"called": True, "model": out["model"]}
     if action == "pick" and idx1 is not None and 1 <= idx1 <= len(candidates):
-        return {"action": "pick", "index": idx1 - 1, "reason": reason or "pick"}
+        return {**base, "action": "pick", "index": idx1 - 1, "reason": reason or "pick"}
     if action == "ambiguous":
-        return {"action": "ambiguous", "index": None, "reason": reason or "ambiguous"}
-    return {"action": "none", "index": None, "reason": reason or "none"}
+        return {**base, "action": "ambiguous", "index": None, "reason": reason or "ambiguous"}
+    return {**base, "action": "none", "index": None, "reason": reason or "none"}
 
 
 def parse_booking_hints(message: str) -> Dict[str, Any]:
@@ -100,7 +111,11 @@ def parse_booking_hints(message: str) -> Dict[str, Any]:
     Soft extract course / weekday / window from a booking clarify utterance.
     Returns keys among: course_key, weekday (0=Mon), window, teacher_hint, confidence.
     """
-    empty: Dict[str, Any] = {"ok": False}
+    empty: Dict[str, Any] = {
+        "ok": False,
+        "called": False,
+        "model": cheap_llm.arbiter_model() if cheap_llm.enabled() else None,
+    }
     if not SETTINGS.arbiter_booking_parse or not cheap_llm.enabled():
         return empty
     prompt = (
@@ -114,7 +129,7 @@ def parse_booking_hints(message: str) -> Dict[str, Any]:
     )
     parsed = cheap_llm.complete_json(prompt, max_tokens=80)
     if not parsed:
-        return empty
+        return {**empty, "called": True, "reason": "parse_fail"}
     allowed_courses = {"phonics", "mandarin", "writing", "playgroup", "math", "trial"}
     course = parsed.get("course_key")
     if course not in allowed_courses:
@@ -137,12 +152,20 @@ def parse_booking_hints(message: str) -> Dict[str, Any]:
     except (TypeError, ValueError):
         conf = 0.0
     if not any([course, weekday_i is not None, window, teacher]) or conf < 0.45:
-        return {"ok": False, "confidence": conf}
+        return {
+            "ok": False,
+            "called": True,
+            "confidence": conf,
+            "model": empty["model"],
+            "reason": "low_confidence",
+        }
     return {
         "ok": True,
+        "called": True,
         "course_key": course,
         "weekday": weekday_i,
         "window": window,
         "teacher_hint": teacher,
         "confidence": conf,
+        "model": empty["model"],
     }

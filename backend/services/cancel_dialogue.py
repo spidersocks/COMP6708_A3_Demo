@@ -568,11 +568,11 @@ def handle_turn(
                 from services import demo_polish
 
                 verdict = demo_polish.pick_cancel_candidate(text, pick_pool)
+                state["arbiter_pick"] = verdict
                 if verdict.get("action") == "pick" and verdict.get("index") is not None:
                     i = int(verdict["index"])
                     if 0 <= i < len(pick_pool):
                         candidates = [pick_pool[i]]
-                        state["arbiter_pick"] = verdict
             except Exception as e:
                 print(f"[CANCEL] pick arbiter failed: {e}", flush=True)
 
@@ -594,6 +594,7 @@ def handle_turn(
                 "stage": "confirm",
                 "child_name": child_name,
                 "selected": sel,
+                "arbiter_pick": state.get("arbiter_pick"),
             },
             "state": state,
         }
@@ -630,6 +631,7 @@ def handle_turn(
             "options": len(pool),
             "refined": refined,
             "matched": len(candidates),
+            "arbiter_pick": state.get("arbiter_pick"),
         },
         "state": state,
     }
