@@ -5,6 +5,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from config import SETTINGS
+from rag.chunking import parse_markdown
 from rag.embeddings import embed_query
 from rag.generator import generate_answer_meta
 from rag.ingest import ingest
@@ -101,9 +102,21 @@ _GREETING_RE = re.compile(
 
 
 def _content_tokens(text: str) -> set[str]:
-    # Latin words ≥3; CJK runs ≥2 (港鐵, 候補, etc.)
-    toks = re.findall(r"[A-Za-z]{3,}|[\u4e00-\u9fff]{2,}", (text or "").lower())
-    return {t for t in toks if t not in _STOP}
+    # Latin words ≥3; age digits; CJK runs ≥2 (港鐵, 候補, etc.)
+    # Digits matter for “5 year old” ↔ age_4-5 / age_5-6 FAQ grounding.
+    toks = re.findall(r"[A-Za-z]{3,}|[\u4e00-\u9fff]{2,}|\d{1,2}", (text or "").lower())
+    out: set[str] = set()
+    for t in toks:
+        if t in _STOP:
+            continue
+        if t in ("years", "year", "yrs", "yr"):
+            out.add("year")
+            continue
+        if t in ("olds", "old"):
+            out.add("old")
+            continue
+        out.add(t)
+    return out
 
 
 def _hit_blob(hit: Dict[str, Any]) -> str:
@@ -143,7 +156,22 @@ _FOLDER_PRIORS = [
     (re.compile(r"\b(bilingual|classroom\s+language)\b|雙語|双语", re.I), "faq"),
     (re.compile(r"\b(christmas|cny|holiday\s+hours|term\s+break)\b|聖誕|平安夜|農曆", re.I), "faq"),
     (re.compile(r"\b(pets?|dogs?|cats?)\b|寵物|宠物", re.I), "policies"),
+    (
+        re.compile(
+            r"\b\d{1,2}\s*(?:-\s*\d{1,2}\s*)?(?:year|yr)s?\s*old|"
+            r"\b(?:for|age[d]?)\s+\d{1,2}\b|"
+            r"\b(?:K[1-3]|PN|P[1-6])\b|歲|岁",
+            re.I,
+        ),
+        "faq",
+    ),
 ]
+_AGE_QUERY_RE = re.compile(
+    r"\b(\d{1,2})\s*(?:-\s*\d{1,2}\s*)?(?:year|yr)s?\s*old|"
+    r"\b(?:for|age[d]?)\s+(\d{1,2})\b|"
+    r"(\d{1,2})\s*(?:year|yr)s?\b",
+    re.I,
+)
 
 
 def _preferred_folder(question: str) -> Optional[str]:
@@ -199,6 +227,13 @@ def retrieve(
     )
 
 
+def _query_age_digits(question: str) -> set[str]:
+    digits: set[str] = set()
+    for m in _AGE_QUERY_RE.finditer(question or ""):
+        digits.update(g for g in m.groups() if g)
+    return digits
+
+
 def _lexical_rerank(question: str, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Prefer path/alias keyword hits, folder prior + token overlap, then score."""
     q = _content_tokens(question)
@@ -206,6 +241,7 @@ def _lexical_rerank(question: str, hits: List[Dict[str, Any]]) -> List[Dict[str,
         return hits
     prefer = _preferred_folder(question)
     q_low = (question or "").lower()
+    age_digits = _query_age_digits(question)
 
     def key(h: Dict[str, Any]) -> tuple:
         meta = h.get("metadata") or {}
@@ -229,11 +265,21 @@ def _lexical_rerank(question: str, hits: List[Dict[str, Any]]) -> List[Dict[str,
             "term_break",
             "pets",
             "trial",
+            "phonics",
+            "pinyin",
+            "clevercal",
         ):
             if stem in q_low.replace(" ", "") or stem in q_low:
                 if stem in source or stem in blob_low:
                     path_hit = 1
                     break
+        age_hit = 0
+        # Match age digits against the filename only — body text often mentions
+        # broader ranges like "2–5 yrs" and would falsely promote age_3-4 for "5".
+        if age_digits and ("/age/" in source or "age_" in source):
+            src_digits = set(re.findall(r"\d{1,2}", source))
+            if age_digits & src_digits:
+                age_hit = 1
         folder_hit = 0
         if prefer and (prefer in source or prefer == folder):
             folder_hit = 1
@@ -241,9 +287,89 @@ def _lexical_rerank(question: str, hits: List[Dict[str, Any]]) -> List[Dict[str,
             score = float(h.get("score") or 0)
         except (TypeError, ValueError):
             score = 0.0
-        return (path_hit, folder_hit, overlap, score)
+        return (age_hit, path_hit, folder_hit, overlap, score)
 
     return sorted(hits, key=key, reverse=True)
+
+
+def _age_path_digits(stem: str) -> set[str]:
+    """Filename digits for age_4-5_k2 / age_5-6_k3 (ignore month-only stems)."""
+    m = re.search(r"age_(\d+)-(\d+)", stem or "", re.I)
+    if m:
+        return {m.group(1), m.group(2)}
+    m = re.search(r"age_(\d+)m-(\d+)", stem or "", re.I)
+    if m:
+        # e.g. age_28m-3y → treat as ages around 2–3
+        return {m.group(2)}
+    return set()
+
+
+def _age_faq_overlay(question: str, lang: str) -> List[Dict[str, Any]]:
+    """
+    Local-hash embeddings often miss the right age band FAQ entirely.
+    When the parent names an age, inject matching faq/age/*.md as grounded hits.
+    """
+    digits = _query_age_digits(question)
+    if not digits:
+        return []
+    lang_key = (lang or "en").split("-")[0]
+    candidates = [
+        SETTINGS.content_dir / lang / "faq" / "age",
+        SETTINGS.content_dir / lang_key / "faq" / "age",
+        SETTINGS.content_dir / "en" / "faq" / "age",
+    ]
+    age_dir = next((p for p in candidates if p.exists()), None)
+    if not age_dir:
+        return []
+    out: List[Dict[str, Any]] = []
+    for path in sorted(age_dir.glob("age_*.md")):
+        file_digits = _age_path_digits(path.stem)
+        if not (digits & file_digits):
+            continue
+        meta, body = parse_markdown(path)
+        if not body:
+            continue
+        try:
+            rel = str(path.relative_to(SETTINGS.content_dir)).replace("\\", "/")
+        except ValueError:
+            rel = path.name
+        title = None
+        for line in body.splitlines():
+            if line.startswith("#"):
+                title = line.lstrip("#").strip()
+                break
+        out.append(
+            {
+                "id": f"age-overlay::{rel}",
+                "text": body[:1200],
+                "metadata": {
+                    "source": rel,
+                    "title": title or meta.get("canonical") or path.stem,
+                    "canonical": meta.get("canonical"),
+                    "folder": meta.get("folder") or "faq",
+                    "aliases": meta.get("aliases") or "",
+                    "language": meta.get("language") or lang,
+                },
+                # Strong enough to clear local weak-score / citation theatre
+                "score": 0.62,
+            }
+        )
+    return out
+
+
+def _merge_hits(
+    primary: List[Dict[str, Any]], extra: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    seen: set[str] = set()
+    merged: List[Dict[str, Any]] = []
+    for h in list(extra) + list(primary):
+        meta = h.get("metadata") or {}
+        key = str(meta.get("source") or h.get("id") or "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(h)
+    return merged
 
 
 def chat_with_rag(
@@ -255,12 +381,16 @@ def chat_with_rag(
 ) -> Dict[str, Any]:
     lang = language or "en"
     lang_fallback = False
-    hits = retrieve(message, lang=lang)
+    age_ask = bool(_query_age_digits(message))
+    # Age/course questions need a wider vector pool — correct band often ranks ~15–25
+    pool_k = max(SETTINGS.rag_top_k, 20) if age_ask else SETTINGS.rag_top_k
+    hits = retrieve(message, lang=lang, top_k=pool_k)
     # If language filter returned nothing, retry without filter
     if not hits and lang:
-        hits = retrieve(message, lang=None)
+        hits = retrieve(message, lang=None, top_k=pool_k)
         lang_fallback = True
-    hits = _lexical_rerank(message, hits)
+    hits = _merge_hits(hits, _age_faq_overlay(message, lang))
+    hits = _lexical_rerank(message, hits)[: SETTINGS.rag_top_k]
 
     top_hit = hits[0] if hits else None
     off_topic = bool(hits and top_hit is not None and _off_topic(message, top_hit))
