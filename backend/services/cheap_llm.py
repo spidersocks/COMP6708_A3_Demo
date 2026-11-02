@@ -131,7 +131,7 @@ def _extract_text(data: Dict[str, Any]) -> str:
     output = data.get("output") or {}
     choices = output.get("choices") or []
     if choices:
-        msg = (choices[0] or {}).get("message") || {}
+        msg = (choices[0] or {}).get("message") or {}
         content = msg.get("content")
         if isinstance(content, list):
             parts = []
