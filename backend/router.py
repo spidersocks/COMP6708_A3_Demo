@@ -18,7 +18,6 @@ from llm.chat_history import (
     save_message,
 )
 from llm.hours_intent import (
-    detect_opening_hours_intent,
     effective_hours_message,
     is_general_hours_query,
     is_hours_followup,
@@ -28,18 +27,22 @@ from llm.lang import get_language_code
 from llm.opening_hours import _get_opening_facts, compute_opening_answer
 from rag.pipeline import chat_with_rag, is_greeting
 from services import admin_todos
+from services import answer_cache
 from services import booking as booking_svc
 from services import booking_dialogue as dialogue_svc
 from services import cancel_dialogue as cancel_svc
+from services import centre_facts
 from services import escalation as escalation_svc
 from services import families
+from services import intent_router
 from services import staff_messages
 
 router = APIRouter()
 
-_CONFUSED_RE = re.compile(
-    r"^(what|huh|sorry|come again|eh|嗯|吓|咩話|什么)\??[!!.。]*$",
-    re.I,
+_CONFUSED_REPLY = (
+    "Happy to help — could you tell me a bit more? "
+    "You can ask about opening hours, programmes, fees, trial assessments, "
+    "availability, or ask to speak with our team."
 )
 _OFFERED_PROGRAMMES = (
     "Phonics, Mandarin, Writing, Early Math, Playgroup, and Trial assessments"
@@ -196,276 +199,74 @@ def chat(req: ChatRequest) -> ChatResponse:
         include_new=True,
     )
 
-    # Opening-hours path (incl. short follow-ups like "tomorrow?")
-    hours_msg = message
-    hours_intent, hours_debug = detect_opening_hours_intent(message, lang)
-    followup_promoted = False
-    if (
-        SETTINGS.opening_hours_enabled
-        and not hours_intent
-        and is_hours_followup(message)
-        and recent_was_hours(history)
-    ):
-        hours_intent = True
-        followup_promoted = True
-        hours_debug = {**hours_debug, "followup_promoted": True}
-        hours_msg = effective_hours_message(message, history)
-
-    avail_hit = bool(_AVAIL_RE.search(message))
-    dialogue_active = dialogue_svc.is_active(session_id)
-    cancel_active = cancel_svc.is_active(session_id)
-    cancel_hit = (not hours_intent) and (
-        cancel_active or cancel_svc.is_cancel_request(message)
-    )
-    # Leave sticky booking when the parent asks fees / unknown programmes / etc.
-    leave_booking = dialogue_svc.should_yield_to_rag(session_id, message)
-    force_rag = leave_booking
-    if leave_booking and dialogue_active:
-        dialogue_svc.clear_state(session_id)
-        dialogue_active = False
-    unknown_programme = dialogue_svc.unknown_programme(message)
-    if unknown_programme:
-        force_rag = True
-    dialogue_hit = (
-        (not hours_intent)
-        and (not cancel_hit)
-        and (not leave_booking)
-        and (dialogue_active or dialogue_svc.is_booking_request(message))
-    )
-    # Pure availability browse (no child booking chat) stays on the simple tool
-    simple_avail = (
-        avail_hit
-        and not dialogue_hit
-        and not cancel_hit
-        and not leave_booking
-        and not dialogue_svc.is_booking_request(message)
-    )
-
-    esc_preview = escalation_svc.detect_escalation(message)
-    route_guess = (
-        "opening_hours"
-        if hours_intent
-        else (
-            "cancel_dialogue"
-            if cancel_hit
-            else (
-                "greeting"
-                if is_greeting(message)
-                else (
-                    "staff_escalation"
-                    if esc_preview
-                    else (
-                        "unknown_programme"
-                        if unknown_programme
-                        else (
-                            "booking_dialogue"
-                            if dialogue_hit
-                            else ("booking_tool" if avail_hit and not force_rag else "rag")
-                        )
-                    )
-                )
-            )
-        )
-    )
-    steps.append(_step("intent", "Intent router", "done", route_guess))
-
     phone = (req.phone or "").strip() or "+852 9000 0000"
     parent_name = (req.parent_name or "").strip()
     child_name = (req.child_name or "").strip()
+
+    # Hours follow-up promotion (tomorrow?) before scored router
+    hours_msg = message
+    followup_promoted = False
+    decision = intent_router.decide_intent(
+        message, lang=lang, session_id=session_id, history=history
+    )
+    if (
+        SETTINGS.opening_hours_enabled
+        and decision.route == "rag"
+        and is_hours_followup(message)
+        and recent_was_hours(history)
+    ):
+        followup_promoted = True
+        hours_msg = effective_hours_message(message, history)
+        decision = intent_router.IntentDecision(
+            "opening_hours",
+            {"hours": 1.0, "followup": 1.0},
+            {"followup_promoted": True},
+        )
+
+    # Leaving sticky booking for off-topic / fees / etc.
+    dialogue_active = dialogue_svc.is_active(session_id)
+    cancel_active = cancel_svc.is_active(session_id)
+    leave_booking = dialogue_svc.should_yield_to_rag(session_id, message)
+    if leave_booking and dialogue_active and decision.route not in {
+        "booking_dialogue",
+        "booking_tool",
+        "cancel_dialogue",
+    }:
+        dialogue_svc.clear_state(session_id)
+        dialogue_active = False
+
+    route = decision.route
+    steps.append(
+        _step(
+            "intent",
+            "Intent router",
+            "done",
+            f"{route} · scores={decision.scores}",
+        )
+    )
 
     trace: Dict[str, Any] = {
         "language": lang,
         "session_id": session_id,
         "history": {
             "enabled": use_history,
-            # Prior messages loaded for this turn (excludes the message just typed).
             "turns_loaded": len(history),
             "limit": SETTINGS.chat_history_limit,
-            # Preview must match turns_loaded — do not append the new user turn here
-            # (history_context includes it for the LLM prompt, which confused the inspector).
             "preview": (
                 build_context_string(history, include_new=False)[-600:] if history else ""
             ),
         },
         "routing": {
-            "hours_intent": hours_intent,
+            "route": route,
+            "scores": decision.scores,
+            "debug": decision.debug,
             "hours_followup_promoted": followup_promoted,
-            "hours_debug": hours_debug,
-            "availability_intent": avail_hit and not hours_intent,
-            "booking_dialogue": dialogue_hit,
             "dialogue_active": dialogue_active,
-            "cancel_dialogue": cancel_hit,
             "cancel_active": cancel_active,
+            "left_booking": leave_booking and not dialogue_active,
         },
         "pipeline_steps": steps,
     }
-
-    if SETTINGS.opening_hours_enabled and hours_intent:
-        general = is_general_hours_query(hours_msg, lang)
-        facts = _get_opening_facts(hours_msg, lang=lang, is_general=general)
-        answer = compute_opening_answer(hours_msg, lang=lang, is_general=general)
-        steps.append(_step("hours_parse", "Date / holiday / weather parse", "done",
-                           (facts.get("parse_debug") or {}).get("matched_via") or "now"))
-        steps.append(_step("hours_answer", "Deterministic hours answer", "done",
-                           "weather" if facts.get("weather_hint")
-                           else ("holiday" if facts.get("is_holiday")
-                                 else ("sunday" if facts.get("is_sunday") else "open_window"))))
-        steps.append(_step("rag", "RAG retrieve → generate", "skipped", "hours short-circuit"))
-        trace["route"] = "deterministic_opening_hours"
-        trace["opening_hours"] = {
-            "effective_message": hours_msg,
-            "is_general": general,
-            "facts": _serialize_hours_facts(facts),
-        }
-        trace["latency_ms"] = int((time.perf_counter() - t0) * 1000)
-        resp = ChatResponse(
-            answer=answer,
-            citations=[{"source": "institution/opening_hours", "title": "Opening Hours"}],
-            provider="deterministic_opening_hours",
-            session_id=session_id,
-            debug={"hours": hours_debug, "facts": trace["opening_hours"]["facts"]},
-            trace=trace,
-        )
-        _persist_turn(session_id, message, answer, lang, use_history)
-        return resp
-
-    if cancel_hit:
-        result = cancel_svc.handle_turn(
-            session_id=session_id,
-            message=message,
-            phone=phone,
-            parent_name=parent_name,
-            child_name_hint=child_name,
-            lang=lang,
-        )
-        answer = result["answer"]
-        tc = result.get("trace_cancel") or {}
-        steps.append(
-            _step("cancel_dialogue", "Cancel session dialogue", "done", tc.get("stage") or "turn")
-        )
-        steps.append(_step("rag", "RAG retrieve → generate", "skipped", "cancel dialogue"))
-        trace["route"] = "cancel_dialogue"
-        trace["cancel"] = tc
-        trace["latency_ms"] = int((time.perf_counter() - t0) * 1000)
-        resp = ChatResponse(
-            answer=answer,
-            citations=[
-                {"source": "services/families", "title": "Family WhatsApp sheet"},
-                {"source": "services/cancellations", "title": "Cancellations sheet"},
-            ],
-            provider="cancel_dialogue",
-            session_id=session_id,
-            debug={"cancel": tc},
-            trace=trace,
-        )
-        _persist_turn(session_id, message, answer, lang, use_history)
-        return resp
-
-    if leave_booking:
-        steps.append(
-            _step(
-                "booking_dialogue",
-                "Left booking chat",
-                "done",
-                f"yield → rag"
-                + (f" · {unknown_programme}" if unknown_programme else ""),
-            )
-        )
-        trace["booking"] = {
-            "stage": "yield_to_rag",
-            "unknown_programme": unknown_programme,
-            "reason": "left_sticky_booking",
-        }
-
-    if dialogue_hit:
-        result = dialogue_svc.handle_turn(
-            session_id=session_id,
-            message=message,
-            phone=phone,
-            parent_name=parent_name,
-            child_name_hint=child_name,
-            lang=lang,
-        )
-        tb = result.get("trace_booking") or {}
-        if result.get("yield_to_rag"):
-            force_rag = True
-            steps.append(
-                _step(
-                    "booking_dialogue",
-                    "Left booking chat",
-                    "done",
-                    tb.get("reason") or "yield_to_rag",
-                )
-            )
-            trace["booking"] = tb
-            # Fall through to RAG (do not re-enter booking_tool)
-        else:
-            answer = result["answer"]
-            slots = result.get("slots")
-            steps.append(
-                _step(
-                    "booking_dialogue",
-                    "Conversational booking",
-                    "done",
-                    tb.get("stage") or "turn",
-                )
-            )
-            steps.append(
-                _step("rag", "RAG retrieve → generate", "skipped", "booking dialogue")
-            )
-            trace["route"] = "booking_dialogue"
-            trace["booking"] = tb
-            trace["latency_ms"] = int((time.perf_counter() - t0) * 1000)
-            resp = ChatResponse(
-                answer=answer,
-                citations=[
-                    {"source": "services/families", "title": "Family WhatsApp sheet"},
-                    {"source": "services/timetable", "title": "Centre class register"},
-                ],
-                provider="booking_dialogue",
-                slots=slots,
-                session_id=session_id,
-                debug={"dialogue": tb},
-                trace=trace,
-            )
-            _persist_turn(session_id, message, answer, lang, use_history)
-            return resp
-
-    # Unknown programmes (scuba, …) must not hit the generic timetable tool either
-    if (simple_avail or avail_hit) and not force_rag:
-        course = _detect_course(message)
-        teacher_id = _detect_teacher(message)
-        slots = booking_svc.get_availability(
-            course, lang=lang, teacher_id=teacher_id
-        )
-        answer = booking_svc.format_availability_message(slots, lang=lang)
-        steps.append(
-            _step(
-                "booking",
-                "Timetable / availability tool",
-                "done",
-                f"course={course}, teacher={teacher_id or 'any'}, slots={len(slots)}",
-            )
-        )
-        steps.append(_step("rag", "RAG retrieve → generate", "skipped", "booking short-circuit"))
-        trace["route"] = "booking_tool"
-        trace["booking"] = {
-            "course_key": course,
-            "teacher_id": teacher_id,
-            "slot_count": len(slots),
-        }
-        trace["latency_ms"] = int((time.perf_counter() - t0) * 1000)
-        resp = ChatResponse(
-            answer=answer,
-            citations=[{"source": "services/timetable", "title": "Centre class register"}],
-            provider="booking_tool",
-            slots=slots[:8],
-            session_id=session_id,
-            debug={"course_key": course, "teacher_id": teacher_id},
-            trace=trace,
-        )
-        _persist_turn(session_id, message, answer, lang, use_history)
-        return resp
 
     def _family_names() -> tuple[str, str]:
         fam: Dict[str, Any] = {}
@@ -481,31 +282,40 @@ def chat(req: ChatRequest) -> ChatResponse:
                 c = kids[0].get("child_name") or ""
         return p, c
 
-    # Deterministic greeting — never RAG-dump or admin-flag "Hello"/"Hi"
-    if is_greeting(message):
-        steps.append(_step("greeting", "Greeting short-circuit", "done", "welcome"))
-        steps.append(_step("rag", "RAG retrieve → generate", "skipped", "greeting"))
-        steps.append(_step("admin_todo", "Flag for admin to-do", "skipped", "greeting"))
-        trace["route"] = "greeting"
+    def _fact_response(
+        *,
+        route_name: str,
+        answer: str,
+        citations: List[Dict[str, Any]],
+        provider: str,
+        extra_step: Optional[Dict[str, str]] = None,
+        slots: Optional[List[Dict[str, Any]]] = None,
+        debug: Optional[Dict[str, Any]] = None,
+    ) -> ChatResponse:
+        if extra_step:
+            steps.append(extra_step)
+        steps.append(_step("rag", "RAG retrieve → generate", "skipped", route_name))
+        trace["route"] = route_name
         trace["latency_ms"] = int((time.perf_counter() - t0) * 1000)
         resp = ChatResponse(
-            answer=_GREETING_REPLY,
-            citations=[{"source": "en/faq/greeting.md", "title": "Welcome!"}],
-            provider="greeting",
+            answer=answer,
+            citations=citations,
+            provider=provider,
+            slots=slots,
             session_id=session_id,
-            debug={"greeting": True},
+            debug=debug or {},
             trace=trace,
         )
-        _persist_turn(session_id, message, _GREETING_REPLY, lang, use_history)
+        _persist_turn(session_id, message, answer, lang, use_history)
         return resp
 
-    # Human hand-off → message the centre boss (never mention internal sheets to parents)
-    esc = escalation_svc.detect_escalation(message)
-    if esc:
+    # --- Deterministic / tool routes (scored intent) ---
+    if route == "staff_escalation":
+        esc = decision.debug.get("escalation") or escalation_svc.detect_escalation(message)
         todo_parent, todo_child = _family_names()
         topic = escalation_svc.topic_hint_from_message(message, esc["category"])
         answer = escalation_svc.parent_reply(
-            category=esc["category"], topic_hint=topic
+            category=esc["category"], topic_hint=topic, lang=lang
         )
         staff_msg = staff_messages.add_message(
             category=esc["category"],
@@ -522,39 +332,385 @@ def chat(req: ChatRequest) -> ChatResponse:
             dialogue_svc.clear_state(session_id)
         if cancel_active:
             cancel_svc.clear_state(session_id)
-        steps.append(
-            _step(
+        return _fact_response(
+            route_name="staff_escalation",
+            answer=answer,
+            citations=[],
+            provider="staff_escalation",
+            extra_step=_step(
                 "staff_escalate",
                 "Message centre boss",
                 "done",
                 f"{esc['category']} · {staff_msg.get('id')}",
-            )
+            ),
+            debug={"escalation": esc, "staff_message": staff_msg},
         )
-        steps.append(_step("rag", "RAG retrieve → generate", "skipped", "staff escalation"))
-        steps.append(_step("admin_todo", "Flag for admin to-do", "skipped", "staff message instead"))
-        trace["route"] = "staff_escalation"
-        trace["staff_message"] = staff_msg
-        trace["latency_ms"] = int((time.perf_counter() - t0) * 1000)
-        resp = ChatResponse(
+
+    if route == "confused":
+        return _fact_response(
+            route_name="confused",
+            answer=_CONFUSED_REPLY,
+            citations=[],
+            provider="confused",
+            extra_step=_step("confused", "Clarify short-circuit", "done", "short ask"),
+        )
+
+    if route == "off_domain":
+        off = {
+            "en": (
+                "That’s outside what we can help with as BrightNest’s learning-centre assistant. "
+                "Ask about programmes, fees, hours, location, trials, or booking — "
+                "or ask to speak with our team."
+            ),
+            "zh-HK": (
+                "呢啲唔屬於亮巢學習中心助理可以處理嘅範圍。"
+                "你可以問課程、學費、時間、地址、試堂或預約，或者要求同團隊傾。"
+            ),
+            "zh-CN": (
+                "这不属于亮巢学习中心助理可以处理的范围。"
+                "你可以问课程、学费、时间、地址、试听或预约，或要求与团队沟通。"
+            ),
+        }
+        L = (lang or "en").lower()
+        ans = off["zh-HK"] if L.startswith("zh-hk") else (
+            off["zh-CN"] if L.startswith("zh") else off["en"]
+        )
+        return _fact_response(
+            route_name="off_domain",
+            answer=ans,
+            citations=[],
+            provider="off_domain",
+            extra_step=_step("off_domain", "Out-of-scope short-circuit", "done", "refuse"),
+        )
+
+    if route == "thanks":
+        thanks = {
+            "en": "You’re welcome! Anything else I can help with — hours, fees, trials, or booking?",
+            "zh-HK": "唔該晒！仲有冇想問——營業時間、學費、試堂定預約？",
+            "zh-CN": "不客气！还有想问的吗——营业时间、学费、试听或预约？",
+        }
+        L = (lang or "en").lower()
+        ans = thanks["zh-HK"] if L.startswith("zh-hk") else (
+            thanks["zh-CN"] if L.startswith("zh") else thanks["en"]
+        )
+        return _fact_response(
+            route_name="thanks",
+            answer=ans,
+            citations=[],
+            provider="thanks",
+            extra_step=_step("thanks", "Thanks short-circuit", "done", "ack"),
+        )
+
+    if route == "severe_weather":
+        cached = answer_cache.get("severe_weather", message, lang)
+        if cached:
+            answer, cites = cached["answer"], cached["citations"]
+        else:
+            answer, cites = centre_facts.format_severe_weather_answer(message, lang)
+            answer_cache.put(
+                "severe_weather", message, lang, {"answer": answer, "citations": cites}
+            )
+        return _fact_response(
+            route_name="severe_weather",
+            answer=answer,
+            citations=cites,
+            provider="centre_facts",
+            extra_step=_step("facts", "Severe weather policy", "done", "structured"),
+        )
+
+    if route == "fees":
+        cached = answer_cache.get("fees", message, lang)
+        if cached:
+            answer, cites = cached["answer"], cached["citations"]
+        else:
+            answer, cites = centre_facts.format_fees_answer(message, lang)
+            answer_cache.put("fees", message, lang, {"answer": answer, "citations": cites})
+        return _fact_response(
+            route_name="fees",
+            answer=answer,
+            citations=cites,
+            provider="centre_facts",
+            extra_step=_step("facts", "Published fee guide", "done", "structured"),
+        )
+
+    if route == "location":
+        answer, cites = centre_facts.format_location_answer(lang)
+        return _fact_response(
+            route_name="location",
+            answer=answer,
+            citations=cites,
+            provider="centre_facts",
+            extra_step=_step("facts", "Centre location", "done", "structured"),
+        )
+
+    if route == "allergy":
+        answer, cites = centre_facts.format_allergy_answer(lang)
+        return _fact_response(
+            route_name="allergy",
+            answer=answer,
+            citations=cites,
+            provider="centre_facts",
+            extra_step=_step("facts", "Allergy policy", "done", "structured"),
+        )
+
+    if route == "illness":
+        answer, cites = centre_facts.format_illness_answer(lang)
+        return _fact_response(
+            route_name="illness",
+            answer=answer,
+            citations=cites,
+            provider="centre_facts",
+            extra_step=_step("facts", "Illness / fever policy", "done", "structured"),
+        )
+
+    if route == "payment":
+        answer, cites = centre_facts.format_payment_answer(lang)
+        return _fact_response(
+            route_name="payment",
+            answer=answer,
+            citations=cites,
+            provider="centre_facts",
+            extra_step=_step("facts", "How to pay", "done", "structured"),
+        )
+
+    if route == "teachers":
+        answer, cites = centre_facts.format_teachers_answer(lang)
+        return _fact_response(
+            route_name="teachers",
+            answer=answer,
+            citations=cites,
+            provider="centre_facts",
+            extra_step=_step("facts", "Teachers", "done", "structured"),
+        )
+
+    if route == "pickup":
+        answer, cites = centre_facts.format_pickup_answer(lang)
+        return _fact_response(
+            route_name="pickup",
+            answer=answer,
+            citations=cites,
+            provider="centre_facts",
+            extra_step=_step("facts", "Drop-off & pickup", "done", "structured"),
+        )
+
+    if route == "makeup":
+        answer, cites = centre_facts.format_makeup_answer(lang)
+        return _fact_response(
+            route_name="makeup",
+            answer=answer,
+            citations=cites,
+            provider="centre_facts",
+            extra_step=_step("facts", "Absence & make-up", "done", "structured"),
+        )
+
+    if route == "sibling":
+        answer, cites = centre_facts.format_sibling_answer(lang)
+        return _fact_response(
+            route_name="sibling",
+            answer=answer,
+            citations=cites,
+            provider="centre_facts",
+            extra_step=_step("facts", "Sibling discount", "done", "structured"),
+        )
+
+    if route == "waiting":
+        answer, cites = centre_facts.format_waiting_answer(lang)
+        return _fact_response(
+            route_name="waiting",
+            answer=answer,
+            citations=cites,
+            provider="centre_facts",
+            extra_step=_step("facts", "Waiting list", "done", "structured"),
+        )
+
+    if route == "pets_policy":
+        answer, cites = centre_facts.format_pets_policy(lang)
+        return _fact_response(
+            route_name="pets_policy",
+            answer=answer,
+            citations=cites,
+            provider="centre_facts",
+            extra_step=_step("facts", "Pets policy", "done", "no pets in class"),
+        )
+
+    if route == "unsupported_facility":
+        label = (decision.debug.get("label") or "that facility").lower()
+        answer = (
+            f"We don't offer **{label}** at BrightNest — we're a day learning centre "
+            f"for programmes like {_OFFERED_PROGRAMMES}. "
+            "If you tell me your child's age, I can suggest a better fit — "
+            "or ask to speak with our team and someone will reach out during working hours."
+        )
+        return _fact_response(
+            route_name="unsupported_facility",
             answer=answer,
             citations=[],
-            provider="staff_escalation",
-            session_id=session_id,
-            debug={"escalation": esc, "staff_message": staff_msg},
-            trace=trace,
+            provider="unsupported_facility",
+            extra_step=_step("unsupported", "Unsupported facility", "done", label),
         )
-        _persist_turn(session_id, message, answer, lang, use_history)
-        return resp
+
+    if route == "trial_info":
+        answer, cites = centre_facts.format_trial_info_answer(lang)
+        return _fact_response(
+            route_name="trial_info",
+            answer=answer,
+            citations=cites,
+            provider="centre_facts",
+            extra_step=_step("facts", "Trial assessment info", "done", "policy not slots"),
+        )
+
+    if route == "unknown_programme":
+        unk = decision.debug.get("label") or dialogue_svc.unknown_programme(message)
+        # fall through to existing unknown handler below via reassign
+        route = "unknown_programme"
+        unknown_programme = unk
+    else:
+        unknown_programme = dialogue_svc.unknown_programme(message)
+
+    if route == "opening_hours" and SETTINGS.opening_hours_enabled:
+        general = is_general_hours_query(hours_msg, lang)
+        facts = _get_opening_facts(hours_msg, lang=lang, is_general=general)
+        answer = compute_opening_answer(hours_msg, lang=lang, is_general=general)
+        steps.append(
+            _step(
+                "hours_parse",
+                "Date / holiday / weather parse",
+                "done",
+                (facts.get("parse_debug") or {}).get("matched_via") or "now",
+            )
+        )
+        steps.append(
+            _step(
+                "hours_answer",
+                "Deterministic hours answer",
+                "done",
+                "weather"
+                if facts.get("weather_hint")
+                else (
+                    "holiday"
+                    if facts.get("is_holiday")
+                    else ("sunday" if facts.get("is_sunday") else "open_window")
+                ),
+            )
+        )
+        trace["opening_hours"] = {
+            "effective_message": hours_msg,
+            "is_general": general,
+            "facts": _serialize_hours_facts(facts),
+        }
+        return _fact_response(
+            route_name="deterministic_opening_hours",
+            answer=answer,
+            citations=[{"source": "institution/opening_hours", "title": "Opening Hours"}],
+            provider="deterministic_opening_hours",
+            debug={
+                "hours": (decision.debug or {}).get("hours_debug"),
+                "facts": trace["opening_hours"]["facts"],
+            },
+        )
+
+    if route == "cancel_dialogue":
+        result = cancel_svc.handle_turn(
+            session_id=session_id,
+            message=message,
+            phone=phone,
+            parent_name=parent_name,
+            child_name_hint=child_name,
+            lang=lang,
+        )
+        answer = result["answer"]
+        tc = result.get("trace_cancel") or {}
+        return _fact_response(
+            route_name="cancel_dialogue",
+            answer=answer,
+            citations=[
+                {"source": "services/families", "title": "Family WhatsApp sheet"},
+                {"source": "services/cancellations", "title": "Cancellations sheet"},
+            ],
+            provider="cancel_dialogue",
+            extra_step=_step(
+                "cancel_dialogue",
+                "Cancel session dialogue",
+                "done",
+                tc.get("stage") or "turn",
+            ),
+            debug={"cancel": tc},
+        )
+
+    if route == "booking_dialogue":
+        result = dialogue_svc.handle_turn(
+            session_id=session_id,
+            message=message,
+            phone=phone,
+            parent_name=parent_name,
+            child_name_hint=child_name,
+            lang=lang,
+        )
+        tb = result.get("trace_booking") or {}
+        if result.get("yield_to_rag"):
+            steps.append(
+                _step(
+                    "booking_dialogue",
+                    "Left booking chat",
+                    "done",
+                    tb.get("reason") or "yield_to_rag",
+                )
+            )
+            trace["booking"] = tb
+            route = "rag"
+        else:
+            return _fact_response(
+                route_name="booking_dialogue",
+                answer=result["answer"],
+                citations=[
+                    {"source": "services/families", "title": "Family WhatsApp sheet"},
+                    {"source": "services/timetable", "title": "Centre class register"},
+                ],
+                provider="booking_dialogue",
+                extra_step=_step(
+                    "booking_dialogue",
+                    "Conversational booking",
+                    "done",
+                    tb.get("stage") or "turn",
+                ),
+                slots=result.get("slots"),
+                debug={"dialogue": tb},
+            )
+
+    if route == "booking_tool":
+        course = _detect_course(message)
+        teacher_id = _detect_teacher(message)
+        slots = booking_svc.get_availability(
+            course, lang=lang, teacher_id=teacher_id
+        )
+        answer = booking_svc.format_availability_message(slots, lang=lang)
+        return _fact_response(
+            route_name="booking_tool",
+            answer=answer,
+            citations=[{"source": "services/timetable", "title": "Centre class register"}],
+            provider="booking_tool",
+            extra_step=_step(
+                "booking",
+                "Timetable / availability tool",
+                "done",
+                f"course={course}, teacher={teacher_id or 'any'}, slots={len(slots)}",
+            ),
+            slots=slots[:8],
+            debug={"course_key": course, "teacher_id": teacher_id},
+        )
+
+    if route == "greeting" or is_greeting(message):
+        return _fact_response(
+            route_name="greeting",
+            answer=_GREETING_REPLY,
+            citations=[{"source": "en/faq/greeting.md", "title": "Welcome!"}],
+            provider="greeting",
+            extra_step=_step("greeting", "Greeting short-circuit", "done", "welcome"),
+            debug={"greeting": True},
+        )
 
     # Deterministic: we do not teach scuba/piano/etc. — never dump unrelated FAQs
-    unk = unknown_programme
-    if not unk and _CONFUSED_RE.match((message or "").strip()) and history:
-        for turn in reversed(history):
-            if turn.get("role") == "user":
-                unk = dialogue_svc.unknown_programme(turn.get("message") or "")
-                if unk:
-                    break
-                break
+    unk = unknown_programme if route == "unknown_programme" else None
     if unk:
         todo_parent, todo_child = _family_names()
         label = unk.lower()

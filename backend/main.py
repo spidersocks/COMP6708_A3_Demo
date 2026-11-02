@@ -21,6 +21,26 @@ async def lifespan(app: FastAPI):
         print("[STARTUP] RAG index ready.", flush=True)
     except Exception as e:
         print(f"[STARTUP] RAG index deferred: {e}", flush=True)
+    # Warm opening-hours + prototype embeddings so the first parent click is snappy
+    try:
+        from llm.opening_hours import compute_opening_answer
+        from services import answer_cache
+        from services.intent_classifier import _proto_embeddings, score_prototypes
+
+        ans = compute_opening_answer(
+            "What are your opening hours?", lang="en", is_general=True
+        )
+        answer_cache.put(
+            "opening_hours_warm",
+            "What are your opening hours?",
+            "en",
+            {"answer": ans, "citations": []},
+        )
+        _proto_embeddings()
+        score_prototypes("what are your opening hours")
+        print("[STARTUP] Hours + intent prototypes warmed.", flush=True)
+    except Exception as e:
+        print(f"[STARTUP] Warm cache deferred: {e}", flush=True)
     yield
 
 

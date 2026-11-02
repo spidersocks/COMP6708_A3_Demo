@@ -1,0 +1,6 @@
+{
+  "proceed": ["amber_rain", "red_rain", "t1", "t3"],
+  "suspend": ["black_rain", "t8", "t9", "t10", "pre_t8"],
+  "make_up": "If travel is unsafe for young children, contact us to arrange a make-up under the absence policy.",
+  "notify": "We notify families via official WhatsApp if arrangements change."
+}

@@ -27,7 +27,7 @@ Our phonics programme has 8 levels. Typically, completing all eight levels takes
 Small group class size, 4-6 students per class
 
 ### Tuition
-$5,200/ 8×45m; $7,500–$8,500/ 10×1h
+Guide fee HK$3,200–3,680 / 8-session package (exact quote after placement). Trial Assessment HK$180.
 
 ---
 

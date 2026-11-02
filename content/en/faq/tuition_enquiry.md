@@ -25,7 +25,7 @@ Q: How much is your English class? / English Language Arts tuition?
 A: English group class tuition: HK$4,500 for 8 sessions (45 minutes/session); HK$7,500–$8,500 for 10 sessions (1 hour/session), depending on instructor.
 
 Q: What is the fee for phonics classes?  
-A: Phonics class: HK$5,200 for 8×45min; HK$7,500–$8,500 for 10×1h.
+A: Phonics guide fee: HK$3,200–3,680 for an 8-session package (exact quote after placement). Trial Assessment HK$180.
 
 ---
 

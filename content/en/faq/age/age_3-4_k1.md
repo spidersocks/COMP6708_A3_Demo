@@ -8,7 +8,7 @@ aliases: K1; 3 years; 4 years; classes for 3 year old; classes for 4 year old; k
 # Classes for 3–4 years (K1)
 
 Suitable classes
-- Phonics (L1–L2) — sounds and blending. 45m. Tuition: HK$5,200 / 8×45m; HK$7,500–$8,500 / 10×1h.
+- Phonics (L1–L2) — sounds and blending. 45m. Tuition guide: HK$3,200–3,680 / 8-session package.
 - Clevercal Math — early numeracy (counting, shapes, measurement words). Tuition: HK$3,500–$4,500 / 10×45m; HK$4,500–$6,000 / 10×1h.
 - Chinese Character Recognition (2–5 yrs; PN–K3) — reading readiness. Tuition: HK$3,200 / 8×45m; HK$4,500 / 10×1h.
 

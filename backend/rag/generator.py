@@ -157,20 +157,44 @@ def _extractive_fallback(
 
     top = contexts[0]
     text = (top.get("text") or "").strip()
-    # Drop assistant-only / NO_ANSWER lines from extractive surface
+    # Drop assistant-only / NO_ANSWER lines and raw markdown chrome from extractive surface
     lines = []
     for ln in text.splitlines():
+        s = ln.strip()
+        if not s:
+            continue
         if _NO_ANSWER_RE.search(ln):
             continue
-        if ln.strip().lower().startswith("assistant notes"):
+        if s.lower().startswith("assistant notes"):
             continue
-        if ln.startswith("[") and ln.endswith("]"):
+        if s.startswith("[") and s.endswith("]"):
             continue
-        lines.append(ln)
+        if s.startswith("#"):
+            # Keep heading text without hashes if it looks like content
+            s = s.lstrip("#").strip()
+            if not s or s.lower() in {"keywords", "see also"}:
+                continue
+        if s.startswith("---") or s.startswith("```"):
+            continue
+        if s.lower().startswith("keywords:"):
+            continue
+        lines.append(s)
     body = "\n".join(lines).strip()
     body = sanitize_answer(body, lang)
+    # Prefer answer-shaped lines when the chunk is a Q&A dump
+    if "A:" in body or "答：" in body or "答:" in body:
+        prefer = []
+        for ln in body.splitlines():
+            if re.match(r"^(A:|答[:：])", ln.strip()):
+                prefer.append(re.sub(r"^(A:|答[:：])\s*", "", ln.strip()))
+            elif prefer and not re.match(r"^(Q:|問[:：]|问[:：])", ln.strip()):
+                prefer.append(ln.strip())
+        if prefer:
+            body = "\n".join(prefer[:8]).strip()
     if len(body) > 700:
         body = body[:700].rstrip() + "…"
+    if len(body) < 40:
+        return _FALLBACK.get(lang, _FALLBACK["en"])
     src = (top.get("metadata") or {}).get("source", "")
     footer = {
         "en": f"\n\n(Source: {src})" if src else "",

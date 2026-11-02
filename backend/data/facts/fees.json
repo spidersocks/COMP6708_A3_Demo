@@ -1,0 +1,49 @@
+{
+  "currency": "HKD",
+  "note": "Published guide ranges — exact quote after placement/trial.",
+  "trial_assessment": {
+    "label": "Trial Assessment",
+    "duration_min": 45,
+    "fee": 180,
+    "credit_days": 14
+  },
+  "materials_fee_per_term": { "min": 180, "max": 320 },
+  "sibling_discount_pct": 8,
+  "private_pack_discount_pct": 5,
+  "programmes": {
+    "playgroup": {
+      "label": "Playgroup",
+      "package_sessions": 8,
+      "fee_min": 2480,
+      "fee_max": 2880
+    },
+    "phonics": {
+      "label": "Phonics",
+      "package_sessions": 8,
+      "fee_min": 3200,
+      "fee_max": 3680
+    },
+    "mandarin": {
+      "label": "Mandarin",
+      "package_sessions": 8,
+      "fee_min": 2960,
+      "fee_max": 3360
+    },
+    "writing": {
+      "label": "Creative Writing",
+      "package_sessions": 8,
+      "fee_min": 3360,
+      "fee_max": 3920
+    },
+    "math": {
+      "label": "Early Math",
+      "package_sessions": 8,
+      "fee_min": 2960,
+      "fee_max": 3520
+    }
+  },
+  "private_1to1": {
+    "english_math_per_45min": { "min": 650, "max": 850 },
+    "mandarin_per_45min": { "min": 580, "max": 720 }
+  }
+}

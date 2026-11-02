@@ -409,6 +409,7 @@ def handle_turn(
         "teacher_id": None,
         "when": {},
         "child_schedule": [],
+        "hide_register": False,
     }
 
     # Refresh identity from this turn / UI fields
@@ -416,6 +417,13 @@ def handle_turn(
         state["phone"] = phone
     if parent_name:
         state["parent_name"] = parent_name
+
+    # New trial / assessment enquiry — don't dump seeded "upcoming classes"
+    course_hint = _detect_course(text)
+    if course_hint == "trial" or re.search(r"\btrial\b|試堂|试听", text or "", re.I):
+        state["hide_register"] = True
+        if course_hint == "trial" and not state.get("course_key"):
+            state["course_key"] = "trial"
 
     if _ABORT_RE.search(text):
         clear_state(session_id)
@@ -546,18 +554,28 @@ def handle_turn(
             steps.append(f"switched_child={child['child_name']}")
 
     child_name = state["child_name"]
-    schedule_blurb = _format_child_schedule(child_name, state.get("child_schedule") or [])
+    show_register = (
+        not state.get("hide_register")
+        and (state.get("course_key") not in {None, "trial"})
+        and bool(state.get("child_schedule"))
+    )
+    schedule_blurb = (
+        _format_child_schedule(child_name, state.get("child_schedule") or [])
+        if show_register
+        else ""
+    )
 
     # --- Clarify course ---
     if not state.get("course_key"):
         preferred = state.get("preferred_courses") or []
         save_state(session_id, {**state, "stage": "need_course"})
         pref_txt = ", ".join(course_label(c) for c in preferred) if preferred else "Phonics, Mandarin, Writing, Math, Playgroup, or Trial"
+        sched_block = f"{schedule_blurb}\n\n" if schedule_blurb else ""
         return {
             "answer": (
                 f"Got it — booking for **{child_name}**"
                 f"{' (family: ' + state.get('parent_name') + ')' if state.get('parent_name') else ''}.\n\n"
-                f"{schedule_blurb}\n\n"
+                f"{sched_block}"
                 f"Which class should I look at? "
                 + (f"On file they usually take: {pref_txt}." if preferred else f"Options: {pref_txt}.")
             ),
@@ -580,10 +598,11 @@ def handle_turn(
         # Ask once unless message already implied urgency via booking request alone
         if not when_bits and state.get("stage") != "need_when_asked":
             save_state(session_id, {**state, "stage": "need_when_asked"})
+            sched_block = f"{schedule_blurb}\n\n" if schedule_blurb else ""
             return {
                 "answer": (
                     f"Looking at **{course_label(state['course_key'])}** for **{child_name}**.\n\n"
-                    f"{schedule_blurb}\n\n"
+                    f"{sched_block}"
                     "When works best — **this week**, **next week**, or a weekday (e.g. Tuesday)?"
                 ),
                 "slots": None,

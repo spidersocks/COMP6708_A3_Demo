@@ -108,6 +108,12 @@ def _holiday_hits(message: str) -> List[str]:
 def detect_opening_hours_intent(message: str, lang: str = "en") -> Tuple[bool, Dict[str, Any]]:
     m = message or ""
     L = (lang or "en").lower()
+    # If the utterance is clearly Chinese, use CJK patterns even when lang=en
+    if re.search(r"[\u4e00-\u9fff]", m):
+        if any(ch in m for ch in "嘅喺唔哋"):
+            L = "zh-hk"
+        else:
+            L = "zh-cn"
     if L.startswith("zh-hk"):
         strong, weak = _ZH_HK_STRONG, _ZH_HK_WEAK
     elif L.startswith("zh-cn") or L == "zh":
@@ -120,12 +126,11 @@ def detect_opening_hours_intent(message: str, lang: str = "en") -> Tuple[bool, D
     weather_score, weather_hits = _score(m, _WEATHER)
     hol_hits = _holiday_hits(m)
 
-    # "Are you open tomorrow?" — weak day + open/closed already in strong.
-    # Also allow weak-only when phrased as open-question with 呢/吗 and a day.
+    # Weather/typhoon policy is NOT opening-hours — centre_facts / intent_router
+    # owns severe-weather answers. Do not set hours intent on weather alone.
     is_intent = (
         strong_score > 0
         or bool(hol_hits)
-        or weather_score > 0
         or (weak_score > 0 and strong_score > 0)
         or (weak_score > 0 and bool(re.search(r"\b(open|closed|hours)\b|開|开|休息|營業|营业", m, re.I)))
     )
@@ -138,8 +143,14 @@ def detect_opening_hours_intent(message: str, lang: str = "en") -> Tuple[bool, D
         "holiday_hits": hol_hits,
         "overridden_by_avail": False,
         "overridden_by_fees": False,
+        "overridden_by_weather_policy": False,
     }
 
+    if weather_score > 0:
+        # "Are you open during T8?" → severe weather policy, not Mon–Sat hours dump
+        is_intent = False
+        debug["is_intent"] = False
+        debug["overridden_by_weather_policy"] = True
     if _AVAIL_NEG.search(m):
         is_intent = False
         debug["is_intent"] = False

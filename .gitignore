@@ -16,7 +16,14 @@ venv/
 backend/.venv.broken_*/
 
 # Runtime data (Chroma index, SQLite, generated admin CSVs — reseeded on boot)
-backend/data/
+backend/data/chroma/
+backend/data/*.db
+backend/data/sheets/*.csv
+backend/data/sheets/.seed_version
+# Keep curated fact JSON + sheet README in git (needed by SAE image + teammates)
+!backend/data/facts/
+!backend/data/facts/**/*.json
+!backend/data/sheets/README.txt
 *.db
 
 # Node
