@@ -32,25 +32,10 @@ def test_review_reroutes_to_rag(monkeypatch):
     monkeypatch.setattr(ia.SETTINGS, "dashscope_api_key", "x")
     monkeypatch.setattr(ia.SETTINGS, "intent_arbiter_timeout_s", 2.0)
 
-    class _Resp:
-        status_code = 200
-
-        def json(self):
-            return {
-                "output": {
-                    "choices": [
-                        {
-                            "message": {
-                                "content": '{"action":"rag","route":"rag","reason":"needs KB narrative"}'
-                            }
-                        }
-                    ]
-                }
-            }
-
-    with patch("services.intent_arbiter.httpx.Client") as client_cls:
-        client = client_cls.return_value.__enter__.return_value
-        client.post.return_value = _Resp()
+    with patch(
+        "services.intent_arbiter.cheap_llm.complete_json",
+        return_value={"action": "rag", "route": "rag", "reason": "needs KB narrative"},
+    ):
         out = ia.review_intent(
             "Do you offer phonics classes for 5 year olds?",
             proposed_route="teachers",

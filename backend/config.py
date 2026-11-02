@@ -53,8 +53,12 @@ class Settings:
         "true",
         "yes",
     )
-    intent_arbiter_model: str = os.environ.get("INTENT_ARBITER_MODEL", "qwen-turbo")
-    intent_arbiter_timeout_s: float = float(os.environ.get("INTENT_ARBITER_TIMEOUT_S", "6"))
+    # Empty INTENT_ARBITER_MODEL → reuse LLM_MODEL (SAE MaaS often only exposes one).
+    intent_arbiter_model: str = (
+        os.environ.get("INTENT_ARBITER_MODEL")
+        or os.environ.get("LLM_MODEL", "qwen-turbo")
+    )
+    intent_arbiter_timeout_s: float = float(os.environ.get("INTENT_ARBITER_TIMEOUT_S", "12"))
     # Extra demo polish paths (still gated by intent_arbiter_enabled + DashScope key)
     arbiter_adapt_extra: bool = os.environ.get("ARBITER_ADAPT_EXTRA", "true").lower() in (
         "1",

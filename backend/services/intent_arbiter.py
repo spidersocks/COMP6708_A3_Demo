@@ -6,14 +6,10 @@ actual parent question.
 """
 from __future__ import annotations
 
-import json
-import re
 from typing import Any, Dict, List, Optional, Set
 
-import httpx
-
 from config import SETTINGS
-from rag.dashscope_native import auth_headers, native_api_base
+from services import cheap_llm
 
 # Structured / tool routes worth reviewing (keyword misfires look awkward live).
 _REVIEWABLE: Set[str] = {
@@ -76,9 +72,6 @@ _ROUTE_BLURBS: Dict[str, str] = {
     "confused": "Short clarify template — bad if the message already has substance.",
     "off_domain": "Refuse off-topic asks — bad on false keyword hits.",
 }
-
-_JSON_RE = re.compile(r"\{[^{}]*\}", re.S)
-
 
 def should_review(
     route: str,
@@ -172,38 +165,18 @@ def review_intent(
         f"Parent message: {message}\n"
     )
 
-    model = SETTINGS.intent_arbiter_model or "qwen-turbo"
-    url = f"{native_api_base()}/services/aigc/text-generation/generation"
-    payload = {
-        "model": model,
-        "input": {
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "Return only compact JSON for intent routing. No prose.",
-                },
-                {"role": "user", "content": prompt},
-            ]
-        },
-        "parameters": {
-            "result_format": "message",
-            "temperature": 0.0,
-            "max_tokens": 80,
-        },
-    }
     try:
-        with httpx.Client(timeout=SETTINGS.intent_arbiter_timeout_s) as client:
-            resp = client.post(url, headers=auth_headers(), json=payload)
-            data = resp.json()
-        if resp.status_code != 200:
-            out["reason"] = f"http_{resp.status_code}"
-            return out
-        text = _extract_text(data)
-        out["raw"] = text
-        parsed = _parse_json(text)
+        parsed = cheap_llm.complete_json(
+            prompt,
+            system="Return only compact JSON for intent routing. No prose.",
+            max_tokens=80,
+        )
         if not parsed:
-            out["reason"] = "parse_fail"
+            out["reason"] = "llm_empty"
+            out["model"] = cheap_llm.arbiter_model()
             return out
+        out["raw"] = str(parsed)
+        out["model"] = cheap_llm.arbiter_model()
         action = str(parsed.get("action") or "keep").strip().lower()
         route = str(parsed.get("route") or proposed_route).strip()
         reason = str(parsed.get("reason") or "").strip()[:160]
@@ -225,42 +198,3 @@ def review_intent(
         out["reason"] = f"error:{type(e).__name__}"
         print(f"[INTENT_ARBITER] failed: {e}", flush=True)
         return out
-
-
-def _extract_text(data: Dict[str, Any]) -> str:
-    output = data.get("output") or {}
-    choices = output.get("choices") or []
-    if choices:
-        msg = (choices[0] or {}).get("message") or {}
-        content = msg.get("content")
-        if isinstance(content, list):
-            parts = []
-            for block in content:
-                if isinstance(block, dict) and block.get("text"):
-                    parts.append(str(block["text"]))
-                elif isinstance(block, str):
-                    parts.append(block)
-            return "\n".join(parts).strip()
-        if isinstance(content, str):
-            return content.strip()
-    if isinstance(output.get("text"), str):
-        return output["text"].strip()
-    return str(output or "")
-
-
-def _parse_json(text: str) -> Optional[Dict[str, Any]]:
-    raw = (text or "").strip()
-    if not raw:
-        return None
-    try:
-        obj = json.loads(raw)
-        return obj if isinstance(obj, dict) else None
-    except json.JSONDecodeError:
-        m = _JSON_RE.search(raw)
-        if not m:
-            return None
-        try:
-            obj = json.loads(m.group(0))
-            return obj if isinstance(obj, dict) else None
-        except json.JSONDecodeError:
-            return None
