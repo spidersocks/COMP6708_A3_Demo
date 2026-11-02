@@ -120,26 +120,26 @@ def detect_escalation(text: str) -> Optional[Dict[str, Any]]:
         return {
             "category": "safety",
             "priority": "urgent",
-            "summary": "Possible child safety / medical urgency — staff must contact the parent ASAP.",
+            "summary": "Urgent: possible child safety or medical concern — please call the parent now",
         }
     # Anger / hard conflict before ask_human so "manager + unacceptable" stays complaint-toned
     if _ANGRY_RE.search(t):
         return {
             "category": "angry",
             "priority": "high",
-            "summary": "Parent sounds very upset or is escalating a complaint — boss/staff should follow up.",
+            "summary": "Follow up: parent is upset and may escalate a complaint",
         }
     if _HARD_CONFLICT_RE.search(t):
         return {
             "category": "hard_conflict",
             "priority": "high",
-            "summary": "Refund / withdrawal / public-complaint pressure — needs a human decision.",
+            "summary": "Follow up: refund, withdrawal, or public-complaint request needs a staff decision",
         }
     if _ASK_HUMAN_RE.search(t):
         return {
             "category": "ask_human",
             "priority": "high",
-            "summary": "Parent asked to speak with a real staff member / manager.",
+            "summary": "Follow up: parent asked to speak with a staff member",
         }
     return None
 
