@@ -7,10 +7,20 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
-
 _BACKEND_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _BACKEND_DIR.parent
+
+# Windows editors sometimes save .env as cp1252 (em-dash 0x97 in comments).
+_env_path = _REPO_ROOT / ".env"
+if _env_path.is_file():
+    for _enc in ("utf-8", "utf-8-sig", "cp1252"):
+        try:
+            load_dotenv(_env_path, encoding=_enc)
+            break
+        except UnicodeDecodeError:
+            continue
+else:
+    load_dotenv()
 
 
 @dataclass

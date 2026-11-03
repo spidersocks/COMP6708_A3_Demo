@@ -39,9 +39,13 @@ _ANGRY_RE = re.compile(
 _SAFETY_RE = re.compile(
     r"("
     r"\b(emergency|injured|injury|hurt|bleeding|allergic\s+reaction|anaphyla)\b"
+    # "peanut allergy … had a reaction" / "reaction after class" medical urgency
+    r"|\ballerg(?:y|ies|ic)\b.{0,80}\breaction\b"
+    r"|\breaction\b.{0,60}\b(allerg(?:y|ies|ic)|peanut|nut|class|yesterday|today)\b"
+    r"|\b(medical\s+emergency|ambulance|hospitalis|hospitaliz)\b"
     r"|\b(missing|lost)\s+(my\s+)?(child|kid|son|daughter)\b"
     r"|\b(child\s+)?(abuse|unsafe|danger(ous)?)\b"
-    r"|受傷|受伤|流血|過敏反應|过敏休克|走失|失踪|危險|危险|緊急|紧急"
+    r"|受傷|受伤|流血|過敏反應|过敏休克|走失|失踪|危險|危险|緊急|紧急|过敏.*反应|過敏.*反應"
     r")",
     re.I,
 )

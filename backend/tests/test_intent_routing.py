@@ -58,6 +58,12 @@ def test_weather_vs_hours(msg: str, expected: str):
         ("Hello", "greeting"),
         ("Can I speak to a real person?", "staff_escalation"),
         ("This is unacceptable get me a manager", "staff_escalation"),
+        (
+            "My child has a peanut allergy and had a reaction after class yesterday — please call me ASAP",
+            "staff_escalation",
+        ),
+        ("How many seats are left in Saturday phonics?", "booking_tool"),
+        ("What's the weather in Tokyo tomorrow?", "off_domain"),
         ("Tell me about your teachers", "teachers"),
         ("Who can pick up my child?", "pickup"),
         ("What is your make-up class policy?", "makeup"),

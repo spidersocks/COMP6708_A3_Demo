@@ -506,11 +506,24 @@ def chat(req: ChatRequest) -> ChatResponse:
         )
 
     if route == "off_domain":
+        low_msg = (message or "").lower()
+        weatherish = bool(
+            re.search(r"\b(weather|temperature|forecast|climate)\b", low_msg)
+        )
         off = {
             "en": (
-                "That’s outside what we can help with as BrightNest’s learning-centre assistant. "
-                "Ask about programmes, fees, hours, location, trials, or booking — "
-                "or ask to speak with our team."
+                (
+                    "I’m BrightNest’s learning-centre assistant, so I don’t have weather "
+                    "forecasts for other cities. Ask about our Hong Kong severe-weather "
+                    "class arrangements, programmes, fees, hours, or booking — "
+                    "or ask to speak with our team."
+                )
+                if weatherish
+                else (
+                    "That’s outside what we can help with as BrightNest’s learning-centre assistant. "
+                    "Ask about programmes, fees, hours, location, trials, or booking — "
+                    "or ask to speak with our team."
+                )
             ),
             "zh-HK": (
                 "呢啲唔屬於亮巢學習中心助理可以處理嘅範圍。"
@@ -1009,6 +1022,14 @@ def chat(req: ChatRequest) -> ChatResponse:
         rag_debug = {**rag_debug, "knowledge_gap": False, "gap_reason": None}
         steps.append(
             _step("admin_todo", "Flag for admin to-do", "skipped", "greeting")
+        )
+    # Off-topic chit-chat already answered with a refuse — don't spam the staff sheet
+    if rag_debug.get("knowledge_gap") and (
+        rag_debug.get("gap_reason") or ""
+    ) == "off_topic_retrieval":
+        rag_debug = {**rag_debug, "knowledge_gap": False}
+        steps.append(
+            _step("admin_todo", "Flag for admin to-do", "skipped", "off_topic")
         )
     if rag_debug.get("knowledge_gap"):
         info_needed = rag_debug.get("admin_gap_note") or admin_todos.infer_info_needed(

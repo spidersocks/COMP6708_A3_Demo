@@ -25,7 +25,8 @@ _AVAIL_STRONG_RE = re.compile(
     r"\b(availab(?:le|ility)?|time\s*slots?|open\s+slots?|open\s+seats?|"
     r"show\s+(me\s+)?(the\s+)?(slots?|availability|openings?)|"
     r"what\s+times?\s+(are\s+)?(open|available)|"
-    r"seats?\s+left|any\s+slots?|free\s+slots?)\b|"
+    r"seats?\s+(are\s+)?left|how\s+many\s+seats?|seat\s+count|"
+    r"spaces?\s+left|any\s+slots?|free\s+slots?)\b|"
     r"有冇位|有没有位|空位|档期|檔期|"
     r"有冇試堂位|有没有试听名额"
     r")",
@@ -89,6 +90,12 @@ _OFF_DOMAIN_RE = re.compile(
     r"\b(politics|political|election|scrap(?:e|ing)|malware|hack(?:ing)?|"
     r"system\s+prompt|admin\s+password|api\s*keys?|"
     r"admin\s+to-?do|show\s+(me\s+)?(the\s+)?admin)\b|"
+    # Clear non-centre chit-chat — refuse without spamming the follow-up sheet
+    r"\b(weather|temperature|forecast|climate)\b.{0,50}\b("
+    r"tokyo|london|paris|beijing|shanghai|seoul|sydney|new\s+york|nyc|"
+    r"los\s+angeles"
+    r")\b|"
+    r"\b(bitcoin|crypto(?:currency)?|stock\s+price|nba|premier\s+league|world\s+cup)\b|"
     r"香港政治|選舉|选举"
     r")",
     re.I,
@@ -302,9 +309,11 @@ def score_intents(
         debug["dialogue_active"] = dialogue_active
 
     if is_availability_browse(message):
-        scores["availability"] = 0.85
+        # Strong seat/slot wording should beat the cheap arbiter → RAG override
+        avail_score = 0.95 if _AVAIL_STRONG_RE.search(message or "") else 0.85
+        scores["availability"] = avail_score
         # route name used by chat()
-        scores["booking_tool"] = 0.85
+        scores["booking_tool"] = avail_score
 
     hours_intent, hours_debug = detect_opening_hours_intent(message, lang)
     if hours_intent:
@@ -456,10 +465,13 @@ def decide_intent(
         from services import intent_arbiter
 
         top_score = max(cleaned.values()) if cleaned else 0.0
+        conflicts = list(debug.get("conflicts") or [])
+        # Prototype blending is noise, not a real conflict — still skip the arbiter
+        material_conflicts = [c for c in conflicts if c != "blended_prototypes"]
         # High-confidence structured picks: skip the extra LLM round-trip
         if (
             top_score >= 0.9
-            and not (debug.get("conflicts") or [])
+            and not material_conflicts
             and route not in {"confused", "off_domain", "rag"}
         ):
             debug["arbiter"] = {
