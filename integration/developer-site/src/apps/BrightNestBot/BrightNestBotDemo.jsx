@@ -1338,7 +1338,9 @@ export default function BrightNestBotDemo() {
                     }`
                   : trace?.booking?.course_key
                     ? `${trace.booking.course_key} · ${trace.booking.slot_count ?? 0} slots`
-                    : "Idle — try book / cancel for Jason"
+                    : trace?.route === "booking_tool"
+                      ? `live seats · ${trace?.booking?.slot_count ?? "open"} slots`
+                      : "Idle — try book / cancel for Jason"
             }
             defaultOpen={bookingOpen}
           >
@@ -1427,11 +1429,20 @@ export default function BrightNestBotDemo() {
           <Reveal
             key={`mem-${turnKey}`}
             title="Session memory"
-            summary={`${trace?.history?.turns_loaded ?? 0}/${trace?.history?.limit ?? 10} msgs`}
+            summary={`${
+              trace?.history?.turns_loaded ?? chatHistory.length
+            }/${trace?.history?.limit ?? 10} msgs`}
             defaultOpen={false}
           >
             {trace?.history?.preview ? (
               <pre className="bn-pre">{trace.history.preview}</pre>
+            ) : chatHistory.length > 0 ? (
+              <pre className="bn-pre">
+                {chatHistory
+                  .slice(-8)
+                  .map((m) => `${m.role === "user" ? "parent" : "bot"}: ${clip(m.message || "", 120)}`)
+                  .join("\n")}
+              </pre>
             ) : (
               <p className="bn-empty">No prior turns yet.</p>
             )}
