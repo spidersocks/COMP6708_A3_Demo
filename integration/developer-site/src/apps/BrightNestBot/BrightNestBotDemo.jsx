@@ -14,22 +14,25 @@ const LOGO_SRC = "/projects/brightnest/logo.png";
 
 const DEMO_PROBES = [
   { label: "Hours", text: "What are your opening hours?" },
-  { label: "Tomorrow", text: "tomorrow?" },
   { label: "Christmas", text: "Are you open on Christmas Day?" },
+  { label: "Typhoon", text: "What happens when there is a typhoon signal 8?" },
   { label: "Phonics fee", text: "How much is phonics?" },
-  { label: "Teachers", text: "Tell me about your teachers" },
+  { label: "Teachers", text: "Who teaches Mandarin?" },
   { label: "Location", text: "Where are you located?" },
+  { label: "Friend guest", text: "Can I bring my friend to the trial class?" },
+  { label: "Phonics seats", text: "How many seats are left in Saturday phonics?" },
   { label: "Trial slots", text: "Show trial class availability" },
-  { label: "Phonics seats", text: "Show phonics availability" },
-  { label: "Math seats", text: "Show early math availability" },
-  { label: "Avery slots", text: "Show Avery open slots for trial" },
-  { label: "Jordan slots", text: "Show Jordan open slots for phonics" },
   { label: "Book Jason", text: "Can I book a class for Jason next week?" },
   { label: "Cancel class", text: "Can I cancel Jason's class next Tuesday?" },
-  { label: "Unknown ask", text: "Does BrightNest offer scuba diving for toddlers?" },
   { label: "Private 1:1", text: "How much is private English tuition?" },
+  { label: "Unknown ask", text: "Does BrightNest offer scuba diving for toddlers?" },
+  { label: "Off-topic", text: "What's the weather in Tokyo tomorrow?" },
   { label: "Talk to staff", text: "Can I speak to a real person please?" },
   { label: "Angry parent", text: "This is unacceptable — I'm furious about today's class!" },
+  {
+    label: "Safety call",
+    text: "My child has a peanut allergy and had a reaction after class yesterday — please call me ASAP",
+  },
 ];
 
 function getOrCreateSessionId() {
