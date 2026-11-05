@@ -40,6 +40,9 @@ def test_weather_vs_hours(msg: str, expected: str):
     [
         ("How much is the phonics class?", "fees"),
         ("What are your tuition fees?", "fees"),
+        ("月費幾多？", "fees"),
+        ("費用幾多", "fees"),
+        ("幾錢一個月", "fees"),
         ("How do I pay for a course package?", "payment"),
         ("FPS payment details?", "payment"),
         ("How much time is a trial?", "trial_info"),  # duration → trial facts, not fees

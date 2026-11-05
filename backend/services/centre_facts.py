@@ -14,7 +14,10 @@ _FEE_RE = re.compile(
     r"("
     r"\b(fee|fees|tuition|price|prices|cost|package\s+fee|monthly\s+fee)\b|"
     r"\bhow\s+much\b(?!\s+(time|longer|long|does\s+it\s+take|minutes?|hours?\b))|"
-    r"學費|收費|费用|价钱|價格|多少钱|幾多錢|几多钱"
+    # Everyday HK asks use 月費/費用 (not only 學費); 幾錢 ≈ 幾多錢. Avoid bare 幾多
+    # (matches 幾多歲 / 幾多位 and would steal seats/age questions into fees).
+    r"學費|月費|班費|收費|費用|学费|月费|班费|收费|费用|价钱|價錢|價格|价格|"
+    r"多少钱|多少錢|幾多錢|几多钱|幾錢|几钱"
     r")",
     re.I,
 )

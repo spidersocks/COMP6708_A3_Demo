@@ -61,11 +61,19 @@ CASES = [
     ("need trial first?", "Do I need to book a trial first before enrolling?", "trial_info"),
     ("zh typhoon", "八號風球會唔會停課？", "severe_weather"),
     ("zh fee", "拼音學費幾多錢？", "fees"),
+    ("zh monthly fee", "月費幾多？", "fees"),
+    ("zh fee short", "費用幾多", "fees"),
+    ("zh gei chin", "幾錢一個月", "fees"),
+    ("zh class fee", "班費幾多", "fees"),
     ("zh seats", "星期六拼音班仲有冇位？", "booking_tool"),
     ("zh seats2", "拼音班有冇位？", "booking_tool"),
+    ("zh seats+fee", "有冇位同月費幾多？", "booking_tool"),
     ("zh waitlist", "滿班嘅話可唔可以候補？", "waiting"),
+    ("zh no seat wait", "冇位，可以候補嗎", "waiting"),
     ("en waitlist", "Can you put us on the waiting list?", "waiting"),
     ("en full", "The Saturday phonics class is full — what now?", "waiting"),
+    # Negatives — must NOT steal into fees
+    ("zh age not fee", "小朋友幾多歲可以入讀？", "rag"),
 ]
 
 
