@@ -697,7 +697,7 @@ def _build_rules_evaluated(
             "Published fee guide",
             message=msg,
             pattern=centre_facts._FEE_RE,  # noqa: SLF001
-            pattern_summary="fee, tuition, price, how much, 學費…",
+            pattern_summary="fee, tuition, price, how much, 學費/月費/費用/班費/幾錢…",
             matched=centre_facts.is_fees_intent(message),
             score=scores.get("fees"),
             mechanism=(
