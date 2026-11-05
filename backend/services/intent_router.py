@@ -178,25 +178,32 @@ def is_trial_info(message: str) -> bool:
 
 def is_availability_browse(message: str) -> bool:
     m = message or ""
-    if centre_facts.is_fees_intent(m) or centre_facts.is_severe_weather_intent(m):
+    strong = bool(_AVAIL_STRONG_RE.search(m))
+    # Strong seat/slot wording wins even if the parent also asks about fees.
+    # Weak browse still yields to structured fact intents.
+    if not strong:
+        if centre_facts.is_fees_intent(m) or centre_facts.is_severe_weather_intent(m):
+            return False
+        if centre_facts.is_location_intent(m) or centre_facts.is_allergy_intent(m):
+            return False
+        if centre_facts.is_illness_intent(m) or centre_facts.is_payment_intent(m):
+            return False
+        if centre_facts.is_teachers_intent(m) or centre_facts.is_pickup_intent(m):
+            return False
+        if centre_facts.is_makeup_intent(m):
+            return False
+        if centre_facts.is_sibling_intent(m) or centre_facts.is_waiting_intent(m):
+            return False
+        if _PETS_RE.search(m) or _BOARDING_RE.search(m):
+            return False
+        if dialogue_svc.unknown_programme(m):
+            return False
+        if is_trial_info(m):
+            return False
+    elif centre_facts.is_waiting_intent(m):
+        # Explicit waitlist still beats seat browse
         return False
-    if centre_facts.is_location_intent(m) or centre_facts.is_allergy_intent(m):
-        return False
-    if centre_facts.is_illness_intent(m) or centre_facts.is_payment_intent(m):
-        return False
-    if centre_facts.is_teachers_intent(m) or centre_facts.is_pickup_intent(m):
-        return False
-    if centre_facts.is_makeup_intent(m):
-        return False
-    if centre_facts.is_sibling_intent(m) or centre_facts.is_waiting_intent(m):
-        return False
-    if _PETS_RE.search(m) or _BOARDING_RE.search(m):
-        return False
-    if dialogue_svc.unknown_programme(m):
-        return False
-    if is_trial_info(m):
-        return False
-    if _AVAIL_STRONG_RE.search(m):
+    if strong:
         return True
     if _BOOK_VERB_RE.search(m) and re.search(r"\b(slot|seat|time|availability)\b", m, re.I):
         return True
@@ -347,6 +354,15 @@ def score_intents(
         scores.pop("booking_tool", None)
         scores.pop("availability", None)
 
+    # Strong live-seat browse beats fee-guide when both appear in one turn
+    if (
+        scores.get("booking_tool")
+        and scores.get("fees")
+        and _AVAIL_STRONG_RE.search(message or "")
+    ):
+        debug["conflicts"].append("availability>fees")
+        scores.pop("fees", None)
+
     # Trial info beats availability when both (seat words stripped in is_trial_info)
     if scores.get("trial_info") and scores.get("booking_tool"):
         debug["conflicts"].append("trial_info>availability")
@@ -441,6 +457,17 @@ def score_intents(
     return scores, debug
 
 
+def _match_span(pattern: re.Pattern[str], message: str) -> Optional[Dict[str, Any]]:
+    m = pattern.search(message or "")
+    if not m:
+        return None
+    return {"text": m.group(0), "start": m.start(), "end": m.end()}
+
+
+def _check(label: str, passed: bool, detail: str = "") -> Dict[str, Any]:
+    return {"label": label, "passed": bool(passed), "detail": detail}
+
+
 def _rule_row(
     rule_id: str,
     label: str,
@@ -448,14 +475,77 @@ def _rule_row(
     matched: bool,
     score: Optional[float] = None,
     detail: str = "",
+    mechanism: str = "",
+    pattern_summary: str = "",
+    matched_span: Optional[Dict[str, Any]] = None,
+    why: str = "",
+    why_not: str = "",
+    checks: Optional[List[Dict[str, Any]]] = None,
+    downstream: str = "",
 ) -> Dict[str, Any]:
+    status_reason = why if matched else why_not
     return {
         "id": rule_id,
         "label": label,
         "matched": bool(matched),
         "score": score,
-        "detail": detail,
+        "detail": detail or status_reason,
+        "mechanism": mechanism,
+        "pattern_summary": pattern_summary,
+        "matched_span": matched_span,
+        "why": why,
+        "why_not": why_not,
+        "status_reason": status_reason,
+        "checks": checks or [],
+        "downstream": downstream,
     }
+
+
+def _regex_rule(
+    rule_id: str,
+    label: str,
+    *,
+    message: str,
+    pattern: re.Pattern[str],
+    pattern_summary: str,
+    matched: bool,
+    score: Optional[float],
+    mechanism: str,
+    why_template: str,
+    why_not: str,
+    downstream: str,
+    extra_checks: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    span = _match_span(pattern, message)
+    checks = [
+        _check(
+            f"Pattern scan · {pattern_summary}",
+            bool(span),
+            f"matched «{span['text']}» at [{span['start']}:{span['end']}]"
+            if span
+            else "no substring matched",
+        )
+    ]
+    if extra_checks:
+        checks.extend(extra_checks)
+    why = ""
+    if matched and span:
+        why = why_template.format(span=span["text"])
+    elif matched:
+        why = why_template.format(span="(predicate true without a single span)")
+    return _rule_row(
+        rule_id,
+        label,
+        matched=matched,
+        score=score,
+        mechanism=mechanism,
+        pattern_summary=pattern_summary,
+        matched_span=span,
+        why=why,
+        why_not=why_not,
+        checks=checks,
+        downstream=downstream,
+    )
 
 
 def _build_rules_evaluated(
@@ -466,7 +556,8 @@ def _build_rules_evaluated(
     scores: Dict[str, float],
     debug: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """Per-rule fired / not-fired report for the demo inspector."""
+    """Per-rule fired / not-fired report with nested why / why-not evidence."""
+    msg = message or ""
     esc = debug.get("escalation") or escalation_svc.detect_escalation(message)
     hours_hit = "opening_hours" in scores or bool(debug.get("hours_debug"))
     hours_detail = ""
@@ -479,7 +570,44 @@ def _build_rules_evaluated(
     leave_booking = dialogue_svc.should_yield_to_rag(session_id, message)
     dialogue_active = dialogue_svc.is_active(session_id)
     cancel_active = cancel_svc.is_active(session_id)
+    cancel_request = cancel_svc.is_cancel_request(message)
     unk = dialogue_svc.unknown_programme(message)
+    fee_duration_block = bool(centre_facts._FEE_DURATION_RE.search(msg))  # noqa: SLF001
+    structured_owner = [
+        k
+        for k in _PRIORITY
+        if k not in {"rag", "greeting", "thanks", "confused"}
+        and float(scores.get(k) or 0) >= 0.8
+    ]
+
+    # Escalation: ordered category checks
+    esc_checks = []
+    for name, pat in (
+        ("safety", escalation_svc._SAFETY_RE),  # noqa: SLF001
+        ("angry", escalation_svc._ANGRY_RE),  # noqa: SLF001
+        ("hard_conflict", escalation_svc._HARD_CONFLICT_RE),  # noqa: SLF001
+        ("ask_human", escalation_svc._ASK_HUMAN_RE),  # noqa: SLF001
+    ):
+        sp = _match_span(pat, msg)
+        esc_checks.append(
+            _check(
+                f"Escalation category «{name}»",
+                bool(sp),
+                f"matched «{sp['text']}»" if sp else "no match",
+            )
+        )
+    esc_span = None
+    if isinstance(esc, dict):
+        cat = esc.get("category") or ""
+        for name, pat in (
+            ("safety", escalation_svc._SAFETY_RE),  # noqa: SLF001
+            ("angry", escalation_svc._ANGRY_RE),  # noqa: SLF001
+            ("hard_conflict", escalation_svc._HARD_CONFLICT_RE),  # noqa: SLF001
+            ("ask_human", escalation_svc._ASK_HUMAN_RE),  # noqa: SLF001
+        ):
+            if name == cat:
+                esc_span = _match_span(pat, msg)
+                break
 
     rows = [
         _rule_row(
@@ -487,143 +615,391 @@ def _build_rules_evaluated(
             "Ask-human / anger / safety",
             matched=bool(scores.get("staff_escalation")),
             score=scores.get("staff_escalation"),
-            detail=(esc or {}).get("reason") if isinstance(esc, dict) else "",
+            mechanism=(
+                "Ordered detectors in services/escalation.py: safety → angry → "
+                "hard_conflict → ask_human. First hit wins; score 1.0."
+            ),
+            pattern_summary="safety / anger / refund-withdraw / speak-to-human cues",
+            matched_span=esc_span,
+            why=(
+                f"Triggered as category «{(esc or {}).get('category')}» "
+                f"({(esc or {}).get('priority')}): {(esc or {}).get('summary')}"
+                if esc
+                else ""
+            ),
+            why_not=(
+                "No safety, anger, hard-conflict, or ask-human cue matched. "
+                "Ordinary centre questions stay on tools/RAG."
+            ),
+            checks=esc_checks,
+            downstream="Parent ack + staff_messages inbox row (+ optional email draft)",
         ),
-        _rule_row(
+        _regex_rule(
             "off_domain",
             "Off-domain refuse",
+            message=msg,
+            pattern=_OFF_DOMAIN_RE,
+            pattern_summary="politics / malware / non-HK city weather / crypto / sports…",
             matched=bool(scores.get("off_domain")),
             score=scores.get("off_domain"),
-            detail="non-centre chit-chat / unsafe ask" if scores.get("off_domain") else "",
+            mechanism="Regex short-circuit before centre tools. Score 0.98. No admin todo.",
+            why_template="Triggered by off-domain cue «{span}».",
+            why_not="Message stays inside centre / parenting scope.",
+            downstream="Polite refuse · no follow-up sheet row",
         ),
-        _rule_row(
+        _regex_rule(
             "severe_weather",
             "Typhoon / Black Rain / severe weather policy",
+            message=msg,
+            pattern=centre_facts._WEATHER_POLICY_RE,  # noqa: SLF001
+            pattern_summary="typhoon, T1/T3/T8/T10, black/red/amber rain, 風球, 黑雨…",
             matched=centre_facts.is_severe_weather_intent(message),
             score=scores.get("severe_weather"),
-            detail="regex centre_facts.is_severe_weather_intent",
+            mechanism=(
+                "centre_facts.is_severe_weather_intent → load facts/severe_weather.json → "
+                "optional main-LLM adapt_structured_fact. Hard veto (≥0.98)."
+            ),
+            why_template="Weather-policy keywords matched «{span}».",
+            why_not="No typhoon / rainstorm / signal keywords present.",
+            downstream="Structured policy answer · adapt · RAG skipped",
         ),
-        _rule_row(
+        _regex_rule(
             "illness",
             "Illness / sick-child policy",
+            message=msg,
+            pattern=centre_facts._ILLNESS_RE,  # noqa: SLF001
+            pattern_summary="fever, flu, vomit, stay home, 發燒…",
             matched=centre_facts.is_illness_intent(message),
             score=scores.get("illness"),
+            mechanism="Structured ops fact (beats generic fees on conflict).",
+            why_template="Illness cue «{span}».",
+            why_not="No illness / keep-home language.",
+            downstream="centre_ops illness policy · adapt",
         ),
-        _rule_row(
+        _regex_rule(
             "allergy",
             "Allergy policy (non-urgent)",
+            message=msg,
+            pattern=centre_facts._ALLERGY_RE,  # noqa: SLF001
+            pattern_summary="allergy, peanut, epipen, 過敏…",
             matched=centre_facts.is_allergy_intent(message),
             score=scores.get("allergy"),
+            mechanism=(
+                "Non-urgent allergy FAQ. Safety+reaction wording is handled earlier "
+                "by staff_escalation."
+            ),
+            why_template="Allergy cue «{span}».",
+            why_not="No allergy keywords (or handled as urgent escalation instead).",
+            downstream="Allergy ops fact · adapt",
         ),
-        _rule_row(
+        _regex_rule(
             "fees",
             "Published fee guide",
+            message=msg,
+            pattern=centre_facts._FEE_RE,  # noqa: SLF001
+            pattern_summary="fee, tuition, price, how much, 學費…",
             matched=centre_facts.is_fees_intent(message),
             score=scores.get("fees"),
+            mechanism=(
+                "is_fees_intent: _FEE_RE must match AND _FEE_DURATION_RE must not "
+                "(so “how much time” ≠ fees)."
+            ),
+            why_template="Fee-guide cue «{span}».",
+            why_not=(
+                "Blocked as duration question (how much time / how long)."
+                if fee_duration_block
+                else "No fee / price / tuition cue."
+            ),
+            downstream="facts/fees.json (+ course hint) · adapt · not RAG",
+            extra_checks=[
+                _check(
+                    "Duration exclusion (_FEE_DURATION_RE)",
+                    not fee_duration_block,
+                    "blocked" if fee_duration_block else "not a duration ask",
+                )
+            ],
         ),
-        _rule_row(
+        _regex_rule(
             "location",
             "Centre location / parking",
+            message=msg,
+            pattern=centre_facts._LOCATION_RE,  # noqa: SLF001
+            pattern_summary="where are you, address, parking, MTR, 地址…",
             matched=centre_facts.is_location_intent(message),
             score=scores.get("location"),
+            mechanism="Structured location / access fact.",
+            why_template="Location cue «{span}».",
+            why_not="No address / directions / parking cue.",
+            downstream="Location fact · adapt",
         ),
-        _rule_row(
+        _regex_rule(
             "payment",
             "Payment methods",
+            message=msg,
+            pattern=centre_facts._PAYMENT_RE,  # noqa: SLF001
+            pattern_summary="how to pay, FPS, bank transfer, 轉數快…",
             matched=centre_facts.is_payment_intent(message),
             score=scores.get("payment"),
+            mechanism="Payment verbs; wins over generic fees when both fire.",
+            why_template="Payment cue «{span}».",
+            why_not="No payment-method language.",
+            downstream="Payment fact · adapt",
         ),
-        _rule_row(
+        _regex_rule(
             "teachers",
             "Who teaches…",
+            message=msg,
+            pattern=centre_facts._TEACHERS_RE,  # noqa: SLF001
+            pattern_summary="who teaches, teacher qualifications, 老師…",
             matched=centre_facts.is_teachers_intent(message),
             score=scores.get("teachers"),
+            mechanism="Teacher roster / qualifications fact.",
+            why_template="Teacher cue «{span}».",
+            why_not="No teacher / tutor wording.",
+            downstream="Teachers fact · adapt",
         ),
-        _rule_row(
+        _regex_rule(
             "pickup",
             "Pickup / drop-off",
+            message=msg,
+            pattern=centre_facts._PICKUP_RE,  # noqa: SLF001
+            pattern_summary="pickup, drop-off, authorised collector, 接送…",
             matched=centre_facts.is_pickup_intent(message),
             score=scores.get("pickup"),
+            mechanism="Pickup policy fact (cleared if waiting-list wins).",
+            why_template="Pickup cue «{span}».",
+            why_not="No pickup / drop-off cue.",
+            downstream="Pickup fact · adapt",
         ),
-        _rule_row(
+        _regex_rule(
             "makeup",
             "Absence / make-up",
+            message=msg,
+            pattern=centre_facts._MAKEUP_RE,  # noqa: SLF001
+            pattern_summary="make-up, reschedule, missed class, 補課…",
             matched=centre_facts.is_makeup_intent(message),
             score=scores.get("makeup"),
+            mechanism="Absence / make-up quota policy.",
+            why_template="Make-up cue «{span}».",
+            why_not="No make-up / absence cue.",
+            downstream="Make-up fact · adapt",
         ),
-        _rule_row(
+        _regex_rule(
             "sibling",
             "Sibling discount",
+            message=msg,
+            pattern=centre_facts._SIBLING_RE,  # noqa: SLF001
+            pattern_summary="sibling discount, second child, 兄弟姊妹…",
             matched=centre_facts.is_sibling_intent(message),
             score=scores.get("sibling"),
+            mechanism="Sibling pricing fact; beats generic fees.",
+            why_template="Sibling cue «{span}».",
+            why_not="No sibling / second-child discount language.",
+            downstream="Sibling fact · adapt",
         ),
-        _rule_row(
+        _regex_rule(
             "waiting",
             "Waiting list",
+            message=msg,
+            pattern=centre_facts._WAITING_RE,  # noqa: SLF001
+            pattern_summary="waitlist, class full, 候補, 滿班…",
             matched=centre_facts.is_waiting_intent(message),
             score=scores.get("waiting"),
+            mechanism="Waiting-list policy; clears pickup / booking_tool scores.",
+            why_template="Waiting-list cue «{span}».",
+            why_not="No waitlist / full-class language.",
+            downstream="Waiting-list fact · adapt",
         ),
-        _rule_row(
+        _regex_rule(
             "guest_policy",
             "Friend / guest at trial",
+            message=msg,
+            pattern=centre_facts._GUEST_RE,  # noqa: SLF001
+            pattern_summary="bring a friend, guest child, 帶朋友…",
             matched=centre_facts.is_guest_intent(message),
             score=scores.get("guest_policy"),
+            mechanism="Guest-at-trial policy (separate from sibling discount).",
+            why_template="Guest cue «{span}».",
+            why_not="No friend / guest-at-class language.",
+            downstream="Guest policy fact · adapt",
         ),
-        _rule_row(
+        _regex_rule(
             "pets_policy",
             "Pets on site",
+            message=msg,
+            pattern=_PETS_RE,
+            pattern_summary="dog, cat, pet, 寵物…",
             matched=is_pets_question(message),
             score=scores.get("pets_policy"),
+            mechanism="Pets policy; clears booking / availability scores.",
+            why_template="Pet cue «{span}».",
+            why_not="No pet keywords.",
+            downstream="Pets policy · adapt",
         ),
-        _rule_row(
+        _regex_rule(
             "unsupported_facility",
             "Overnight / boarding (unsupported)",
+            message=msg,
+            pattern=_BOARDING_RE,
+            pattern_summary="overnight, boarding, 寄宿…",
             matched=is_boarding_question(message),
             score=scores.get("unsupported_facility"),
+            mechanism="Explicit unsupported facility refuse.",
+            why_template="Boarding cue «{span}».",
+            why_not="No overnight / boarding language.",
+            downstream="Unsupported-facility refuse",
         ),
         _rule_row(
             "unknown_programme",
             "Unknown programme → staff follow-up",
             matched=bool(unk),
             score=scores.get("unknown_programme"),
-            detail=str(unk or ""),
+            mechanism="dialogue_svc.unknown_programme scans for programmes not in catalogue.",
+            pattern_summary="known catalogue miss (e.g. scuba, boarding school…)",
+            why=f"Unknown programme label «{unk}»." if unk else "",
+            why_not="No unknown-programme token detected against the catalogue.",
+            checks=[
+                _check(
+                    "unknown_programme(message)",
+                    bool(unk),
+                    str(unk) if unk else "catalogue miss not detected",
+                )
+            ],
+            downstream="Honest refuse + admin_todos follow-up row",
         ),
         _rule_row(
             "cancel_dialogue",
             "Cancel class dialogue",
-            matched=cancel_active or cancel_svc.is_cancel_request(message),
+            matched=cancel_active or cancel_request,
             score=scores.get("cancel_dialogue"),
-            detail="sticky" if cancel_active else "",
+            mechanism="Sticky cancel state OR fresh cancel request detector.",
+            pattern_summary="cancel / 取消 + sticky session flag",
+            why=(
+                "Sticky cancel dialogue already active for this session."
+                if cancel_active
+                else "Fresh cancel request detected."
+                if cancel_request
+                else ""
+            ),
+            why_not="No cancel request and no sticky cancel state.",
+            checks=[
+                _check("Sticky cancel active", cancel_active),
+                _check("is_cancel_request(message)", cancel_request),
+            ],
+            downstream="Multi-turn cancel_dialogue tool",
         ),
         _rule_row(
             "trial_info",
             "Trial explainer (not seat browse)",
             matched=is_trial_info(message),
             score=scores.get("trial_info"),
+            mechanism=(
+                "is_trial_info: trial explainer regex, with exclusions for seat browse "
+                "and explicit book+trial booking verbs (unless trial-policy question)."
+            ),
+            pattern_summary="do you offer trials / what is a trial / 試堂…",
+            why="Classified as trial explainer (not a live seat browse).",
+            why_not="Not a trial explainer (or overridden by seats / book verbs).",
+            checks=[
+                _check("is_trial_info(message)", is_trial_info(message)),
+                _check(
+                    "is_trial_policy_question",
+                    is_trial_policy_question(message),
+                    "policy wording keeps trial_info over booking",
+                ),
+            ],
+            downstream="Trial explainer fact · adapt",
         ),
         _rule_row(
             "booking_dialogue",
             "Book / enrol dialogue",
             matched=bool(scores.get("booking_dialogue")),
             score=scores.get("booking_dialogue"),
-            detail=(
-                "sticky dialogue"
-                if dialogue_active and not leave_booking
-                else ("yield_to_rag" if leave_booking else "")
+            mechanism=(
+                "Sticky booking state or is_booking_request, unless should_yield_to_rag."
             ),
+            pattern_summary="book / enrol / 預約 + sticky session",
+            why=(
+                "Sticky booking dialogue active."
+                if dialogue_active and not leave_booking
+                else "Booking request verbs matched."
+                if scores.get("booking_dialogue")
+                else ""
+            ),
+            why_not=(
+                "Yielded sticky booking to RAG/other intent."
+                if leave_booking and dialogue_active
+                else "No booking request and no sticky booking state."
+            ),
+            checks=[
+                _check("dialogue_active", dialogue_active),
+                _check("should_yield_to_rag", leave_booking),
+                _check(
+                    "score booking_dialogue",
+                    bool(scores.get("booking_dialogue")),
+                    f"{scores.get('booking_dialogue')}",
+                ),
+            ],
+            downstream="Multi-turn booking_dialogue",
         ),
         _rule_row(
             "booking_tool",
             "Live seats / availability browse",
             matched=is_availability_browse(message),
             score=scores.get("booking_tool") or scores.get("availability"),
+            mechanism=(
+                "is_availability_browse: strong seat/slot wording, after excluding "
+                "fees/weather/facts/trial-info/pets/unknown."
+            ),
+            pattern_summary="seats left, availability, open slots, 有冇位…",
+            matched_span=_match_span(_AVAIL_STRONG_RE, msg),
+            why=(
+                f"Availability browse matched «{_match_span(_AVAIL_STRONG_RE, msg)['text']}»."
+                if _match_span(_AVAIL_STRONG_RE, msg)
+                else "Availability browse predicate true."
+                if is_availability_browse(message)
+                else ""
+            ),
+            why_not="No seat/slot browse wording (or excluded by a higher fact intent).",
+            checks=[
+                _check(
+                    "Strong avail regex",
+                    bool(_match_span(_AVAIL_STRONG_RE, msg)),
+                    (
+                        f"«{_match_span(_AVAIL_STRONG_RE, msg)['text']}»"
+                        if _match_span(_AVAIL_STRONG_RE, msg)
+                        else "no match"
+                    ),
+                ),
+                _check("is_availability_browse", is_availability_browse(message)),
+            ],
+            downstream="CSV register → seats_left cards /trial slots",
         ),
         _rule_row(
             "opening_hours",
             "Opening hours / date / holiday",
             matched=hours_hit,
             score=scores.get("opening_hours"),
-            detail=hours_detail,
+            mechanism=(
+                "llm.hours_intent.detect_opening_hours_intent → deterministic calendar "
+                "(holidays, Sunday closed, optional HKO)."
+            ),
+            pattern_summary="hours / open / Christmas / tomorrow? follow-ups",
+            why=(
+                f"Hours intent fired via {hours_detail or 'hours detector'}."
+                if hours_hit
+                else ""
+            ),
+            why_not="No date/hours intent (or cleared by weather>hours conflict).",
+            checks=[
+                _check("hours intent", hours_hit, hours_detail or "not detected"),
+                _check(
+                    "weather>hours conflict",
+                    "weather>hours" in (debug.get("conflicts") or []),
+                    "opening_hours score cleared when severe_weather also fires",
+                ),
+            ],
+            downstream="Deterministic opening-hours engine · adapt",
         ),
         _rule_row(
             "greeting",
@@ -634,27 +1010,69 @@ def _build_rules_evaluated(
             score=scores.get("greeting")
             or scores.get("thanks")
             or scores.get("confused"),
+            mechanism="Short-form social turns (hi / thanks / huh).",
+            pattern_summary="hello / thanks / confused one-liners",
+            why="Social / clarification short turn.",
+            why_not="Not a bare greeting/thanks/confused utterance.",
+            checks=[
+                _check("greeting score", bool(scores.get("greeting"))),
+                _check("thanks score", bool(scores.get("thanks"))),
+                _check("confused score", bool(scores.get("confused"))),
+            ],
+            downstream="Short social reply",
         ),
         _rule_row(
             "rag",
             "RAG knowledge-base path",
-            matched=bool(scores.get("rag"))
-            or (
-                not any(
-                    (scores.get(k) or 0) >= 0.8
-                    for k in _PRIORITY
-                    if k not in {"rag", "greeting", "thanks", "confused"}
-                )
-            ),
+            matched=bool(scores.get("rag")) or not structured_owner,
             score=scores.get("rag"),
-            detail="default when no structured rule wins",
+            mechanism=(
+                "Fallback when no structured rule ≥ 0.8 owns the turn, or when "
+                "multi_topic>single_fact forces RAG. Runs Chroma retrieve → Qwen generate."
+            ),
+            pattern_summary="default / multi-topic / narrative KB questions",
+            why=(
+                "No structured owner ≥ 0.8 — RAG default score applied."
+                if not structured_owner
+                else f"Explicit RAG score {scores.get('rag')} (e.g. multi-topic conflict)."
+                if scores.get("rag")
+                else ""
+            ),
+            why_not=(
+                "Idle because structured owner(s) already won: "
+                + ", ".join(f"{k}={scores.get(k)}" for k in structured_owner)
+                if structured_owner
+                else "RAG not selected."
+            ),
+            checks=[
+                _check(
+                    "Structured owner ≥ 0.8",
+                    bool(structured_owner),
+                    ", ".join(structured_owner) if structured_owner else "none",
+                ),
+                _check(
+                    "scores['rag']",
+                    bool(scores.get("rag")),
+                    str(scores.get("rag")),
+                ),
+                _check(
+                    "multi_topic>single_fact",
+                    "multi_topic>single_fact" in (debug.get("conflicts") or []),
+                ),
+            ],
+            downstream="rag/pipeline.py retrieve → generate · citations with rank/score/text",
         ),
     ]
     # Annotate conflicts that suppressed a matched rule
     suppressed = set()
     for c in debug.get("conflicts") or []:
-        if ">" in str(c):
+        if ">" in str(c) and c != "blended_prototypes":
             loser = str(c).split(">")[-1].strip()
+            # normalize aliases
+            if loser == "hours":
+                loser = "opening_hours"
+            if loser == "availability":
+                loser = "booking_tool"
             suppressed.add(loser)
     for row in rows:
         rid = row["id"]
@@ -662,10 +1080,22 @@ def _build_rules_evaluated(
             rid == "opening_hours" and "weather>hours" in (debug.get("conflicts") or [])
         ):
             row["suppressed_by_conflict"] = True
-            row["detail"] = (
-                (row.get("detail") + " · " if row.get("detail") else "")
-                + "cleared by conflict resolution"
+            conflict_note = next(
+                (
+                    c
+                    for c in (debug.get("conflicts") or [])
+                    if rid in str(c) or (rid == "opening_hours" and "hours" in str(c))
+                ),
+                "conflict",
             )
+            row["why_not"] = (
+                f"Matched initially, then cleared by conflict resolution «{conflict_note}»."
+            )
+            row["status_reason"] = row["why_not"]
+            row["detail"] = row["why_not"]
+            row["checks"] = list(row.get("checks") or []) + [
+                _check("Survived conflict resolution", False, str(conflict_note))
+            ]
     return rows
 
 

@@ -1,4 +1,4 @@
-# BrightNest — end-to-end system guide (COMP6708 · Group 15)
+# BrightNest — system architecture (COMP6708 · Group 15)
 
 | Member | Name | Student ID |
 |--------|------|------------|
@@ -7,287 +7,327 @@
 | 3 | MAO Shiwei | 25038479r |
 | 4 | YAN Xingzhuo | 25013043r |
 
-**Course:** COMP6708 Advanced Big Data Computing  
-**Demo:** 25 November 2026 · 5-minute **live** system demo  
-**Live UI:** https://seanfontaine.dev/COMP6708_A3_Demo  
-**API:** Alibaba SAE (`/brightnest-api` via Vercel rewrite)  
-**Slides:** `slides/main.tex` → `Assignment3-Group15.pdf`  
-**Script:** [demo-script.md](demo-script.md)
+**Live:** https://seanfontaine.dev/COMP6708_A3_Demo · **API:** Alibaba SAE via `/brightnest-api`  
+**Code:** FastAPI (`backend/`) · React inspector (`developer-site` BrightNestBot) · KB `content/`
 
-Brand is **BrightNest / 亮巢** (fictional). Do **not** point this stack at live WhatsApp / production tutoring.
-
-This document is the source of truth for **how the system actually works**, not a roster page. Read it before changing routing, RAG, or the demo UI.
+Fictional brand **BrightNest / 亮巢**. This document describes runtime behaviour end-to-end.
 
 ---
 
-## 1. What problem we solve
-
-A bilingual Hong Kong kids' learning centre gets the **same parent questions after hours**:
-
-- Are you open during **Signal 8** / Christmas?
-- How much is **phonics**?
-- How many **seats** are left Saturday?
-- Do you offer **private 1:1**?
-- Can I **book / cancel** for my child?
-- My child had an **allergy reaction** — call me.
-
-Staff cannot live on WhatsApp. A wrong fee or hours answer costs trust. BrightNest is the assistant we would ship: **answer from centre truth**, **act with tools**, **hand off when a human must**.
-
----
-
-## 2. Runtime topology (what talks to what)
+## 1. Deployment topology
 
 ```text
-Parent browser
-  └─ React demo UI  (seanfontaine.dev/COMP6708_A3_Demo)
-       │  HTTPS same-origin
+Browser (HTTPS)
+  └─ React SPA  /COMP6708_A3_Demo
+       │  same-origin fetch
        ▼
-     /brightnest-api/*   (Vercel rewrite)
+     Vercel rewrite  /brightnest-api/*  →  http://<SAE-EIP>:8000/*
        │
        ▼
-     FastAPI on Alibaba SAE  (EIP, Docker image brightnest-api:vN)
-       ├─ Hybrid intent router          backend/services/intent_router.py
-       ├─ Structured centre facts       backend/services/centre_facts.py
-       ├─ Opening-hours engine          backend/llm/opening_hours.py
-       ├─ Booking / cancel dialogues    backend/services/booking_*.py
-       ├─ Staff escalation + email      backend/services/escalation.py, staff_*
-       ├─ Admin follow-up sheet         backend/services/admin_todos.py
-       ├─ RAG pipeline                  backend/rag/*
-       │    ├─ ingest → Chroma          content/**/*.md
-       │    ├─ embed (DashScope)        text-embedding-v*
-       │    └─ generate (Qwen)          SETTINGS.llm_model
-       └─ Session memory (SQLite)       backend/data/chat_history.db
+     FastAPI  (Docker image brightnest-api:vN on Alibaba SAE)
+       │
+       ├─ services/intent_router.py     hybrid intent scores + arbiter gate
+       ├─ services/centre_facts.py      structured JSON facts + regex intents
+       ├─ llm/opening_hours.py          deterministic calendar / holidays / HKO
+       ├─ services/booking_*.py         sticky book/cancel + CSV register
+       ├─ services/escalation.py        safety / anger / ask-human
+       ├─ services/staff_*.py           inbox + optional mail draft
+       ├─ services/admin_todos.py       soft-gap follow-up sheet
+       ├─ rag/{ingest,pipeline,generator,store,embeddings}.py
+       │     content/{en,zh-HK,zh-CN}/**/*.md  →  Chroma  →  Qwen
+       └─ llm/chat_history.py           SQLite session memory
 ```
 
-**Frontend hosting:** Vercel (`developer-site` repo).  
-**Backend hosting:** SAE only — never deploy a new image while the app is still RUNNING (see `deploy/REDEPLOY.md`).
+| Tier | Host | Artifact |
+|------|------|----------|
+| UI | Vercel (`developer-site`) | Vite React |
+| API | SAE `cn-hongkong` | `deploy/Dockerfile.backend` → ACR → DeployApplication |
+| Models | DashScope (HK / CN endpoint via `DASHSCOPE_BASE_URL`) | chat + embeddings |
+
+Redeploy ritual: abort change-order → **StopApplication** → build/push tag → DeployApplication → `GET /healthz` → `POST /admin/reindex`. See `deploy/REDEPLOY.md`.
 
 ---
 
-## 3. One chat turn — exact path
+## 2. Request lifecycle (`POST /chat`)
 
-Every `POST /chat` does the same skeleton (`backend/router.py::chat`):
+Entry: `backend/router.py::chat`.
 
-1. **Language detect** — `en` / `zh-HK` / `zh-CN` from the message (overridable).
-2. **Session memory load** — last `CHAT_HISTORY_LIMIT` (default 10) turns from SQLite, keyed by `session_id`.
-3. **Hybrid intent router** — scores rules → priority pick → optional cheap LLM review.
-4. **Branch on `route`:**
-   - Structured / tool routes → fetch fact or run dialogue → optional **main LLM fact rewrite** (`adapt`) → **RAG skipped**.
-   - `rag` → retrieve top-k chunks → generate → citations + RAG debug.
-   - `staff_escalation` → parent ack + staff inbox row (+ optional Gmail draft).
-   - `unknown_programme` / soft KB gap → parent-safe refuse + **follow-up sheet** row.
-5. **Persist** parent + bot turns into session memory.
-6. **Return** `answer`, `citations`, `slots?`, `trace` (full inspector payload).
+| Step | Module | Output on `trace` |
+|------|--------|-------------------|
+| 1. Language | `get_language_code` | `language` |
+| 2. History load | `get_recent_history(session_id, limit)` | `history.turns[]`, `turns_loaded`, `limit` |
+| 3. Intent | `intent_router.decide_intent` | `routing.{scores,rules_evaluated,decision_path,winning_rule}` |
+| 4. Hours follow-up promote | if route was `rag` but “tomorrow?” after hours | may rewrite to `opening_hours` |
+| 5. Branch | tool / RAG / escalation / unknown | `route`, `pipeline_steps[]`, domain payloads |
+| 6. Optional adapt | `adapt_structured_fact` (main LLM) | `adapt.{ran,why,model}` |
+| 7. Persist | append user+bot turns | — |
+| 8. Return | `ChatResponse` | `answer`, `citations`, `slots?`, `trace`, `latency_ms` |
 
-The live **System inspector** reads `trace` only. If something is not in `trace`, the UI cannot show it.
+### 2.1 Branch semantics
 
-### 3.1 What `trace` contains (inspector contract)
+```text
+route ∈ structured fact set
+  → load JSON/MD fact → optional adapt → pipeline rag=skipped
+
+route = opening_hours
+  → parse datetime → holiday/Sunday/HKO → adapt → rag skipped
+
+route ∈ {booking_tool, booking_dialogue, cancel_dialogue}
+  → CSV register / sticky dialogue state machine
+
+route = rag
+  → retrieve(top_k) → lexical rerank → generate → citations[rank,score,text]
+
+route = staff_escalation
+  → parent-safe ack + staff_messages row (+ email body)
+
+route = unknown_programme | soft KB gap
+  → parent refuse + admin_todos row (no hallucinated programme)
+
+route = off_domain
+  → refuse · no admin todo
+```
+
+---
+
+## 3. Hybrid intent router
+
+**File:** `backend/services/intent_router.py`  
+**Supporting:** `centre_facts.py`, `escalation.py`, `intent_classifier.py` (prototypes), `intent_arbiter.py` (cheap LLM).
+
+### 3.1 Scoring pipeline
+
+```text
+message
+  │
+  ├─ hard detectors → scores[route] ∈ [0.85, 1.0]
+  │     escalation, off_domain, severe_weather, illness, allergy, fees, …
+  │     booking_tool / booking_dialogue / cancel / trial_info / hours
+  │
+  ├─ conflict resolution (destructive)
+  │     weather>hours, payment>fees, illness>fees, availability>fees, …
+  │     waiting clears pickup + booking_tool
+  │     multi_topic>single_fact → drop fact keys, scores[rag]=0.65
+  │
+  ├─ soft prototype blend  (skipped if any hard veto score ≥ 0.98)
+  │     intent_classifier.score_prototypes → blend_scores
+  │
+  ├─ clean floor (drop scores < 0.28 except availability alias)
+  │
+  ├─ _pick_route via _PRIORITY tie-break
+  │
+  └─ cheap LLM arbiter (optional)
+        skip if top≥0.9 ∧ ¬material_conflicts ∧ route ∉ {confused,off_domain,rag}
+        else review_intent → keep | reroute | force rag
+```
+
+### 3.2 Priority order (high → low)
+
+```text
+staff_escalation > off_domain > severe_weather > illness > allergy >
+makeup > teachers > pickup > waiting > sibling > guest_policy >
+location > payment > fees > pets_policy > unsupported_facility >
+unknown_programme > cancel_dialogue > trial_info > booking_dialogue >
+booking_tool > opening_hours > greeting > thanks > confused > rag
+```
+
+Hard veto set (`_HARD_VETO`, blocks prototype dilution):  
+`staff_escalation`, `off_domain`, `severe_weather`, `confused`, `thanks`.
+
+### 3.3 Arbiter gate
+
+```text
+IF max(scores) ≥ 0.9
+   AND no material conflicts (ignoring blended_prototypes)
+   AND route ∉ {confused, off_domain, rag}
+THEN
+   arbiter.called = false
+   reason = high_confidence_skip
+ELSE
+   cheap model review_intent(message, proposed_route, scores, history[-4:])
+```
+
+`trace.routing.winning_rule` records `pre_arbiter_route`, `arbiter_called`, `arbiter_reason`, `skip_detail`, `override`.
+
+### 3.4 Rule → downstream map
+
+| Rule id | Detector | Typical score | Downstream |
+|---------|----------|---------------|------------|
+| `staff_escalation` | ordered: safety → angry → hard_conflict → ask_human | 1.0 | inbox + email draft |
+| `off_domain` | politics / foreign-city weather / crypto / malware | 0.98 | refuse, no todo |
+| `severe_weather` | `_WEATHER_POLICY_RE` (T8, black rain, 風球…) | 1.0 | `facts/severe_weather.json` + adapt |
+| `fees` | `_FEE_RE` minus `_FEE_DURATION_RE` | 0.9 | `facts/fees.json` + adapt |
+| `booking_tool` | `_AVAIL_STRONG_RE` / seat browse | 0.85–0.95 | CSV `seats_left` cards |
+| `booking_dialogue` | book verbs + sticky state | ~0.85 | multi-turn book FSM |
+| `cancel_dialogue` | cancel verbs + sticky | 0.95 | multi-turn cancel FSM |
+| `opening_hours` | `detect_opening_hours_intent` | 0.8 | calendar engine |
+| `unknown_programme` | catalogue miss | 0.95 | refuse + sheet row |
+| `rag` | default / multi-topic | 0.5–0.65 | Chroma → Qwen |
+
+### 3.5 Inspector evidence (`rules_evaluated[]`)
+
+Each rule emits:
 
 | Field | Meaning |
 |-------|---------|
-| `route` | Final route name after arbiter |
-| `pipeline_steps[]` | Ordered chips: lang → history → intent → arbiter → facts/adapt/rag… |
-| `routing.scores` | Intent scores after cleaning |
-| `routing.rules_evaluated[]` | **Every** named rule: fired / idle / cleared by conflict |
-| `routing.decision_path[]` | Human path: rules → conflicts → pick → arbiter → final |
-| `routing.winning_rule` | Score, pre-arbiter pick, arbiter called?, skip detail, override |
-| `adapt` | Whether main LLM rewrote a structured fact, and **why** |
-| `rag` | `index_size`, `top_k`, `hit_count`, `top_score`, `hits[]` with **full `text`**, `rank`, `score` |
-| `history.turns[]` | Full prior turns (not a 600-char clip) |
-| `llm` | Main vs cheap model, what each was used for |
-| `latency_ms` | Wall time for the turn |
+| `matched` | predicate true after scoring |
+| `score` | numeric score if present |
+| `mechanism` | which code path owns the rule |
+| `pattern_summary` | human summary of the detector |
+| `matched_span` | `{text,start,end}` if a regex hit |
+| `why` / `why_not` | plain-language trigger or idle reason |
+| `checks[]` | nested `{label, passed, detail}` sub-conditions |
+| `downstream` | what runs if this rule wins |
+| `suppressed_by_conflict` | matched then cleared by conflict resolution |
+
+### 3.6 Routing invariants (stress-tested)
+
+- Typhoon / T8 / black rain → `severe_weather` (RAG skipped; adapt may run).
+- “How much is phonics?” → `fees` (not RAG). “Do you offer private 1:1?” → `rag`.
+- “How much time does phonics take?” → not fees (`_FEE_DURATION_RE` exclusion) → RAG.
+- Strong seat browse (`seats left`, `有冇位`, `仲有冇位`) → `booking_tool`, even if fee words co-occur (`availability>fees`).
+- Bare waitlist (`候補`, `滿班`, `waiting list`) → `waiting`; bare `冇位` no longer implies waitlist (would steal Cantonese seat asks).
+- Safety “allergy + reaction” → `staff_escalation` before non-urgent `allergy` FAQ.
+- Off-domain city weather → refuse without admin todo.
+
+Probe script: `scripts/stress_intent_router.py`.
 
 ---
 
-## 4. Hybrid intent router (the decision engine)
+## 4. Structured tools
 
-**File:** `backend/services/intent_router.py`
+### 4.1 Centre facts
 
-### 4.1 Design idea
+`backend/services/centre_facts.py` + `backend/facts/*.json` (SAE image path; not the mutable `/app/data` volume).
 
-Parents mix topics. A pure LLM classifier is slow and flaky for **typhoon / fees / seats**. A pure regex router misses paraphrase. We use both:
+Flow: intent → `format_*_answer` → citations pointing at JSON/MD → `adapt_structured_fact(question, answer, route=…)` rewrites tone only (`enable_thinking: false`).
 
-1. **Hard / structured regex rules** (centre_facts + dialogue detectors) assign high scores (0.85–1.0).
-2. **Conflict resolution** clears lower-priority scores (e.g. `weather>hours`, `payment>fees`).
-3. **Soft prototype classifier** blends only when no hard veto (≥0.98) is present.
-4. **Priority pick** (`_PRIORITY`) breaks ties.
-5. **Cheap DashScope arbiter** (`intent_arbiter`) may keep / reroute — **unless** high-confidence skip.
+### 4.2 Opening hours
 
-### 4.2 High-confidence arbiter skip
+`detect_opening_hours_intent` → `_get_opening_facts` / `compute_opening_answer`:
 
-If `top_score ≥ 0.9`, there are **no material conflicts**, and the pick is **not** `{confused, off_domain, rag}`, the cheap LLM is **not called**:
+1. Resolve datetime (explicit date, weekday name, or now).
+2. Public holiday table → closed + name.
+3. Sunday → closed.
+4. Else weekday open/close window.
+5. Optional HKO severe-weather hint when query is “today”.
+
+### 4.3 Seats & booking
+
+CSV under `backend/data/sheets/`: teachers, windows, sessions, enrolments, trial_slots, families.
+
+- `booking_tool`: compute `seats_left = capacity − enrolments`, return bookable `slots[]`.
+- `booking_dialogue` / `cancel_dialogue`: session-sticky FSM; identity from `phone` → `families.csv`.
+- Confirmed chat books append `chat_bookings.csv` (provisional, no payment).
+
+### 4.4 Staff surfaces
+
+| Surface | Store | Trigger |
+|---------|-------|---------|
+| Follow-up sheet | `admin_todos` | unknown programme / soft RAG gap |
+| Inbox | `staff_messages` | escalation categories |
+| Email draft | `staff_email` | optional outbound; body kept for inbox UI |
+
+Parent chat copy never names internal sheets.
+
+---
+
+## 5. RAG pipeline
+
+Training-free by design: KB edits → reingest; no fine-tune loop.
+
+### 5.1 Ingest
+
+`rag/ingest.py` + `rag/chunking.py`:
+
+- Walk `content/{lang}/**/*.md` (frontmatter → metadata).
+- Chunk size `RAG_CHUNK_SIZE` (default 900) with overlap `RAG_CHUNK_OVERLAP` (120).
+- Embed (`EMBEDDING_MODEL`, default `text-embedding-v4`) → upsert Chroma collection `brightnest_kb`.
+- Offline fallback: deterministic local hash embeddings.
+
+### 5.2 Retrieve → generate
+
+`rag/pipeline.py::answer_question`:
 
 ```text
-reason = high_confidence_skip
-skip_detail = "top_score=1.00 ≥ 0.9, no material conflicts, route=severe_weather is structured"
+embed(query)
+  → Chroma query (pool_k = top_k, or ≥20 when age digits present)
+  → optional language-filter retry
+  → age FAQ overlay merge
+  → lexical rerank (path/alias boost, folder prior, token overlap, vector score)
+  → truncate to rag_top_k (default 5)
+  → generate_answer_meta(contexts, history_context)
+  → citations[{rank, score, snippet, text, source, title, char_count}]
+  → gap heuristics (weak_score, off_topic, NO_ANSWER, soft hand-off)
 ```
 
-**Demo implication:** Typhoon Signal 8 → `severe_weather` score 1.0 → arbiter skipped → RAG skipped → structured policy + fact rewrite. That is **correct**, not a bug. The inspector must say so.
+Weak-score thresholds: cloud ≈ 0.28, local-hash ≈ 0.42.
 
-### 4.3 Rule catalogue (what can fire)
+Generation: DashScope chat (`LLM_MODEL`) with numbered excerpts; `enable_thinking: false`; extractive fallback if no key.
 
-| Rule id | What it catches | Typical score | Downstream |
-|---------|-----------------|---------------|------------|
-| `staff_escalation` | ask human / anger / safety | 1.0 | Staff inbox + email draft |
-| `off_domain` | Tokyo weather, politics, crypto… | 0.98 | Refuse, **no** fake todo |
-| `severe_weather` | T8 / Black Rain / typhoon policy | 1.0 | `centre_facts` + adapt |
-| `fees` / `payment` / `location` / … | Published ops facts | 0.9–0.95 | Structured JSON/MD facts + adapt |
-| `booking_tool` | seats left / availability | 0.85–0.95 | CSV register → seat cards |
-| `booking_dialogue` / `cancel_dialogue` | book / cancel flows | ~0.85–0.95 | Sticky multi-turn state |
-| `unknown_programme` | scuba / programmes we don't offer | 0.95 | Honest refuse + sheet row |
-| `opening_hours` | hours / Christmas / “tomorrow?” | 0.8 | Deterministic calendar engine |
-| `rag` | default / multi-topic / KB explainers | 0.5–0.65 | Chroma retrieve → generate |
+### 5.3 Debug payload (`trace.rag`)
 
-**Important demo gotcha:**  
-“How much is phonics?” → **`fees`** (structured fee guide), **not** RAG.  
-“Do you offer private 1:1 tutoring?” → **`rag`**.  
-Use the **RAG · Private 1:1** probe when you want to show chunks / scores / expand.
-
-### 4.4 Why each decision is visible
-
-After every turn the UI **Router decision** panel shows:
-
-- Final route + winning score
-- Pre-arbiter pick vs post-arbiter
-- Cheap LLM: called or skipped (**with skip_detail**)
-- Fact rewrite: ran? why?
-- RAG: ran or skipped (and which route won instead)
-- **Exact path** (`decision_path`)
-- **Rule map** — every rule fired / idle / cleared
-- Raw scores
-
-If a rule did **not** fire, you can open the map and see it marked **idle**. If it fired but lost a conflict, it shows **cleared**.
+`index_size`, `top_k`, `hit_count`, `top_score`, `embedding_mode`, `language_fallback`, `gap_reason`, `hits[]` (full `text`).
 
 ---
 
-## 5. Structured tools (when we refuse to “guess”)
+## 6. Session memory
 
-### 5.1 Severe weather / hours / holidays
+| Setting | Default |
+|---------|---------|
+| `CHAT_HISTORY_ENABLED` | true |
+| `CHAT_HISTORY_LIMIT` | 10 messages |
+| Store | SQLite `CHAT_HISTORY_DB` |
 
-- **Weather policy** (`severe_weather`): canned centre policy from `centre_facts`, then optional Qwen **fact rewrite** for fluency (`adapt_structured_fact`). Facts must not change; tone may.
-- **Opening hours** (`opening_hours`): parse date → holiday table → Sunday closed → HKO hint when “today”. Deterministic; not RAG.
-
-### 5.2 Fees and other centre facts
-
-Loaded from `backend/data/facts/*.json` (and related helpers). Same adapt path as weather.
-
-### 5.3 Live seats + booking
-
-- Admin register = local CSVs under `backend/data/sheets/` (teachers, windows, sessions, enrolments, trial_slots).
-- “How many seats left in Saturday phonics?” → `booking_tool` → `seats_left` from enrolments, **not** from the LLM.
-- Book writes `chat_bookings.csv` (provisional; no payment).
-- Cancel / book dialogues keep **sticky session state** until completed or yielded.
-
-### 5.4 Staff desk
-
-Two surfaces, one backend:
-
-1. **Follow-up sheet** (`admin_todos`) — soft gaps / unknown programmes. Quiet research queue.
-2. **Gmail-style inbox** (`staff_messages`) — escalation. Urgent safety gets a drafted email body (call now, names, quote).
-
-Parents never see sheet/inbox jargon in the chat reply.
+Consumed by: RAG prompt, fact adapt, hours follow-up (“tomorrow?”), arbiter history preview (last 4 turns).  
+`trace.history.turns[]` exposes full loaded window to the inspector.
 
 ---
 
-## 6. RAG pipeline (self-built, training-free)
+## 7. Models & flags
 
-**Why RAG (assignment fit):** centre docs change weekly → **no fine-tune**. We implement chunk → embed → retrieve → generate ourselves so the technique is auditable in the inspector.
-
-### 6.1 Knowledge base
-
-- Source: `content/{en,zh-HK,zh-CN}/**/*.md`
-- Ingest: `backend/rag/ingest.py` — frontmatter + body, ~900-char chunks with overlap
-- Store: Chroma (persistent under backend data)
-- Embeddings: DashScope when `DASHSCOPE_API_KEY` set; else deterministic local hash (offline demo)
-
-### 6.2 Retrieve → generate
-
-`backend/rag/pipeline.py::answer_question`:
-
-1. Embed query.
-2. Chroma top pool (wider pool when age digits present).
-3. Optional age-FAQ overlay + **lexical rerank** (path/alias boosts).
-4. Keep `SETTINGS.rag_top_k` (default 5).
-5. Build prompt with numbered excerpts + session history context.
-6. Generate with Qwen (`enable_thinking: false` on compatible endpoints) or extractive fallback.
-7. Attach citations: `rank`, `score`, `snippet`, **full `text`**, `source`, `title`.
-
-### 6.3 Gap handling
-
-Weak / off-topic / `NO_ANSWER` / soft hand-off → may create an **admin todo** while still giving the parent a careful reply. Off-domain refuse does **not** create todos.
-
-### 6.4 Inspector expectations
-
-For a RAG turn you must be able to:
-
-- See **index size**, **top_k**, **hit count**, **top score**, embedding mode
-- Click each hit to **expand the full chunk**
-- See **rank #** and **retrieval score** on every hit
-
-If RAG was skipped, the panel must say **which route won** and point you at Router decision.
+| Role | Env | Default / notes |
+|------|-----|-----------------|
+| Main LLM | `LLM_MODEL` | e.g. `qwen3.8-flash` — RAG + adapt |
+| Cheap arbiter | `INTENT_ARBITER_MODEL` | falls back to `LLM_MODEL` |
+| Embeddings | `EMBEDDING_MODEL` | `text-embedding-v4` |
+| Arbiter master | `INTENT_ARBITER_ENABLED` | true |
+| Adapt extras | `ARBITER_ADAPT_EXTRA` | true |
+| Gap polish | `ARBITER_GAP_REWRITE` | true |
+| Gen | `GEN_MAX_TOKENS` / `GEN_TEMPERATURE` | 280 / 0.3 |
 
 ---
 
-## 7. Session memory
+## 8. Demo UI contract
 
-- SQLite: `CHAT_HISTORY_DB` (default `backend/data/chat_history.db`)
-- Limit: `CHAT_HISTORY_LIMIT` (default 10 messages)
-- Fed into: RAG prompts, fact rewrite, hours follow-ups (“tomorrow?”), arbiter preview
-- Inspector: expandable **per-turn** list (full text), plus optional raw context string
+Left: parent chat + probes + seat cards.  
+Right:
 
-Truncation in the old UI was a display bug (600-char preview + CSS clamp). The API now returns `history.turns[]` in full for the loaded window.
+- **System** — route pill, `pipeline_steps`, Router decision (path + expandable rule evidence), hours panel, RAG hits (rank/score/full text), register, booking, session memory.
+- **Staff desk** — Sheets-style follow-ups | Gmail-style inbox (`**bold**` rendered).
 
----
+Canonical probes:
 
-## 8. Models & configuration
-
-| Role | Typical setting | When used |
-|------|-----------------|-----------|
-| Main LLM | `LLM_MODEL` (e.g. `qwen3.8-flash`) | RAG generate, fact rewrite |
-| Cheap arbiter | `INTENT_ARBITER_MODEL` | Intent review, gap polish, cancel pick, booking parse |
-| Embeddings | `EMBEDDING_MODEL` | Ingest + query |
-
-Feature flags (see `backend/config.py`): `INTENT_ARBITER_ENABLED`, `ARBITER_ADAPT_EXTRA`, `ARBITER_GAP_REWRITE`, `CHAT_HISTORY_ENABLED`, `OPENING_HOURS_ENABLED`.
-
-DashScope calls that support it pass **`enable_thinking: false`** so latency stays demo-safe.
+| Probe | Route |
+|-------|-------|
+| Typhoon | `severe_weather` |
+| Phonics fee | `fees` |
+| RAG · Private 1:1 | `rag` |
+| Phonics seats | `booking_tool` |
+| Unknown ask | `unknown_programme` |
+| Safety call | `staff_escalation` |
 
 ---
 
-## 9. Demo UI map
-
-Left: parent chat + probes + bookable cards.  
-Right tabs:
-
-- **System** — route pill, step rail, **Router decision**, hours/weather, **RAG retrieval**, class register, booking tool, session memory, probes
-- **Staff desk** — Follow-up sheet | Inbox
-
-Probes that matter for the 5-minute talk:
-
-| Probe | Expected route | What to point at |
-|-------|----------------|------------------|
-| Typhoon | `severe_weather` | Router: rule fired, arbiter skipped, RAG skipped, adapt ran |
-| Phonics fee | `fees` | Structured fact (not RAG) |
-| RAG · Private 1:1 | `rag` | Expand chunks, scores, index/top_k |
-| Phonics seats | `booking_tool` | Register + seat cards |
-| Unknown ask | `unknown_programme` | Follow-up sheet row |
-| Safety call | `staff_escalation` | Inbox urgent mail |
-
----
-
-## 10. Local run
-
-### Backend
+## 9. Local run
 
 ```powershell
 cd backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-# copy ../.env.example → ../.env (DASHSCOPE_API_KEY, etc.)
 uvicorn main:app --reload --port 8000
 ```
-
-### Frontend (developer-site)
 
 ```powershell
 cd ..\developer-site\frontend\tailwindcss4
@@ -295,60 +335,14 @@ npm install
 npm run dev
 ```
 
-Production path is `/COMP6708_A3_Demo` with `/brightnest-api` proxy. Integration drop-ins live in `integration/developer-site/` (keep mirrored when editing the live app).
+Tests: `pytest tests/test_intent_routing.py -q`  
+Stress: `python scripts/stress_intent_router.py`
 
 ---
 
-## 11. Deploy
-
-**Backend (SAE):**
-
-```powershell
-.\deploy\redeploy.ps1 -Tag v22
-```
-
-Always: abort stuck change-order → **STOP** → build/push → deploy → smoke (`healthz`, reindex, chat). See `deploy/REDEPLOY.md`.
-
-**Frontend:** push `developer-site` `master` (Vercel). Mirror JSX/CSS into `COMP6708_A3_Demo/integration/developer-site` in the same change set.
-
----
-
-## 12. Weaknesses found while documenting (and what we did)
-
-| Weakness | Risk | Fix |
-|----------|------|-----|
-| RAG hits only returned 280-char `snippet` | Demo cannot prove retrieval | API now includes full `text` + `rank` + `char_count` |
-| UI CSS `-webkit-line-clamp: 2` with no expand | “Can't click chunks” | Clickable `RagHit` expand/collapse |
-| Typhoon probe expected RAG | Misleading narrative | Router panel explains skip; dedicated **RAG · Private 1:1** probe |
-| Phonics fee labelled as RAG in script | Factually wrong (`fees` tool) | Script rewritten: fees = structured; Private 1:1 = RAG |
-| Intent “why” buried in nested debug | Markers cannot audit decisions | `rules_evaluated`, `decision_path`, `winning_rule`, `adapt` on `trace` |
-| Session memory preview truncated to 600 chars + short `<pre>` | Looks broken mid-demo | `history.turns[]` + expandable turns UI |
-| Arbiter skip opaque | Looks like “LLM didn't run” randomly | `skip_detail` string with thresholds |
-
----
-
-## 13. Tests worth running before demo day
-
-```powershell
-cd backend
-.\.venv\Scripts\Activate.ps1
-pytest tests/test_intent_routing.py tests/test_age_retrieval.py -q
-```
-
-Manual smoke against live EIP:
-
-1. Typhoon → `severe_weather`, adapt done, rag skipped  
-2. Private 1:1 → `rag`, hits with scores, expand full text  
-3. Saturday phonics seats → cards with `seats_left`  
-4. Scuba → sheet row  
-5. Safety allergy → inbox urgent  
-
----
-
-## 14. Related docs
+## 10. Related
 
 - [architecture.md](architecture.md) — compact diagram  
-- [demo-script.md](demo-script.md) — minute-by-minute talk track  
-- [DEVELOPER_SITE_INTEGRATION.md](DEVELOPER_SITE_INTEGRATION.md) — Vercel wiring  
-- [../deploy/REDEPLOY.md](../deploy/REDEPLOY.md) — SAE redeploy ritual  
-- [../README.md](../README.md) — quick start entry point  
+- [demo-script.md](demo-script.md) — 5-minute talk track  
+- [DEVELOPER_SITE_INTEGRATION.md](DEVELOPER_SITE_INTEGRATION.md)  
+- [../deploy/REDEPLOY.md](../deploy/REDEPLOY.md)  

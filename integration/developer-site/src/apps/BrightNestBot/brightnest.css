@@ -58,7 +58,8 @@ code,
   padding: 18px max(16px, var(--safe-r)) calc(20px + var(--safe-b)) max(16px, var(--safe-l));
   display: grid;
   gap: 16px;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto auto;
+  box-sizing: border-box;
 }
 
 /* Top */
@@ -592,12 +593,18 @@ code,
   opacity: 0.4;
 }
 
-/* Inspector */
+/* Inspector — scroll inside; match phone height so the page does not grow */
 .bn-inspector {
   display: grid;
   gap: 10px;
   min-width: 0;
+  min-height: 0;
   align-content: start;
+  max-height: min(74dvh, 760px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 2px;
+  overscroll-behavior: contain;
 }
 
 .bn-route-card {
@@ -966,19 +973,34 @@ code,
   padding: 0;
   display: grid;
   gap: 6px;
-  max-height: 360px;
+  max-height: 420px;
   overflow: auto;
 }
 
-.bn-rule-list li {
-  display: grid;
-  grid-template-columns: 52px 1fr;
-  gap: 8px;
-  padding: 6px 8px;
+.bn-rule-list > li {
   border-radius: 8px;
   background: #fff;
   border: 1px solid var(--line);
   font-size: 0.78rem;
+  overflow: hidden;
+}
+
+.bn-rule-toggle {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.bn-rule-toggle:hover {
+  background: rgba(0, 0, 0, 0.03);
 }
 
 .bn-rule-flag {
@@ -1002,27 +1024,87 @@ code,
   color: #a15c00;
 }
 
-.bn-rule-list strong {
+.bn-rule-main strong {
   display: block;
   color: var(--teal-ink);
 }
 
-.bn-rule-list code {
+.bn-rule-main code {
   font-size: 0.68rem;
   color: var(--muted);
   margin-right: 6px;
 }
 
-.bn-rule-list em {
+.bn-rule-main em {
   font-size: 0.68rem;
   font-style: normal;
   color: #0a7a4a;
 }
 
-.bn-rule-list p {
-  margin: 2px 0 0;
-  font-size: 0.7rem;
+.bn-rule-reason {
+  margin: 4px 0 0;
+  font-size: 0.72rem;
+  color: #3d5156;
+  line-height: 1.35;
+}
+
+.bn-rule-why {
+  border-top: 1px solid var(--line);
+  padding: 8px 10px 10px;
+  background: #fafcfb;
+  display: grid;
+  gap: 8px;
+}
+
+.bn-rule-block span {
+  display: block;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--teal-ink);
+  margin-bottom: 2px;
+}
+
+.bn-rule-block p,
+.bn-rule-block code {
+  margin: 0;
+  font-size: 0.74rem;
+  color: #3d5156;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.bn-rule-checks {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.bn-rule-checks li {
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  gap: 6px;
+  font-size: 0.72rem;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: #fff;
+  border: 1px solid var(--line);
+}
+
+.bn-rule-checks li.pass strong {
+  color: #0a7a4a;
+}
+
+.bn-rule-checks li.fail strong {
   color: var(--muted);
+}
+
+.bn-rule-checks strong {
+  font-size: 0.62rem;
+  text-transform: uppercase;
 }
 
 .bn-mem-turns {
@@ -1515,11 +1597,32 @@ code,
   margin: 0 4px;
 }
 
+.bn-sheet-fx-value {
+  flex: 1;
+  min-width: 0;
+  font: 400 0.82rem / 1.35 Roboto, "Segoe UI", Helvetica, Arial, sans-serif;
+  color: #202124;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 4.5em;
+  overflow-y: auto;
+}
+
+.bn-sheet-grid td {
+  cursor: pointer;
+}
+
+.bn-sheet-grid td.bn-sheet-active {
+  outline: 2px solid #1a73e8;
+  outline-offset: -2px;
+  background: #e8f0fe;
+}
+
 .bn-sheet-formula {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
-  padding: 4px 8px;
+  padding: 6px 8px;
   background: #fff;
   border-bottom: 1px solid #e0e3e7;
   font-size: 0.74rem;
@@ -1528,12 +1631,14 @@ code,
 
 .bn-sheet-namebox {
   min-width: 48px;
+  margin-top: 1px;
   padding: 3px 6px;
   border: 1px solid #dadce0;
   border-radius: 2px;
   text-align: center;
   font-size: 0.72rem;
   color: #202124;
+  flex-shrink: 0;
 }
 
 .bn-sheet-fx {
@@ -2130,8 +2235,26 @@ code,
   margin: 0;
   font: 400 0.92rem / 1.55 Roboto, "Segoe UI", Helvetica, Arial, sans-serif;
   color: #202124;
-  white-space: pre-wrap;
   word-break: break-word;
+}
+
+.bn-mail-email p {
+  margin: 0 0 0.65em;
+}
+
+.bn-mail-email p:last-child {
+  margin-bottom: 0;
+}
+
+.bn-mail-email strong {
+  font-weight: 700;
+  color: #202124;
+}
+
+.bn-mail-email ul,
+.bn-mail-email ol {
+  margin: 0.4em 0 0.8em;
+  padding-left: 1.25em;
 }
 
 .bn-mail-body {

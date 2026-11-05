@@ -144,6 +144,109 @@ function RagHit({ hit, index }) {
   );
 }
 
+function RuleEvidence({ rule }) {
+  const [open, setOpen] = useState(false);
+  const flag = rule.matched
+    ? rule.suppressed_by_conflict
+      ? "cleared"
+      : "fired"
+    : "idle";
+  const reason =
+    rule.status_reason ||
+    (rule.matched ? rule.why : rule.why_not) ||
+    rule.detail ||
+    "";
+  const checks = rule.checks || [];
+  return (
+    <li
+      className={
+        rule.matched
+          ? rule.suppressed_by_conflict
+            ? "bn-rule-suppressed"
+            : "bn-rule-hit"
+          : "bn-rule-miss"
+      }
+    >
+      <button
+        type="button"
+        className="bn-rule-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="bn-rule-flag">{flag}</span>
+        <div className="bn-rule-main">
+          <strong>{rule.label}</strong>
+          <code>{rule.id}</code>
+          {rule.score != null ? <em>score {Number(rule.score).toFixed(2)}</em> : null}
+          {reason ? <p className="bn-rule-reason">{reason}</p> : null}
+          <span className="bn-hit-expand-hint">
+            {open ? "Hide why" : "Why this decision"}
+          </span>
+        </div>
+      </button>
+      {open ? (
+        <div className="bn-rule-why">
+          {rule.mechanism ? (
+            <div className="bn-rule-block">
+              <span>How this rule works</span>
+              <p>{rule.mechanism}</p>
+            </div>
+          ) : null}
+          {rule.pattern_summary ? (
+            <div className="bn-rule-block">
+              <span>Detector looks for</span>
+              <p>{rule.pattern_summary}</p>
+            </div>
+          ) : null}
+          {rule.matched_span?.text ? (
+            <div className="bn-rule-block">
+              <span>Matched substring</span>
+              <code>
+                «{rule.matched_span.text}» @ [{rule.matched_span.start}:
+                {rule.matched_span.end}]
+              </code>
+            </div>
+          ) : null}
+          {rule.why ? (
+            <div className="bn-rule-block">
+              <span>Why it fired</span>
+              <p>{rule.why}</p>
+            </div>
+          ) : null}
+          {rule.why_not ? (
+            <div className="bn-rule-block">
+              <span>Why it stayed idle / was cleared</span>
+              <p>{rule.why_not}</p>
+            </div>
+          ) : null}
+          {checks.length > 0 ? (
+            <div className="bn-rule-block">
+              <span>Checks</span>
+              <ul className="bn-rule-checks">
+                {checks.map((c, i) => (
+                  <li key={`${rule.id}-c-${i}`} className={c.passed ? "pass" : "fail"}>
+                    <strong>{c.passed ? "pass" : "fail"}</strong>
+                    <span>
+                      {c.label}
+                      {c.detail ? ` — ${c.detail}` : ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {rule.downstream ? (
+            <div className="bn-rule-block">
+              <span>If this rule wins</span>
+              <p>{rule.downstream}</p>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
 function parseStamp(iso) {
   if (!iso) return null;
   const raw = String(iso).trim();
@@ -358,6 +461,10 @@ export default function BrightNestBotDemo() {
   const [staffTab, setStaffTab] = useState("sheet"); // sheet | mail
   const [selectedMsgId, setSelectedMsgId] = useState(null);
   const [readMailIds, setReadMailIds] = useState(() => new Set());
+  const [sheetSel, setSheetSel] = useState({
+    addr: "A1",
+    text: "Follow-up sheet",
+  });
 
   const chatWindowRef = useRef(null);
   const textAreaRef = useRef(null);
@@ -714,6 +821,13 @@ export default function BrightNestBotDemo() {
 
   const sheetCols = ["A", "B", "C", "D", "E", "F", "G"];
 
+  function selectSheetCell(addr, text) {
+    setSheetSel({
+      addr,
+      text: text == null || text === "" ? "—" : String(text),
+    });
+  }
+
   return (
     <div className="bn-app">
       <header className="bn-top">
@@ -970,13 +1084,11 @@ export default function BrightNestBotDemo() {
                       </span>
                     </div>
                     <div className="bn-sheet-formula">
-                      <span className="bn-sheet-namebox">A1</span>
+                      <span className="bn-sheet-namebox">{sheetSel.addr}</span>
                       <span className="bn-sheet-fx">fx</span>
-                      <code>
-                        {adminTodos[0]
-                          ? clip(adminTodos[0].info_needed || adminTodos[0].question || "", 64)
-                          : "Follow-up sheet"}
-                      </code>
+                      <div className="bn-sheet-fx-value" title={sheetSel.text}>
+                        {sheetSel.text}
+                      </div>
                     </div>
                     <div className="bn-sheet-scroll">
                       <table className="bn-sheet-grid">
@@ -1008,44 +1120,94 @@ export default function BrightNestBotDemo() {
                               </td>
                             </tr>
                           ) : (
-                            adminTodos.map((t, i) => (
+                            adminTodos.map((t, i) => {
+                              const row = i + 1;
+                              const parentCell = t.parent_name || t.phone || "—";
+                              const childCell = t.child_name || "—";
+                              const qCell = t.question || "—";
+                              const infoCell = t.info_needed || "";
+                              const whyCell = reasonLabel(t.reason);
+                              const whenCell = sheetWhen(t.created_at);
+                              const active = (col) =>
+                                sheetSel.addr === `${col}${row}` ? " bn-sheet-active" : "";
+                              return (
                               <tr key={t.id}>
-                                <td className="bn-sheet-rownum">{i + 1}</td>
-                                <td className="bn-sheet-check">
+                                <td className="bn-sheet-rownum">{row}</td>
+                                <td className={`bn-sheet-check${active("A")}`}>
                                   <input
                                     type="checkbox"
                                     title="Mark done"
                                     aria-label={`Mark follow-up for ${t.parent_name || t.id} done`}
                                     onChange={() => markTodoDone(t.id)}
+                                    onFocus={() => selectSheetCell(`A${row}`, "Done?")}
                                   />
                                 </td>
-                                <td title={t.phone || ""}>
-                                  {t.parent_name || t.phone || "—"}
+                                <td
+                                  className={active("B").trim()}
+                                  title={t.phone || ""}
+                                  onClick={() =>
+                                    selectSheetCell(`B${row}`, parentCell)
+                                  }
+                                >
+                                  {parentCell}
                                 </td>
-                                <td>{t.child_name || "—"}</td>
-                                <td className="bn-sheet-q" title={t.question}>
-                                  {clip(t.question, 90)}
+                                <td
+                                  className={active("C").trim()}
+                                  onClick={() =>
+                                    selectSheetCell(`C${row}`, childCell)
+                                  }
+                                >
+                                  {childCell}
                                 </td>
-                                <td className="bn-sheet-edit">
+                                <td
+                                  className={`bn-sheet-q${active("D")}`}
+                                  title={qCell}
+                                  onClick={() => selectSheetCell(`D${row}`, qCell)}
+                                >
+                                  {clip(qCell, 90)}
+                                </td>
+                                <td
+                                  className={`bn-sheet-edit${active("E")}`}
+                                  onClick={() =>
+                                    selectSheetCell(`E${row}`, infoCell || "—")
+                                  }
+                                >
                                   <input
                                     type="text"
-                                    defaultValue={t.info_needed || ""}
-                                    key={`${t.id}-${t.info_needed || ""}`}
+                                    defaultValue={infoCell}
+                                    key={`${t.id}-${infoCell}`}
                                     placeholder="What should staff do next…"
+                                    onFocus={() =>
+                                      selectSheetCell(`E${row}`, infoCell || "—")
+                                    }
+                                    onChange={(e) =>
+                                      selectSheetCell(`E${row}`, e.target.value || "—")
+                                    }
                                     onBlur={(e) => {
                                       const next = e.target.value.trim();
+                                      selectSheetCell(`E${row}`, next || "—");
                                       if (next !== (t.info_needed || "").trim()) {
                                         patchTodoField(t.id, { info_needed: next });
                                       }
                                     }}
                                   />
                                 </td>
-                                <td title={reasonLabel(t.reason)}>
-                                  {clip(reasonLabel(t.reason), 42)}
+                                <td
+                                  className={active("F").trim()}
+                                  title={whyCell}
+                                  onClick={() => selectSheetCell(`F${row}`, whyCell)}
+                                >
+                                  {clip(whyCell, 42)}
                                 </td>
-                                <td>{sheetWhen(t.created_at)}</td>
+                                <td
+                                  className={active("G").trim()}
+                                  onClick={() => selectSheetCell(`G${row}`, whenCell)}
+                                >
+                                  {whenCell}
+                                </td>
                               </tr>
-                            ))
+                              );
+                            })
                           )}
                         </tbody>
                       </table>
@@ -1213,7 +1375,9 @@ export default function BrightNestBotDemo() {
                               </div>
                             </div>
                             <div className="bn-mail-body">
-                              <pre className="bn-mail-email">{mailEmailBody(selectedMsg)}</pre>
+                              <WaMarkdown className="bn-mail-email bn-md">
+                                {mailEmailBody(selectedMsg)}
+                              </WaMarkdown>
                             </div>
                           </>
                         )}
@@ -1336,32 +1500,7 @@ export default function BrightNestBotDemo() {
                     </summary>
                     <ul className="bn-rule-list">
                       {rulesEvaluated.map((r) => (
-                        <li
-                          key={r.id}
-                          className={
-                            r.matched
-                              ? r.suppressed_by_conflict
-                                ? "bn-rule-suppressed"
-                                : "bn-rule-hit"
-                              : "bn-rule-miss"
-                          }
-                        >
-                          <span className="bn-rule-flag">
-                            {r.matched
-                              ? r.suppressed_by_conflict
-                                ? "cleared"
-                                : "fired"
-                              : "idle"}
-                          </span>
-                          <div>
-                            <strong>{r.label}</strong>
-                            <code>{r.id}</code>
-                            {r.score != null ? (
-                              <em>score {Number(r.score).toFixed(2)}</em>
-                            ) : null}
-                            {r.detail ? <p>{r.detail}</p> : null}
-                          </div>
-                        </li>
+                        <RuleEvidence key={r.id} rule={r} />
                       ))}
                     </ul>
                   </details>

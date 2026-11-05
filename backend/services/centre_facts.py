@@ -96,8 +96,12 @@ _GUEST_RE = re.compile(
 )
 _WAITING_RE = re.compile(
     r"("
-    r"\b(wait(?:ing)?\s*list|waitlist|class\s+(is\s+)?full|no\s+seats?|full\s+class)\b|"
-    r"候補|候补|等候名單|等候名单|滿班|满班|冇位|没位|沒位"
+    # Explicit waitlist / full-class — NOT bare "seats left?" availability browse.
+    # Cantonese 「有冇位 / 仲有冇位」 must stay on booking_tool (see intent stress probe).
+    r"\b(wait(?:ing)?\s*list|waitlist|class\s+(is\s+)?full|full\s+class|"
+    r"put\s+(me|us|my\s+child)\s+on\s+(the\s+)?wait(?:ing)?\s*list)\b|"
+    r"候補|候补|等候名單|等候名单|滿班|满班|"
+    r"(?<![有仲还還])(冇位|没位|沒位)"
     r")",
     re.I,
 )
