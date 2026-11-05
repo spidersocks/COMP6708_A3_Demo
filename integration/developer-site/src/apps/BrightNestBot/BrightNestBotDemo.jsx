@@ -1472,7 +1472,7 @@ export default function BrightNestBotDemo() {
             key={`register-${turnKey}`}
             title="Class register"
             summary={scheduleSummary}
-            defaultOpen={bookingOpen || !trace}
+            defaultOpen={bookingOpen}
           >
             <p className="bn-note">
               Backed by local CSV admin sheets (teachers, windows, sessions, enrolments,
@@ -1713,7 +1713,7 @@ export default function BrightNestBotDemo() {
             key={`probes-${turnKey}`}
             title="Demo probes"
             summary="Quick paths for the live talk"
-            defaultOpen={!trace}
+            defaultOpen
           >
             <div className="bn-probes">
               {DEMO_PROBES.map((p) => (
