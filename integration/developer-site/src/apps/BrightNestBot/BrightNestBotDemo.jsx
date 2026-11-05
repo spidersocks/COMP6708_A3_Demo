@@ -621,7 +621,8 @@ export default function BrightNestBotDemo() {
   const steps = trace?.pipeline_steps || [];
   const facts = trace?.opening_hours?.facts;
   const rag = trace?.rag;
-  const hits = rag?.hits || [...chatHistory].reverse().find((m) => m.role === "bot")?.citations || [];
+  // Only true RAG retrieve hits — structured-fact citations must not look like retrieval.
+  const hits = route === "rag" ? rag?.hits || [] : [];
 
   const turnKey = String(trace?.latency_ms ?? "idle");
   const hoursOpen =
