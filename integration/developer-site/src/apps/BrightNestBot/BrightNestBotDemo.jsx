@@ -674,11 +674,15 @@ export default function BrightNestBotDemo() {
   const arbiter = routing?.debug?.arbiter || {};
   const routerSummary = useMemo(() => {
     if (!route) return "Idle until a query";
-    const why =
-      winningRule?.arbiter_reason ||
-      arbiter?.reason ||
-      (winningRule?.score != null ? `score ${Number(winningRule.score).toFixed(2)}` : "");
-    return `${route}${why ? ` · ${why}` : ""}`;
+    const arbReason = winningRule?.arbiter_reason || arbiter?.reason;
+    const arbBit = arbiter?.called
+      ? `arbiter ${arbReason || "reviewed"}`
+      : arbReason
+        ? `arbiter ${arbReason}`
+        : winningRule?.score != null
+          ? `score ${Number(winningRule.score).toFixed(2)}`
+          : "";
+    return `${route}${arbBit ? ` · ${arbBit}` : ""}`;
   }, [route, winningRule, arbiter]);
 
   const historyTurns = trace?.history?.turns || [];
