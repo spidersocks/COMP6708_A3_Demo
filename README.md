@@ -6,7 +6,7 @@ Built for COMP6708 Advanced Big Data Computing — Mini Demo (live system, RAG-f
 
 > This repo is isolated from the production Little Scholars tutoring deployment. Do not point this code at live WhatsApp/YCloud/AWS production resources.
 
-**New to the repo?** Start with **[docs/TEAM.md](docs/TEAM.md)** (run locally, edit KB, Admin panel, deploy, demo day).
+**New to the repo?** Read **[docs/TEAM.md](docs/TEAM.md)** end-to-end — it is the full system document (router rules, RAG, tools, inspector contract, deploy, demo gotchas), not a roster page.
 
 ## What's in the box
 

@@ -441,6 +441,352 @@ def score_intents(
     return scores, debug
 
 
+def _rule_row(
+    rule_id: str,
+    label: str,
+    *,
+    matched: bool,
+    score: Optional[float] = None,
+    detail: str = "",
+) -> Dict[str, Any]:
+    return {
+        "id": rule_id,
+        "label": label,
+        "matched": bool(matched),
+        "score": score,
+        "detail": detail,
+    }
+
+
+def _build_rules_evaluated(
+    message: str,
+    *,
+    lang: str,
+    session_id: str,
+    scores: Dict[str, float],
+    debug: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Per-rule fired / not-fired report for the demo inspector."""
+    esc = debug.get("escalation") or escalation_svc.detect_escalation(message)
+    hours_hit = "opening_hours" in scores or bool(debug.get("hours_debug"))
+    hours_detail = ""
+    if debug.get("hours_debug"):
+        hours_detail = str(
+            (debug["hours_debug"] or {}).get("matched_via")
+            or (debug["hours_debug"] or {}).get("reason")
+            or "hours_intent"
+        )
+    leave_booking = dialogue_svc.should_yield_to_rag(session_id, message)
+    dialogue_active = dialogue_svc.is_active(session_id)
+    cancel_active = cancel_svc.is_active(session_id)
+    unk = dialogue_svc.unknown_programme(message)
+
+    rows = [
+        _rule_row(
+            "staff_escalation",
+            "Ask-human / anger / safety",
+            matched=bool(scores.get("staff_escalation")),
+            score=scores.get("staff_escalation"),
+            detail=(esc or {}).get("reason") if isinstance(esc, dict) else "",
+        ),
+        _rule_row(
+            "off_domain",
+            "Off-domain refuse",
+            matched=bool(scores.get("off_domain")),
+            score=scores.get("off_domain"),
+            detail="non-centre chit-chat / unsafe ask" if scores.get("off_domain") else "",
+        ),
+        _rule_row(
+            "severe_weather",
+            "Typhoon / Black Rain / severe weather policy",
+            matched=centre_facts.is_severe_weather_intent(message),
+            score=scores.get("severe_weather"),
+            detail="regex centre_facts.is_severe_weather_intent",
+        ),
+        _rule_row(
+            "illness",
+            "Illness / sick-child policy",
+            matched=centre_facts.is_illness_intent(message),
+            score=scores.get("illness"),
+        ),
+        _rule_row(
+            "allergy",
+            "Allergy policy (non-urgent)",
+            matched=centre_facts.is_allergy_intent(message),
+            score=scores.get("allergy"),
+        ),
+        _rule_row(
+            "fees",
+            "Published fee guide",
+            matched=centre_facts.is_fees_intent(message),
+            score=scores.get("fees"),
+        ),
+        _rule_row(
+            "location",
+            "Centre location / parking",
+            matched=centre_facts.is_location_intent(message),
+            score=scores.get("location"),
+        ),
+        _rule_row(
+            "payment",
+            "Payment methods",
+            matched=centre_facts.is_payment_intent(message),
+            score=scores.get("payment"),
+        ),
+        _rule_row(
+            "teachers",
+            "Who teaches…",
+            matched=centre_facts.is_teachers_intent(message),
+            score=scores.get("teachers"),
+        ),
+        _rule_row(
+            "pickup",
+            "Pickup / drop-off",
+            matched=centre_facts.is_pickup_intent(message),
+            score=scores.get("pickup"),
+        ),
+        _rule_row(
+            "makeup",
+            "Absence / make-up",
+            matched=centre_facts.is_makeup_intent(message),
+            score=scores.get("makeup"),
+        ),
+        _rule_row(
+            "sibling",
+            "Sibling discount",
+            matched=centre_facts.is_sibling_intent(message),
+            score=scores.get("sibling"),
+        ),
+        _rule_row(
+            "waiting",
+            "Waiting list",
+            matched=centre_facts.is_waiting_intent(message),
+            score=scores.get("waiting"),
+        ),
+        _rule_row(
+            "guest_policy",
+            "Friend / guest at trial",
+            matched=centre_facts.is_guest_intent(message),
+            score=scores.get("guest_policy"),
+        ),
+        _rule_row(
+            "pets_policy",
+            "Pets on site",
+            matched=is_pets_question(message),
+            score=scores.get("pets_policy"),
+        ),
+        _rule_row(
+            "unsupported_facility",
+            "Overnight / boarding (unsupported)",
+            matched=is_boarding_question(message),
+            score=scores.get("unsupported_facility"),
+        ),
+        _rule_row(
+            "unknown_programme",
+            "Unknown programme → staff follow-up",
+            matched=bool(unk),
+            score=scores.get("unknown_programme"),
+            detail=str(unk or ""),
+        ),
+        _rule_row(
+            "cancel_dialogue",
+            "Cancel class dialogue",
+            matched=cancel_active or cancel_svc.is_cancel_request(message),
+            score=scores.get("cancel_dialogue"),
+            detail="sticky" if cancel_active else "",
+        ),
+        _rule_row(
+            "trial_info",
+            "Trial explainer (not seat browse)",
+            matched=is_trial_info(message),
+            score=scores.get("trial_info"),
+        ),
+        _rule_row(
+            "booking_dialogue",
+            "Book / enrol dialogue",
+            matched=bool(scores.get("booking_dialogue")),
+            score=scores.get("booking_dialogue"),
+            detail=(
+                "sticky dialogue"
+                if dialogue_active and not leave_booking
+                else ("yield_to_rag" if leave_booking else "")
+            ),
+        ),
+        _rule_row(
+            "booking_tool",
+            "Live seats / availability browse",
+            matched=is_availability_browse(message),
+            score=scores.get("booking_tool") or scores.get("availability"),
+        ),
+        _rule_row(
+            "opening_hours",
+            "Opening hours / date / holiday",
+            matched=hours_hit,
+            score=scores.get("opening_hours"),
+            detail=hours_detail,
+        ),
+        _rule_row(
+            "greeting",
+            "Greeting / thanks / confused",
+            matched=bool(
+                scores.get("greeting") or scores.get("thanks") or scores.get("confused")
+            ),
+            score=scores.get("greeting")
+            or scores.get("thanks")
+            or scores.get("confused"),
+        ),
+        _rule_row(
+            "rag",
+            "RAG knowledge-base path",
+            matched=bool(scores.get("rag"))
+            or (
+                not any(
+                    (scores.get(k) or 0) >= 0.8
+                    for k in _PRIORITY
+                    if k not in {"rag", "greeting", "thanks", "confused"}
+                )
+            ),
+            score=scores.get("rag"),
+            detail="default when no structured rule wins",
+        ),
+    ]
+    # Annotate conflicts that suppressed a matched rule
+    suppressed = set()
+    for c in debug.get("conflicts") or []:
+        if ">" in str(c):
+            loser = str(c).split(">")[-1].strip()
+            suppressed.add(loser)
+    for row in rows:
+        rid = row["id"]
+        if rid in suppressed or (
+            rid == "opening_hours" and "weather>hours" in (debug.get("conflicts") or [])
+        ):
+            row["suppressed_by_conflict"] = True
+            row["detail"] = (
+                (row.get("detail") + " · " if row.get("detail") else "")
+                + "cleared by conflict resolution"
+            )
+    return rows
+
+
+def _build_decision_path(
+    *,
+    route: str,
+    scores: Dict[str, float],
+    debug: Dict[str, Any],
+    pre_arbiter_route: str,
+) -> List[Dict[str, str]]:
+    """Ordered, human-readable path the router took this turn."""
+    path: List[Dict[str, str]] = []
+    matched = [
+        (k, float(v))
+        for k, v in sorted(scores.items(), key=lambda kv: -float(kv[1] or 0))
+        if float(v or 0) >= 0.28 and k != "availability"
+    ]
+    if matched:
+        top_id, top_sc = matched[0]
+        path.append(
+            {
+                "step": "rules",
+                "summary": f"Top rule score: {top_id} = {top_sc:.2f}",
+                "detail": ", ".join(f"{k}={v:.2f}" for k, v in matched[:6]),
+            }
+        )
+    else:
+        path.append(
+            {
+                "step": "rules",
+                "summary": "No structured rule ≥ 0.28 → default RAG",
+                "detail": "",
+            }
+        )
+
+    for c in debug.get("conflicts") or []:
+        if c == "blended_prototypes":
+            path.append(
+                {
+                    "step": "prototype_blend",
+                    "summary": "Soft prototype classifier blended into scores",
+                    "detail": str(debug.get("prototype_top") or "")[:160],
+                }
+            )
+        else:
+            path.append(
+                {
+                    "step": "conflict",
+                    "summary": f"Conflict resolved: {c}",
+                    "detail": "lower-priority score cleared",
+                }
+            )
+
+    hard = any(float(scores.get(k) or 0) >= 0.98 for k in _HARD_VETO)
+    if hard:
+        path.append(
+            {
+                "step": "hard_veto",
+                "summary": "Hard veto present — prototype blend did not override",
+                "detail": ", ".join(
+                    k for k in _HARD_VETO if float(scores.get(k) or 0) >= 0.98
+                ),
+            }
+        )
+
+    path.append(
+        {
+            "step": "pick",
+            "summary": f"Priority pick → {pre_arbiter_route}",
+            "detail": "tie-break order in intent_router._PRIORITY",
+        }
+    )
+
+    arb = debug.get("arbiter") or {}
+    override = debug.get("arbiter_override")
+    if arb.get("called"):
+        if override:
+            path.append(
+                {
+                    "step": "arbiter",
+                    "summary": (
+                        f"Cheap LLM review OVERRIDE: {override.get('from')} → "
+                        f"{override.get('to')}"
+                    ),
+                    "detail": str(arb.get("reason") or arb.get("action") or ""),
+                }
+            )
+        else:
+            path.append(
+                {
+                    "step": "arbiter",
+                    "summary": f"Cheap LLM review kept {arb.get('route') or route}",
+                    "detail": str(arb.get("reason") or arb.get("action") or ""),
+                }
+            )
+    else:
+        path.append(
+            {
+                "step": "arbiter",
+                "summary": "Cheap LLM review skipped",
+                "detail": str(
+                    arb.get("reason")
+                    or "high_confidence_skip / disabled"
+                ),
+            }
+        )
+
+    path.append(
+        {
+            "step": "final",
+            "summary": f"Final route = {route}",
+            "detail": (
+                "RAG path runs retrieve→generate"
+                if route == "rag"
+                else "Structured / tool path — RAG retrieve skipped"
+            ),
+        }
+    )
+    return path
+
+
 def decide_intent(
     message: str,
     *,
@@ -459,6 +805,7 @@ def decide_intent(
     if not cleaned:
         cleaned = {"rag": 0.5}
     route = _pick_route({k: v for k, v in cleaned.items() if k != "availability"})
+    pre_arbiter_route = route
 
     # Cheap DashScope second look — demo fluency over rigid keyword locks
     try:
@@ -479,6 +826,10 @@ def decide_intent(
                 "route": route,
                 "reason": "high_confidence_skip",
                 "called": False,
+                "skip_detail": (
+                    f"top_score={top_score:.2f} ≥ 0.9, "
+                    f"no material conflicts, route={route} is structured"
+                ),
             }
         else:
             hist_preview = ""
@@ -507,5 +858,24 @@ def decide_intent(
                     route = new_route
     except Exception as e:
         debug["arbiter"] = {"action": "keep", "route": route, "reason": f"error:{e}"}
+
+    debug["rules_evaluated"] = _build_rules_evaluated(
+        message, lang=lang, session_id=session_id, scores=cleaned, debug=debug
+    )
+    debug["decision_path"] = _build_decision_path(
+        route=route,
+        scores=cleaned,
+        debug=debug,
+        pre_arbiter_route=pre_arbiter_route,
+    )
+    debug["winning_rule"] = {
+        "route": route,
+        "score": cleaned.get(route),
+        "pre_arbiter_route": pre_arbiter_route,
+        "arbiter_called": bool((debug.get("arbiter") or {}).get("called")),
+        "arbiter_reason": (debug.get("arbiter") or {}).get("reason"),
+        "arbiter_skip_detail": (debug.get("arbiter") or {}).get("skip_detail"),
+        "override": debug.get("arbiter_override"),
+    }
 
     return IntentDecision(route, cleaned, debug)

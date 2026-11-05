@@ -17,6 +17,7 @@ const DEMO_PROBES = [
   { label: "Christmas", text: "Are you open on Christmas Day?" },
   { label: "Typhoon", text: "What happens when there is a typhoon signal 8?" },
   { label: "Phonics fee", text: "How much is phonics?" },
+  { label: "RAG · Private 1:1", text: "Do you offer private 1:1 tutoring?" },
   { label: "Teachers", text: "Who teaches Mandarin?" },
   { label: "Location", text: "Where are you located?" },
   { label: "Friend guest", text: "Can I bring my friend to the trial class?" },
@@ -24,7 +25,6 @@ const DEMO_PROBES = [
   { label: "Trial slots", text: "Show trial class availability" },
   { label: "Book Jason", text: "Can I book a class for Jason next week?" },
   { label: "Cancel class", text: "Can I cancel Jason's class next Tuesday?" },
-  { label: "Private 1:1", text: "How much is private English tuition?" },
   { label: "Unknown ask", text: "Does BrightNest offer scuba diving for toddlers?" },
   { label: "Off-topic", text: "What's the weather in Tokyo tomorrow?" },
   { label: "Talk to staff", text: "Can I speak to a real person please?" },
@@ -60,8 +60,28 @@ function scoreLabel(score) {
 }
 
 function routeMeta(route) {
-  if (route === "deterministic_opening_hours") {
+  if (route === "deterministic_opening_hours" || route === "opening_hours") {
     return { label: "Opening-hours engine", tone: "hours" };
+  }
+  if (route === "severe_weather") {
+    return { label: "Severe-weather policy tool", tone: "hours" };
+  }
+  if (route === "fees" || route === "payment" || route === "location") {
+    return { label: `Structured fact · ${route}`, tone: "hours" };
+  }
+  if (
+    route === "illness" ||
+    route === "allergy" ||
+    route === "teachers" ||
+    route === "pickup" ||
+    route === "makeup" ||
+    route === "sibling" ||
+    route === "waiting" ||
+    route === "guest_policy" ||
+    route === "pets_policy" ||
+    route === "trial_info"
+  ) {
+    return { label: `Structured fact · ${route}`, tone: "hours" };
   }
   if (route === "booking_dialogue") {
     return { label: "Booking dialogue", tone: "book" };
@@ -81,7 +101,47 @@ function routeMeta(route) {
   if (route === "unknown_programme") {
     return { label: "Unknown programme (quiet admin flag)", tone: "rag" };
   }
+  if (route === "off_domain") {
+    return { label: "Off-domain refuse", tone: "idle" };
+  }
+  if (route) {
+    return { label: String(route), tone: "idle" };
+  }
   return { label: "Waiting for a query", tone: "idle" };
+}
+
+function RagHit({ hit, index }) {
+  const [open, setOpen] = useState(false);
+  const rank = hit.rank ?? index + 1;
+  const body = hit.text || hit.snippet || "";
+  const score = scoreLabel(hit.score);
+  return (
+    <li className={`bn-hit ${open ? "is-open" : ""}`}>
+      <button
+        type="button"
+        className="bn-hit-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <div className="bn-hit-head">
+          <strong>
+            <span className="bn-hit-rank">#{rank}</span>{" "}
+            {hit.title || hit.canonical || hit.source || `Hit ${rank}`}
+          </strong>
+          {score && <code title="retrieval score">{score}</code>}
+        </div>
+        <span className="bn-hit-src">{hit.source}</span>
+        {!open && body ? <p className="bn-hit-snip">{body}</p> : null}
+        <span className="bn-hit-expand-hint">{open ? "Collapse chunk" : "Expand full chunk"}</span>
+      </button>
+      {open && body ? (
+        <pre className="bn-hit-full">{body}</pre>
+      ) : null}
+      {open && hit.char_count != null ? (
+        <div className="bn-hit-meta">{hit.char_count} chars · score {score ?? "—"}</div>
+      ) : null}
+    </li>
+  );
 }
 
 function parseStamp(iso) {
@@ -564,7 +624,10 @@ export default function BrightNestBotDemo() {
   const hits = rag?.hits || [...chatHistory].reverse().find((m) => m.role === "bot")?.citations || [];
 
   const turnKey = String(trace?.latency_ms ?? "idle");
-  const hoursOpen = route === "deterministic_opening_hours";
+  const hoursOpen =
+    route === "deterministic_opening_hours" ||
+    route === "opening_hours" ||
+    route === "severe_weather";
   const ragOpen = route === "rag";
   const bookingOpen =
     route === "booking_tool" || route === "booking_dialogue" || route === "cancel_dialogue";
@@ -593,10 +656,36 @@ export default function BrightNestBotDemo() {
   }, [facts]);
 
   const ragSummary = useMemo(() => {
+    if (route && route !== "rag" && !hits.length) {
+      return `Skipped · route=${route}`;
+    }
     if (!rag && !hits.length) return "Idle until a KB question";
     const n = rag?.hit_count ?? hits.length;
-    return `${n} chunk${n === 1 ? "" : "s"} · ${rag?.embedding_mode || "embed"}`;
-  }, [rag, hits.length]);
+    const top = scoreLabel(rag?.top_score ?? hits[0]?.score);
+    return `${n}/${rag?.top_k ?? "k"} · idx ${rag?.index_size ?? "—"} · top ${top ?? "—"}`;
+  }, [rag, hits, route]);
+
+  const routing = trace?.routing;
+  const decisionPath = routing?.decision_path || routing?.debug?.decision_path || [];
+  const rulesEvaluated =
+    routing?.rules_evaluated || routing?.debug?.rules_evaluated || [];
+  const winningRule = routing?.winning_rule || routing?.debug?.winning_rule || {};
+  const arbiter = routing?.debug?.arbiter || {};
+  const routerSummary = useMemo(() => {
+    if (!route) return "Idle until a query";
+    const why =
+      winningRule?.arbiter_reason ||
+      arbiter?.reason ||
+      (winningRule?.score != null ? `score ${Number(winningRule.score).toFixed(2)}` : "");
+    return `${route}${why ? ` · ${why}` : ""}`;
+  }, [route, winningRule, arbiter]);
+
+  const historyTurns = trace?.history?.turns || [];
+  const memSummary = useMemo(() => {
+    const n = trace?.history?.turns_loaded ?? historyTurns.length ?? chatHistory.length;
+    const lim = trace?.history?.limit ?? 10;
+    return `${n}/${lim} msgs · click to expand`;
+  }, [trace?.history, historyTurns.length, chatHistory.length]);
 
   const selectedMsg = useMemo(() => {
     if (!staffMessages.length) return null;
@@ -1152,6 +1241,147 @@ export default function BrightNestBotDemo() {
           </div>
 
           <Reveal
+            key={`router-${turnKey}`}
+            title="Router decision"
+            summary={routerSummary}
+            defaultOpen={Boolean(trace)}
+          >
+            {!trace ? (
+              <p className="bn-empty">Send a probe to see which rules fired and why.</p>
+            ) : (
+              <>
+                <ul className="bn-fact-list">
+                  <li>
+                    <span>Final route</span>
+                    <code>{route || "—"}</code>
+                  </li>
+                  <li>
+                    <span>Winning score</span>
+                    <code>
+                      {winningRule?.score != null
+                        ? Number(winningRule.score).toFixed(3)
+                        : "—"}
+                    </code>
+                  </li>
+                  <li>
+                    <span>Pre-arbiter pick</span>
+                    <code>{winningRule?.pre_arbiter_route || route || "—"}</code>
+                  </li>
+                  <li>
+                    <span>Cheap LLM review</span>
+                    <code>
+                      {arbiter?.called
+                        ? `${arbiter.action || "review"} · ${arbiter.reason || ""}`
+                        : `skipped · ${
+                            arbiter?.skip_detail ||
+                            arbiter?.reason ||
+                            winningRule?.arbiter_skip_detail ||
+                            "n/a"
+                          }`}
+                    </code>
+                  </li>
+                  {winningRule?.override ? (
+                    <li>
+                      <span>Arbiter override</span>
+                      <code>
+                        {winningRule.override.from} → {winningRule.override.to}
+                      </code>
+                    </li>
+                  ) : null}
+                  {trace?.adapt ? (
+                    <li>
+                      <span>Fact rewrite</span>
+                      <code>
+                        {trace.adapt.ran
+                          ? `yes · ${trace.adapt.model || "main LLM"}`
+                          : `no · ${trace.adapt.why || "passthrough"}`}
+                      </code>
+                    </li>
+                  ) : null}
+                  <li>
+                    <span>RAG this turn</span>
+                    <code>{route === "rag" ? "ran" : `skipped (${route})`}</code>
+                  </li>
+                </ul>
+
+                {trace?.adapt?.why ? (
+                  <p className="bn-note">{trace.adapt.why}</p>
+                ) : null}
+
+                {decisionPath.length > 0 && (
+                  <div className="bn-path">
+                    <div className="bn-path-label">Exact path taken</div>
+                    <ol>
+                      {decisionPath.map((p, i) => (
+                        <li key={`${p.step}-${i}`}>
+                          <strong>{p.summary}</strong>
+                          {p.detail ? <span>{p.detail}</span> : null}
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
+
+                {rulesEvaluated.length > 0 && (
+                  <details className="bn-rules" open={Boolean(route)}>
+                    <summary>
+                      Rule map ·{" "}
+                      {rulesEvaluated.filter((r) => r.matched).length} fired /{" "}
+                      {rulesEvaluated.length} checked
+                    </summary>
+                    <ul className="bn-rule-list">
+                      {rulesEvaluated.map((r) => (
+                        <li
+                          key={r.id}
+                          className={
+                            r.matched
+                              ? r.suppressed_by_conflict
+                                ? "bn-rule-suppressed"
+                                : "bn-rule-hit"
+                              : "bn-rule-miss"
+                          }
+                        >
+                          <span className="bn-rule-flag">
+                            {r.matched
+                              ? r.suppressed_by_conflict
+                                ? "cleared"
+                                : "fired"
+                              : "idle"}
+                          </span>
+                          <div>
+                            <strong>{r.label}</strong>
+                            <code>{r.id}</code>
+                            {r.score != null ? (
+                              <em>score {Number(r.score).toFixed(2)}</em>
+                            ) : null}
+                            {r.detail ? <p>{r.detail}</p> : null}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+
+                {routing?.scores && Object.keys(routing.scores).length > 0 && (
+                  <details className="bn-rules">
+                    <summary>Raw intent scores</summary>
+                    <ul className="bn-fact-list">
+                      {Object.entries(routing.scores)
+                        .sort((a, b) => Number(b[1]) - Number(a[1]))
+                        .map(([k, v]) => (
+                          <li key={k}>
+                            <span>{k}</span>
+                            <code>{Number(v).toFixed(3)}</code>
+                          </li>
+                        ))}
+                    </ul>
+                  </details>
+                )}
+              </>
+            )}
+          </Reveal>
+
+          <Reveal
             key={`hours-${turnKey}`}
             title="Date · holiday · weather"
             summary={hoursSummary}
@@ -1202,28 +1432,36 @@ export default function BrightNestBotDemo() {
 
           <Reveal key={`rag-${turnKey}`} title="RAG retrieval" summary={ragSummary} defaultOpen={ragOpen}>
             {hits.length === 0 ? (
-              <p className="bn-empty">
-                {route === "rag"
-                  ? "No chunks returned."
-                  : "Skipped when hours/booking short-circuits."}
-              </p>
+              <div className="bn-rag-skip">
+                <p className="bn-empty">
+                  {route === "rag"
+                    ? "No chunks returned."
+                    : route
+                      ? `RAG did not run — router chose “${route}” instead.`
+                      : "Idle until a KB question."}
+                </p>
+                {route && route !== "rag" ? (
+                  <p className="bn-note">
+                    Expand <strong>Router decision</strong> above to see which rule fired
+                    (and which rules stayed idle). For a live retrieve→generate path, use
+                    the <strong>RAG · Private 1:1</strong> probe.
+                  </p>
+                ) : null}
+              </div>
             ) : (
               <>
                 <div className="bn-rag-strip">
-                  <span>index {rag?.index_size ?? "—"}</span>
-                  <span>top_k {rag?.top_k ?? "—"}</span>
+                  <span>index size {rag?.index_size ?? "—"}</span>
+                  <span>top_k {rag?.top_k ?? hits.length}</span>
+                  <span>hits returned {rag?.hit_count ?? hits.length}</span>
+                  <span>top score {scoreLabel(rag?.top_score ?? hits[0]?.score) ?? "—"}</span>
+                  <span>embed {rag?.embedding_mode || "—"}</span>
                   {rag?.language_fallback ? <span>lang fallback</span> : null}
+                  {rag?.gap_reason ? <span>gap {rag.gap_reason}</span> : null}
                 </div>
                 <ul className="bn-hits">
-                  {hits.slice(0, 5).map((h, i) => (
-                    <li key={`${h.source}-${i}`}>
-                      <div className="bn-hit-head">
-                        <strong>{h.title || h.canonical || h.source || `Hit ${i + 1}`}</strong>
-                        {scoreLabel(h.score) && <code>{scoreLabel(h.score)}</code>}
-                      </div>
-                      <span className="bn-hit-src">{h.source}</span>
-                      {h.snippet ? <p>{h.snippet}</p> : null}
-                    </li>
+                  {hits.map((h, i) => (
+                    <RagHit key={`${h.source}-${h.rank || i}`} hit={h} index={i} />
                   ))}
                 </ul>
               </>
@@ -1429,23 +1667,46 @@ export default function BrightNestBotDemo() {
           <Reveal
             key={`mem-${turnKey}`}
             title="Session memory"
-            summary={`${
-              trace?.history?.turns_loaded ?? chatHistory.length
-            }/${trace?.history?.limit ?? 10} msgs`}
+            summary={memSummary}
             defaultOpen={false}
           >
-            {trace?.history?.preview ? (
-              <pre className="bn-pre">{trace.history.preview}</pre>
+            {historyTurns.length > 0 ? (
+              <ul className="bn-mem-turns">
+                {historyTurns.map((t, i) => (
+                  <li key={`mem-${i}`}>
+                    <details>
+                      <summary>
+                        <strong>{t.role === "user" || t.role === "parent" ? "parent" : "bot"}</strong>
+                        <span>{clip(t.content || "", 100)}</span>
+                      </summary>
+                      <pre className="bn-hit-full">{t.content || ""}</pre>
+                    </details>
+                  </li>
+                ))}
+              </ul>
             ) : chatHistory.length > 0 ? (
-              <pre className="bn-pre">
-                {chatHistory
-                  .slice(-8)
-                  .map((m) => `${m.role === "user" ? "parent" : "bot"}: ${clip(m.message || "", 120)}`)
-                  .join("\n")}
-              </pre>
+              <ul className="bn-mem-turns">
+                {chatHistory.map((m, i) => (
+                  <li key={`local-mem-${i}`}>
+                    <details>
+                      <summary>
+                        <strong>{m.role === "user" ? "parent" : "bot"}</strong>
+                        <span>{clip(m.message || "", 100)}</span>
+                      </summary>
+                      <pre className="bn-hit-full">{m.message || ""}</pre>
+                    </details>
+                  </li>
+                ))}
+              </ul>
             ) : (
               <p className="bn-empty">No prior turns yet.</p>
             )}
+            {trace?.history?.preview ? (
+              <details className="bn-rules">
+                <summary>Raw context string fed to the model</summary>
+                <pre className="bn-pre bn-pre-tall">{trace.history.preview}</pre>
+              </details>
+            ) : null}
           </Reveal>
 
           <Reveal

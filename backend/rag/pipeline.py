@@ -405,15 +405,20 @@ def chat_with_rag(
     )
     answer = gen.get("answer") or ""
     citations = []
-    for h in hits:
+    for rank, h in enumerate(hits, start=1):
         meta = h.get("metadata") or {}
+        full_text = h.get("text") or ""
         citations.append(
             {
+                "rank": rank,
                 "source": meta.get("source"),
                 "title": meta.get("title"),
                 "canonical": meta.get("canonical"),
                 "score": h.get("score"),
-                "snippet": (h.get("text") or "")[:280],
+                "snippet": full_text[:280],
+                # Full chunk for the demo inspector (expand-in-place).
+                "text": full_text,
+                "char_count": len(full_text),
             }
         )
 

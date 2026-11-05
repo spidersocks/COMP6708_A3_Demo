@@ -335,11 +335,22 @@ def chat(req: ChatRequest) -> ChatResponse:
             "preview": (
                 build_context_string(history, include_new=False)[-600:] if history else ""
             ),
+            # Full turns for the expandable session-memory inspector
+            "turns": [
+                {
+                    "role": t.get("role") or t.get("speaker") or "unknown",
+                    "content": t.get("content") or t.get("message") or "",
+                }
+                for t in history
+            ],
         },
         "routing": {
             "route": route,
             "scores": decision.scores,
             "debug": decision.debug,
+            "rules_evaluated": (decision.debug or {}).get("rules_evaluated") or [],
+            "decision_path": (decision.debug or {}).get("decision_path") or [],
+            "winning_rule": (decision.debug or {}).get("winning_rule") or {},
             "hours_followup_promoted": followup_promoted,
             "dialogue_active": dialogue_active,
             "cancel_active": cancel_active,
@@ -398,9 +409,24 @@ def chat(req: ChatRequest) -> ChatResponse:
                         "adapt",
                         "Main LLM fact rewrite",
                         "done",
-                        f"{SETTINGS.llm_model} · {polished.get('provider') or 'dashscope'}",
+                        (
+                            f"{SETTINGS.llm_model} · "
+                            f"{polished.get('provider') or 'dashscope'} · "
+                            f"why=structured_{provider}_fluency"
+                        ),
                     )
                 )
+                trace["adapt"] = {
+                    "ran": True,
+                    "why": (
+                        "Structured tool answer is correct but terse; "
+                        "main LLM rewrites for parent-facing fluency "
+                        "without changing facts."
+                    ),
+                    "model": SETTINGS.llm_model,
+                    "provider": polished.get("provider") or "dashscope",
+                    "input_provider": provider,
+                }
             else:
                 steps.append(
                     _step(
@@ -410,6 +436,11 @@ def chat(req: ChatRequest) -> ChatResponse:
                         polished.get("provider") or "passthrough",
                     )
                 )
+                trace["adapt"] = {
+                    "ran": False,
+                    "why": polished.get("provider") or "passthrough",
+                    "input_provider": provider,
+                }
         steps.append(_step("rag", "RAG retrieve → generate", "skipped", route_name))
         trace["route"] = route_name
         trace["provider"] = final_provider

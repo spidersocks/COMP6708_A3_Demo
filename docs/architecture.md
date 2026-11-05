@@ -1,41 +1,56 @@
 # Architecture notes
 
+Full end-to-end behaviour, rule catalogue, and inspector contract: **[TEAM.md](TEAM.md)**.
+
 ```mermaid
 flowchart TB
-  UI[BrightNest React UI]
-  API[FastAPI backend]
-  OH[Opening hours tool]
-  BK[Availability and booking]
-  ESC[Staff escalation]
-  MSG[staff_messages inbox]
+  UI[React demo UI]
+  API[FastAPI on SAE]
+  R[Hybrid intent router]
+  ARB[Cheap LLM review]
+  TOOLS[Structured tools]
   RAG[RAG pipeline]
-  CH[Chroma store]
+  ADAPT[Main LLM fact rewrite]
+  CH[(Chroma KB)]
   DS[DashScope Qwen]
-  MD[content markdown KB]
+  SHEETS[Follow-up sheet]
+  MAIL[Staff inbox]
+  MEM[(Session SQLite)]
 
   UI -->|POST /chat| API
-  UI -->|POST /bookings| BK
-  UI -->|GET /admin/messages| MSG
-  API --> OH
-  API --> BK
-  API --> ESC
-  ESC --> MSG
-  API --> RAG
+  API --> MEM
+  API --> R
+  R -->|low confidence| ARB
+  ARB --> R
+  R -->|severe_weather fees hours seats book| TOOLS
+  R -->|rag| RAG
+  R -->|escalation| MAIL
+  R -->|unknown / soft gap| SHEETS
+  TOOLS --> ADAPT
+  ADAPT --> DS
   RAG --> CH
   RAG --> DS
-  MD -->|ingest| CH
+  CH -.->|ingest content/*.md| CH
 ```
 
-## Staff escalation
+## Turn contract
 
-Before RAG, the router detects ask-for-human / anger / safety cues (`services/escalation.py`). Parents get a calm acknowledgement (no mention of internal sheets). Staff see a row under **Admin → Messages** (`services/staff_messages.py`). Soft KB gaps still use the separate admin to-do path.
+1. Load session memory  
+2. Score intent rules → priority pick → optional arbiter  
+3. Tool path **or** RAG path **or** staff path  
+4. Persist turns · return `trace` for the inspector  
 
-## RAG details
+## Why tools + RAG
 
-1. **Ingest** (`rag/ingest.py`): parse frontmatter + body, chunk ~900 chars with overlap, embed, upsert into Chroma.
-2. **Retrieve** (`rag/pipeline.py`): embed query, cosine top-k, optional `language` metadata filter with unfiltered retry.
-3. **Generate** (`rag/generator.py`): prompt with persona + excerpts; DashScope chat completions; extractive fallback if no key.
+| Question type | Path | Why |
+|---------------|------|-----|
+| Typhoon / Christmas / hours | Structured / calendar | Must not be guessed |
+| Phonics fee | Fee guide tool | Published numbers |
+| Private 1:1 explainer | RAG | Narrative KB |
+| Saturday seats | Booking tool | Live CSV register |
+| Scuba | Unknown programme | Honest refuse + sheet |
+| Allergy emergency | Escalation | Human + inbox |
 
-## Why not Bedrock KB?
+## RAG (self-built)
 
-Assignment emphasis is understanding the technique. Implementing chunk/embed/retrieve/generate in-repo makes the design auditable for the live demo and slides.
+chunk → embed (DashScope) → Chroma top-k → lexical rerank → Qwen generate → citations with **rank, score, full text**.
