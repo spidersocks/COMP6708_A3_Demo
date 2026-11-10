@@ -217,6 +217,11 @@ if (-not $SkipSmoke) {
     -ContentType "application/json" -UseBasicParsing -TimeoutSec 60
   $j = $c.Content | ConvertFrom-Json
   Write-Host "  chat route=$($j.trace.route) staff_message=$([bool]$j.trace.staff_message)"
+  # Clear the smoke escalation so Staff inbox / sheet stay clean for demos
+  $reset = Invoke-WebRequest "http://47.242.157.72:8000/chat/history/redeploy-smoke" `
+    -Method DELETE -UseBasicParsing -TimeoutSec 30
+  $rj = $reset.Content | ConvertFrom-Json
+  Write-Host "  reset staff_messages_cleared=$($rj.staff_messages_cleared) admin_todos_cleared=$($rj.admin_todos_cleared)"
 }
 
 Write-Host "`nDone. Image=$imgVpc"
