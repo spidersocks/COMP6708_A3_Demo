@@ -481,7 +481,7 @@ code,
 .bn-register {
   display: grid;
   gap: 12px;
-  max-height: 340px;
+  max-height: 480px;
   overflow: auto;
   padding-right: 2px;
 }
@@ -1476,22 +1476,17 @@ code,
 }
 
 .bn-tab-ico {
-  width: 14px;
-  height: 14px;
-  border-radius: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
   flex-shrink: 0;
 }
 
-.bn-tab-ico-sheet {
-  background:
-    linear-gradient(135deg, #fff 0 40%, transparent 40%),
-    #0f9d58;
-}
-
-.bn-tab-ico-mail {
-  background:
-    linear-gradient(180deg, #ea4335 0 38%, #fbbc04 38% 52%, #34a853 52% 68%, #4285f4 68%);
-  border-radius: 2px;
+.bn-tab-ico-img {
+  object-fit: cover;
+  background: #111;
+  border: 0;
+  display: block;
 }
 
 .bn-tab-count {
@@ -1589,15 +1584,16 @@ code,
 .bn-sheet-icon {
   width: 36px;
   height: 36px;
-  border-radius: 4px;
-  background:
-    linear-gradient(#fff 0 18%, transparent 18%),
-    linear-gradient(90deg, #fff 0 18%, transparent 18%),
-    #0f9d58;
-  background-size: 100% 100%, 100% 100%, 100% 100%;
-  border: 1px solid #0b7a45;
+  border-radius: 8px;
   flex-shrink: 0;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.bn-sheet-icon-img {
+  object-fit: cover;
+  background: #111;
+  border: 0;
+  display: block;
 }
 
 .bn-sheet-title {
@@ -1937,23 +1933,17 @@ code,
 }
 
 .bn-mail-logo {
-  width: 32px;
-  height: 24px;
-  border-radius: 4px;
-  background:
-    linear-gradient(180deg, #ea4335 0 25%, #fbbc04 25% 50%, #34a853 50% 75%, #4285f4 75%);
-  position: relative;
+  width: 36px;
+  height: 28px;
+  border-radius: 6px;
+  flex-shrink: 0;
 }
-.bn-mail-logo::after {
-  content: "M";
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  font-weight: 700;
-  font-size: 0.7rem;
-  color: #fff;
-  text-shadow: 0 0 2px rgba(0, 0, 0, 0.25);
+
+.bn-mail-logo-img {
+  object-fit: cover;
+  background: #111;
+  border: 0;
+  display: block;
 }
 
 .bn-mail-brand strong {

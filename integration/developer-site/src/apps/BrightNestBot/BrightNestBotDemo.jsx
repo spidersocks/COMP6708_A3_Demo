@@ -11,6 +11,10 @@ const API_BASE = (
 ).replace(/\/$/, "");
 
 const LOGO_SRC = "/projects/brightnest/logo.png";
+const SHEETPRO_ICON = "/projects/brightnest/sheetpro.webp";
+const MAILBOX_ICON = "/projects/brightnest/mailbox.webp";
+/** How many calendar days the Class register loads (API max 21). */
+const SCHEDULE_DAYS = 14;
 
 const DEMO_PROBES = [
   { label: "Hours", text: "What are your opening hours?" },
@@ -592,13 +596,17 @@ export default function BrightNestBotDemo() {
       .then((r) => r.json())
       .then((d) => setCourses(d.courses || []))
       .catch(() => {});
-    fetch(`${API_BASE}/schedule?days=7`)
-      .then((r) => r.json())
-      .then((d) => setSchedule(d))
-      .catch(() => setSchedule(null));
+    refreshSchedule();
     refreshAdminTodos();
     refreshStaffMessages();
   }, []);
+
+  function refreshSchedule() {
+    fetch(`${API_BASE}/schedule?days=${SCHEDULE_DAYS}`)
+      .then((r) => r.json())
+      .then((d) => setSchedule(d))
+      .catch(() => setSchedule(null));
+  }
 
   function refreshAdminTodos() {
     fetch(`${API_BASE}/admin/todos?status=open`)
@@ -769,6 +777,15 @@ export default function BrightNestBotDemo() {
           provider: data.provider,
         },
       ]);
+      // Dialogue / tool bookings mutate chat_bookings.csv — keep the register in sync
+      if (
+        data.booking ||
+        nextTrace.route === "booking_dialogue" ||
+        nextTrace.route === "booking_tool" ||
+        nextTrace.route === "cancel_dialogue"
+      ) {
+        refreshSchedule();
+      }
     } catch (err) {
       console.error(err);
       setError("Backend unreachable — check SAE / CORS / mixed content.");
@@ -815,11 +832,8 @@ export default function BrightNestBotDemo() {
           booking: data,
         },
       ]);
-      // Refresh admin register so seats_left updates in the inspector
-      fetch(`${API_BASE}/schedule?days=7`)
-        .then((r) => r.json())
-        .then((d) => setSchedule(d))
-        .catch(() => {});
+      // Refresh admin register so seats_left / later dates update in the inspector
+      refreshSchedule();
     } catch (err) {
       setError(err.message || "Booking failed");
     } finally {
@@ -857,7 +871,14 @@ export default function BrightNestBotDemo() {
     }));
   }, [schedule, scheduleTeacherId]);
   const scheduleSummary = schedule
-    ? `${teachers.length} teachers · ${scheduleDays.reduce((n, d) => n + (d.sessions?.length || 0), 0)} sessions / 7d`
+    ? (() => {
+        const days = schedule.days || [];
+        const first = days[0]?.label || "";
+        const last = days[days.length - 1]?.label || "";
+        const n = scheduleDays.reduce((acc, d) => acc + (d.sessions?.length || 0), 0);
+        const span = first && last ? `${first} → ${last}` : `${days.length}d`;
+        return `${teachers.length} teachers · ${n} sessions · ${span}`;
+      })()
     : "Synthetic admin register";
 
   const hoursSummary = useMemo(() => {
@@ -1119,8 +1140,13 @@ export default function BrightNestBotDemo() {
                     className={`bn-browser-tab ${staffTab === "sheet" ? "active" : ""}`}
                     onClick={() => setStaffTab("sheet")}
                   >
-                    <span className="bn-tab-ico bn-tab-ico-sheet" aria-hidden="true" />
-                    <span className="bn-browser-tab-label">Follow-up sheet</span>
+                    <img
+                      src={SHEETPRO_ICON}
+                      alt=""
+                      className="bn-tab-ico bn-tab-ico-img"
+                      aria-hidden="true"
+                    />
+                    <span className="bn-browser-tab-label">SheetPro</span>
                     {adminTodos.length > 0 && (
                       <span className="bn-tab-count">{adminTodos.length}</span>
                     )}
@@ -1132,8 +1158,13 @@ export default function BrightNestBotDemo() {
                     className={`bn-browser-tab ${staffTab === "mail" ? "active" : ""}`}
                     onClick={() => setStaffTab("mail")}
                   >
-                    <span className="bn-tab-ico bn-tab-ico-mail" aria-hidden="true" />
-                    <span className="bn-browser-tab-label">Staff inbox</span>
+                    <img
+                      src={MAILBOX_ICON}
+                      alt=""
+                      className="bn-tab-ico bn-tab-ico-img"
+                      aria-hidden="true"
+                    />
+                    <span className="bn-browser-tab-label">MailBox</span>
                     {unreadMailCount > 0 && (
                       <span className="bn-tab-count">{unreadMailCount}</span>
                     )}
@@ -1144,8 +1175,8 @@ export default function BrightNestBotDemo() {
                 <span className="bn-browser-lock" aria-hidden="true" />
                 <code>
                   {staffTab === "sheet"
-                    ? "docs.google.com/spreadsheets/d/brightnest-followups"
-                    : "mail.google.com/mail/u/0/#inbox"}
+                    ? "sheetpro.app/d/brightnest-followups"
+                    : "mailbox.app/u/0/#inbox"}
                 </code>
               </div>
 
@@ -1154,7 +1185,12 @@ export default function BrightNestBotDemo() {
                   <div className="bn-sheet-widget">
                     <div className="bn-sheet-titlebar">
                       <div className="bn-sheet-doc">
-                        <span className="bn-sheet-icon" aria-hidden="true" />
+                        <img
+                          src={SHEETPRO_ICON}
+                          alt=""
+                          className="bn-sheet-icon bn-sheet-icon-img"
+                          aria-hidden="true"
+                        />
                         <div>
                           <input
                             className="bn-sheet-title"
@@ -1162,7 +1198,7 @@ export default function BrightNestBotDemo() {
                             value="BrightNest — Follow-up sheet"
                             aria-label="Spreadsheet title"
                           />
-                          <small>Saved to Drive · Parents never see this</small>
+                          <small>SheetPro · Parents never see this</small>
                         </div>
                       </div>
                       <div className="bn-sheet-share">
@@ -1336,8 +1372,13 @@ export default function BrightNestBotDemo() {
                         ☰
                       </button>
                       <div className="bn-mail-brand">
-                        <span className="bn-mail-logo" aria-hidden="true" />
-                        <strong>Gmail</strong>
+                        <img
+                          src={MAILBOX_ICON}
+                          alt=""
+                          className="bn-mail-logo bn-mail-logo-img"
+                          aria-hidden="true"
+                        />
+                        <strong>MailBox</strong>
                       </div>
                       <div className="bn-mail-search" aria-hidden="true">
                         <span className="bn-mail-search-ico">⌕</span>

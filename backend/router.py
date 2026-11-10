@@ -1315,9 +1315,10 @@ def teacher_availability(teacher_id: str, language: str = "en", days_ahead: int 
 
 
 @router.get("/schedule")
-def schedule(days: int = 7, language: str = "en"):
+def schedule(days: int = 14, language: str = "en"):
     """Admin register from local CSV sheets (calendar / spreadsheet stand-in)."""
-    days = max(1, min(days, 14))
+    # Allow up to 21 days so mid-horizon chat bookings (e.g. +8d) stay visible.
+    days = max(1, min(days, 21))
     return booking_svc.get_week_schedule(days=days, lang=language)
 
 
