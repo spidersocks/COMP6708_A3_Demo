@@ -1483,8 +1483,8 @@ code,
 }
 
 .bn-tab-ico-img {
-  object-fit: cover;
-  background: #111;
+  object-fit: contain;
+  background: transparent;
   border: 0;
   display: block;
 }
@@ -1590,8 +1590,8 @@ code,
 }
 
 .bn-sheet-icon-img {
-  object-fit: cover;
-  background: #111;
+  object-fit: contain;
+  background: transparent;
   border: 0;
   display: block;
 }
@@ -1940,8 +1940,8 @@ code,
 }
 
 .bn-mail-logo-img {
-  object-fit: cover;
-  background: #111;
+  object-fit: contain;
+  background: transparent;
   border: 0;
   display: block;
 }
