@@ -11,13 +11,13 @@
 **API:** Alibaba SAE, reached from the SPA via same-origin `/brightnest-api`  
 **Code:** FastAPI (`backend/`) · React inspector (`developer-site` BrightNestBot) · KB `content/`
 
-Fictional brand **BrightNest / 亮巢**. This document explains **what the system does**, **why each path exists**, and **how a single parent message becomes an answer** — written so a teammate or marker can follow it without reading every source file first.
+Fictional brand **BrightNest / 亮巢**. This document explains **what the system does**, **why each path exists**, and **how a single parent message becomes an answer**.
 
 ---
 
 ## 0. One-minute picture
 
-BrightNest is a WhatsApp-style parent assistant for a learning centre.
+BrightNest is a WhatsApp-based parent assistant for a learning centre.
 
 1. The parent types a message.
 2. A **hybrid intent router** decides *which specialist* should answer (fee table, typhoon policy, live seats, booking dialogue, staff escalation, or the knowledge-base RAG path).
@@ -72,8 +72,6 @@ Browser (HTTPS)
 | API | SAE `cn-hongkong` | `deploy/Dockerfile.backend` → ACR → DeployApplication |
 | Models | DashScope (HK / CN endpoint via `DASHSCOPE_BASE_URL`) | chat + embeddings |
 
-Redeploy ritual: abort change-order → **StopApplication** → build/push tag → DeployApplication → `GET /healthz` → `POST /admin/reindex`. See `deploy/REDEPLOY.md`.
-
 ---
 
 ## 2. Request lifecycle (`POST /chat`)
@@ -97,13 +95,16 @@ BrightNest does **not** treat every structured hit the same. After the router pi
 
 | Tier | Routes (examples) | What runs | RAG? |
 |------|-------------------|-----------|------|
-| **1 · Hard tool** | `severe_weather`, `opening_hours`, `booking_*`, `cancel_*`, `staff_escalation`, `off_domain`, `unknown_programme` | Structured answer (JSON / CSV / FSM). Optional **tone-only** adapt. | **Bypass** — retrieve skipped |
-| **2 · Grounded compose** | `allergy`, `illness`, `fees`, `teachers`, `makeup`, `sibling`, `guest_policy`, `waiting`, `pickup`, `payment`, `location`, `trial_info`, `pets_policy` | Load fact card → retrieve top‑k KB → `compose_grounded_fact` (card is privileged; KB may elaborate) | **Enrich only** |
+| **1 · Hard FSM / hand-off** | `booking_dialogue`, `cancel_*`, `staff_escalation`, `off_domain`, `unknown_programme` | Sticky dialogue / inbox / refuse. Optional tone adapt. | **Bypass** |
+| **2 · Grounded compose** | `severe_weather`, `opening_hours`, `booking_tool`, `allergy`, `fees`, `teachers`, … | **Live doc** (HKO / register) + structured card → retrieve KB → compose (docs privileged). Seat browse: LLM `[[TOOL_OK]]` / `[[TOOL_SKIP]]` before exposing bookable cards. | **Enrich only** |
 | **3 · Pure RAG** | `rag` (default / multi-topic) | Retrieve → generate with citations | **Full** generate |
+
+**Weather:** live HKO status (when available) is a privileged live doc; centre severe-weather policy is the structured card; KB may add general advice.  
+**Seats:** live register text is privileged; interactive slot cards only appear if the tool gate returns OK.
 
 Flag: `GROUNDING_ENRICH_ENABLED` (default true). Enrich top‑k: `GROUNDING_ENRICH_TOP_K` (default 3).
 
-Inspector: `trace.grounding.{mode,why,composed,rag_hit_count}` and `trace.rag.mode=grounded_enrich` when enrich runs.
+Inspector: `trace.grounding.{mode,why,composed,live_doc,ask_tool_ok,invoke_tool,rag_hit_count}` and `trace.rag.mode=grounded_enrich` when enrich runs.
 
 ---
 
@@ -278,7 +279,7 @@ The router does not only say *which* rule won. For every rule it emits an eviden
 
 In the UI: **Router decision** opens with that card; the winning rule auto-expands; click any other rule to see the same query with *that* rule’s cue (or why it stayed idle).
 
-### 3.9 Routing invariants (stress-tested)
+### 3.8 Routing invariants (stress-tested)
 
 - Typhoon / T8 / black rain → `severe_weather` (RAG skipped; adapt may run).
 - “How much is phonics?” / `月費幾多？` / `幾錢一個月` → `fees` (not RAG).

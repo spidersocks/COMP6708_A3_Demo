@@ -207,6 +207,24 @@ def _extractive_fallback(
     return f"{body}{footer}"
 
 
+_TOOL_OK_RE = re.compile(r"\[\[\s*TOOL_OK\s*\]\]", re.I)
+_TOOL_SKIP_RE = re.compile(r"\[\[\s*TOOL_SKIP\s*\]\]", re.I)
+
+
+def _strip_tool_gate(text: str) -> tuple[str, Optional[bool]]:
+    """Parse trailing [[TOOL_OK]] / [[TOOL_SKIP]]; return (clean_text, invoke_or_none)."""
+    raw = (text or "").strip()
+    invoke: Optional[bool] = None
+    if _TOOL_OK_RE.search(raw):
+        invoke = True
+    elif _TOOL_SKIP_RE.search(raw):
+        invoke = False
+    cleaned = _TOOL_OK_RE.sub("", raw)
+    cleaned = _TOOL_SKIP_RE.sub("", cleaned).strip()
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned, invoke
+
+
 def compose_grounded_fact(
     question: str,
     fact_card: str,
@@ -215,31 +233,43 @@ def compose_grounded_fact(
     lang: str = "en",
     history_context: Optional[str] = None,
     route: str = "centre_facts",
+    live_doc: str = "",
+    ask_tool_ok: bool = False,
+    tool_label: str = "availability / booking tool",
 ) -> Dict[str, Any]:
     """
-    Tier-2 reply: structured fact card is privileged truth; RAG chunks may enrich
-    tone / background only. Must not override fees, times, or policy in the card.
+    Tier-2 reply: privileged live/structured docs + optional RAG enrichment.
+    Optionally ask the model whether to expose a downstream tool (e.g. seat cards).
     """
     card = (fact_card or "").strip()
+    live = (live_doc or "").strip()
+    privileged_parts = []
+    if live:
+        privileged_parts.append(f"LIVE DOC (highest priority — reference this):\n{live}")
+    if card:
+        privileged_parts.append(f"STRUCTURED FACT / REGISTER CARD:\n{card}")
+    privileged = "\n\n".join(privileged_parts).strip() or card
     out: Dict[str, Any] = {
-        "answer": card,
+        "answer": card or live,
         "provider": "passthrough",
         "composed": False,
         "adapted": False,
         "used_rag": bool(contexts),
+        "invoke_tool": True if ask_tool_ok else None,
+        "had_live_doc": bool(live),
     }
-    if not card or not (question or "").strip():
+    if not privileged or not (question or "").strip():
         return out
-    if not contexts:
-        # No retrieve hits → fall back to tone-only adapt
+    if not SETTINGS.has_dashscope:
+        return out
+    if not contexts and not ask_tool_ok and not live:
         adapted = adapt_structured_fact(
             question, card, lang=lang, history_context=history_context, route=route
         )
         adapted["composed"] = False
         adapted["used_rag"] = False
+        adapted["invoke_tool"] = out["invoke_tool"]
         return adapted
-    if not SETTINGS.has_dashscope:
-        return out
 
     persona = PERSONA.get(lang, PERSONA["en"])
     history_block = ""
@@ -257,50 +287,85 @@ def compose_grounded_fact(
             continue
         kb_bits.append(f"[{i}] {title}\n{body[:900]}")
     kb_block = "\n\n".join(kb_bits) if kb_bits else "(no KB excerpts)"
+    tool_block = ""
+    if ask_tool_ok:
+        tool_block = (
+            f"\nTOOL GATE — after your parent-facing reply, on its OWN last line write "
+            f"exactly one token:\n"
+            f"[[TOOL_OK]] if the parent should see the interactive {tool_label} "
+            f"(bookable seat/slot cards) because live register data answers their ask; "
+            f"or [[TOOL_SKIP]] if a spoken answer is enough / data is empty / "
+            f"they are not actually browsing seats.\n"
+            f"Never invent seats not listed in the live doc.\n"
+        )
     prompt = (
         f"{persona}\n\n"
-        "You are answering with TWO sources. Priority is absolute:\n"
-        "1) STRUCTURED FACT CARD — verified centre ops truth. Fees, times, policy "
-        "lines, and named rules here MUST appear unchanged if you mention them. "
-        "Never contradict or invent over this card.\n"
-        "2) KB EXCERPTS — optional colour / background / related policy. Use only "
-        "to elaborate when consistent with the card. If a KB line conflicts with "
-        "the card, ignore the KB line.\n"
+        "You are answering with layered sources. Priority is absolute:\n"
+        "1) LIVE DOC + STRUCTURED CARD — verified centre truth (live weather, "
+        "register seats, published policy). Numbers, signals, and seat counts here "
+        "MUST be referenced accurately; never contradict or invent over them.\n"
+        "2) KB EXCERPTS — general advice / background. Use to elaborate when "
+        "consistent with (1). If a KB line conflicts with the live/structured doc, "
+        "ignore the KB line.\n"
         "Write a warm, spoken parent reply. No template/meta talk. "
-        "No [[ADMIN_GAP]] / NO_ANSWER.\n\n"
+        "No [[ADMIN_GAP]] / NO_ANSWER.\n"
+        f"{tool_block}\n"
         f"{history_block}"
         f"Route: {route}\n\n"
-        f"STRUCTURED FACT CARD (privileged):\n---\n{card}\n---\n\n"
-        f"KB EXCERPTS (secondary):\n---\n{kb_block}\n---\n\n"
+        f"PRIVILEGED DOCS:\n---\n{privileged}\n---\n\n"
+        f"KB EXCERPTS (secondary / general advice):\n---\n{kb_block}\n---\n\n"
         f"Parent question: {question}\n\n"
         "Reply:"
     )
     try:
         raw = _dashscope_generation_http(
             prompt,
-            max_tokens=min(320, max(SETTINGS.gen_max_tokens, 280)),
+            max_tokens=min(360, max(SETTINGS.gen_max_tokens, 300)),
             temperature=0.25,
         )
         meta = sanitize_answer_meta(raw, lang)
         composed = (meta.get("answer") or "").strip()
+        invoke: Optional[bool] = None
+        if ask_tool_ok:
+            composed, invoke = _strip_tool_gate(composed)
+            if invoke is None:
+                # Default: expose tool when we have a non-empty live/register card
+                invoke = bool(card.strip())
         if not composed or meta.get("used_fallback") or len(composed) < 20:
-            return adapt_structured_fact(
-                question, card, lang=lang, history_context=history_context, route=route
-            ) | {"composed": False, "used_rag": True, "compose_fallback": "adapt"}
+            fb = adapt_structured_fact(
+                question,
+                privileged,
+                lang=lang,
+                history_context=history_context,
+                route=route,
+            )
+            fb["composed"] = False
+            fb["used_rag"] = bool(contexts)
+            fb["compose_fallback"] = "adapt"
+            fb["invoke_tool"] = True if ask_tool_ok and invoke is not False else invoke
+            fb["had_live_doc"] = bool(live)
+            return fb
         out["answer"] = composed
         out["provider"] = "dashscope"
         out["composed"] = True
         out["adapted"] = True
-        out["used_rag"] = True
+        out["used_rag"] = bool(contexts)
+        out["invoke_tool"] = invoke
         return out
     except Exception as e:
         print(f"[GEN] compose_grounded_fact failed ({e}); adapt fallback.", flush=True)
         fb = adapt_structured_fact(
-            question, card, lang=lang, history_context=history_context, route=route
+            question,
+            privileged,
+            lang=lang,
+            history_context=history_context,
+            route=route,
         )
         fb["composed"] = False
-        fb["used_rag"] = True
+        fb["used_rag"] = bool(contexts)
         fb["compose_fallback"] = f"error:{e}"
+        fb["invoke_tool"] = True if ask_tool_ok else None
+        fb["had_live_doc"] = bool(live)
         return fb
 
 

@@ -58,9 +58,9 @@
 **Show:** Probe **Typhoon**.
 
 **Say:**
-> Watch **Router decision**. The severe-weather rule fires at score 1.0. Cheap LLM review is **skipped** — high confidence. RAG is **skipped** on purpose. We load the centre typhoon policy as a structured fact, then the main LLM does a **fluency rewrite** so it sounds like a human, without inventing policy.
+> Watch **Router decision**. Severe-weather fires at score 1.0 from hard_regex. We still **retrieve** general weather advice from the KB, but a **live HKO / policy doc is privileged** — Answer grounding shows grounded compose, not a hard RAG bypass. The model may elaborate; it must not invent a different signal.
 
-**Point at:** Router path · rule map (`severe_weather` fired, `rag` idle) · adapt = yes · RAG panel says skipped.
+**Point at:** Match cue · grounding (live doc + enrich) · RAG enrichment panel · score ledger.
 
 **Backup:** Christmas → opening-hours engine / public holiday.
 

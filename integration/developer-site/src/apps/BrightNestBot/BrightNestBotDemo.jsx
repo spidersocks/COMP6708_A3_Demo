@@ -1617,12 +1617,18 @@ export default function BrightNestBotDemo() {
                     <div className="bn-match-summary-kicker">Answer grounding</div>
                     <p className="bn-match-headline">
                       Mode <code>{grounding.mode}</code>
-                      {grounding.structured_privileged ? " · structured card privileged" : ""}
+                      {grounding.structured_privileged ? " · docs privileged" : ""}
+                      {grounding.live_doc ? " · live doc attached" : ""}
                     </p>
                     <p className="bn-match-explain">{grounding.why}</p>
                     <p className="bn-match-down">
                       Summary: {groundingSummary}
                       {grounding.composed ? " · composed with KB" : ""}
+                      {grounding.ask_tool_ok
+                        ? grounding.invoke_tool === false
+                          ? " · tool gate SKIP (no seat cards)"
+                          : " · tool gate OK (seat cards exposed)"
+                        : ""}
                     </p>
                   </div>
                 ) : null}

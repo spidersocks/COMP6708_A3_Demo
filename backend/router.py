@@ -63,6 +63,11 @@ _GROUNDING_ENRICH_ROUTES = {
     "location",
     "trial_info",
     "pets_policy",
+    # Live / policy docs + general KB advice (no longer hard RAG bypass)
+    "severe_weather",
+    "deterministic_opening_hours",
+    "opening_hours",
+    "booking_tool",
 }
 
 router = APIRouter()
@@ -406,12 +411,16 @@ def chat(req: ChatRequest) -> ChatResponse:
         debug: Optional[Dict[str, Any]] = None,
         adapt: bool = True,
         enrich: Optional[bool] = None,
+        live_doc: str = "",
+        ask_tool_ok: bool = False,
+        tool_label: str = "availability / booking tool",
     ) -> ChatResponse:
         if extra_step:
             steps.append(extra_step)
         final = answer
         final_provider = provider
         out_citations = list(citations or [])
+        out_slots = slots
         do_enrich = (
             SETTINGS.grounding_enrich_enabled
             and SETTINGS.has_dashscope
@@ -439,6 +448,15 @@ def chat(req: ChatRequest) -> ChatResponse:
             rag_hits = enrich_pack.get("hits") or []
             rag_cites = enrich_pack.get("citations") or []
             rag_dbg = enrich_pack.get("debug") or {}
+            if live_doc:
+                steps.append(
+                    _step(
+                        "live_doc",
+                        "Attach live privileged doc",
+                        "done",
+                        f"chars={len(live_doc)}",
+                    )
+                )
             composed = compose_grounded_fact(
                 message,
                 answer,
@@ -446,6 +464,9 @@ def chat(req: ChatRequest) -> ChatResponse:
                 lang=lang,
                 history_context=history_context,
                 route=route_name,
+                live_doc=live_doc,
+                ask_tool_ok=ask_tool_ok,
+                tool_label=tool_label,
             )
             if composed.get("composed") or composed.get("adapted"):
                 final = composed["answer"]
@@ -454,26 +475,51 @@ def chat(req: ChatRequest) -> ChatResponse:
                     if composed.get("composed")
                     else f"{provider}+llm"
                 )
+            if ask_tool_ok:
+                invoke = composed.get("invoke_tool")
+                if invoke is False:
+                    out_slots = None
+                    steps.append(
+                        _step(
+                            "tool_gate",
+                            f"LLM tool gate · {tool_label}",
+                            "skipped",
+                            "[[TOOL_SKIP]] — live cards not exposed",
+                        )
+                    )
+                else:
+                    steps.append(
+                        _step(
+                            "tool_gate",
+                            f"LLM tool gate · {tool_label}",
+                            "done",
+                            "[[TOOL_OK]] — expose live tool output",
+                        )
+                    )
             # Merge citations: structured first, then enrich hits (tagged)
             for c in rag_cites:
                 tagged = dict(c)
                 tagged["role"] = "enrichment"
                 out_citations.append(tagged)
-            steps[-1] = _step(
-                "rag_enrich",
-                "KB retrieve for grounded compose",
-                "done" if rag_hits else "empty",
-                f"hits={len(rag_hits)} · top={rag_dbg.get('top_score')}",
-            )
+            for i, s in enumerate(steps):
+                if s.get("id") == "rag_enrich" and s.get("status") == "running":
+                    steps[i] = _step(
+                        "rag_enrich",
+                        "KB retrieve for grounded compose",
+                        "done" if rag_hits else "empty",
+                        f"hits={len(rag_hits)} · top={rag_dbg.get('top_score')}",
+                    )
+                    break
             steps.append(
                 _step(
                     "grounded_compose",
-                    "Compose fact card + KB (card wins)",
+                    "Compose live/structured docs + KB (docs win)",
                     "done" if composed.get("composed") else "fallback",
                     (
                         f"{SETTINGS.llm_model} · "
                         f"{composed.get('provider') or 'n/a'} · "
-                        f"composed={bool(composed.get('composed'))}"
+                        f"composed={bool(composed.get('composed'))} · "
+                        f"live_doc={bool(live_doc)}"
                     ),
                 )
             )
@@ -482,7 +528,7 @@ def chat(req: ChatRequest) -> ChatResponse:
                     "rag",
                     "RAG retrieve → generate",
                     "enrich_only",
-                    "full RAG generate skipped — structured card remains source of truth",
+                    "full RAG generate skipped — live/structured docs remain source of truth",
                 )
             )
             trace["rag"] = {
@@ -490,27 +536,41 @@ def chat(req: ChatRequest) -> ChatResponse:
                 "mode": "grounded_enrich",
                 "privileged_route": route_name,
             }
+            why = (
+                "Live/structured docs are privileged; KB may add general advice "
+                "but must not override signals, fees, times, or seat counts."
+                if composed.get("composed")
+                else (
+                    "Enrich retrieve ran but compose fell back to tone-only adapt "
+                    f"({composed.get('compose_fallback') or composed.get('provider')})."
+                )
+            )
+            if ask_tool_ok:
+                why += (
+                    " Tool gate: "
+                    + (
+                        "LLM approved exposing interactive seat/slot cards."
+                        if composed.get("invoke_tool") is not False
+                        else "LLM skipped exposing the booking tool this turn."
+                    )
+                )
             trace["grounding"] = {
                 "mode": "grounded_compose" if composed.get("composed") else "adapt_fallback",
                 "route": route_name,
                 "structured_privileged": True,
+                "live_doc": bool(live_doc),
+                "live_doc_chars": len(live_doc or ""),
                 "rag_hit_count": len(rag_hits),
                 "composed": bool(composed.get("composed")),
                 "used_rag": bool(composed.get("used_rag")),
+                "ask_tool_ok": ask_tool_ok,
+                "invoke_tool": composed.get("invoke_tool"),
                 "model": SETTINGS.llm_model,
-                "why": (
-                    "Soft structured route: fact card is privileged truth; "
-                    "KB chunks may elaborate but must not override fees/times/policy."
-                    if composed.get("composed")
-                    else (
-                        "Enrich retrieve ran but compose fell back to tone-only adapt "
-                        f"({composed.get('compose_fallback') or composed.get('provider')})."
-                    )
-                ),
+                "why": why,
             }
             trace["adapt"] = {
                 "ran": bool(composed.get("adapted")),
-                "why": trace["grounding"]["why"],
+                "why": why,
                 "model": SETTINGS.llm_model,
                 "provider": composed.get("provider") or "passthrough",
                 "input_provider": provider,
@@ -601,7 +661,7 @@ def chat(req: ChatRequest) -> ChatResponse:
             answer=final,
             citations=out_citations,
             provider=final_provider,
-            slots=slots,
+            slots=out_slots,
             session_id=session_id,
             debug=debug or {},
             trace=trace,
@@ -748,12 +808,26 @@ def chat(req: ChatRequest) -> ChatResponse:
             answer_cache.put(
                 "severe_weather", message, lang, {"answer": answer, "citations": cites}
             )
+        live_weather = ""
+        try:
+            from llm.hko import get_weather_hint_for_opening
+
+            hint = get_weather_hint_for_opening(lang)
+            if hint:
+                live_weather = (
+                    f"Current HKO / centre weather status (live):\n{hint}\n\n"
+                    "Treat this live status as authoritative for *today*; "
+                    "the structured policy below covers signal rules in general."
+                )
+        except Exception:
+            live_weather = ""
         return _fact_response(
             route_name="severe_weather",
             answer=answer,
             citations=cites,
             provider="centre_facts",
             extra_step=_step("facts", "Severe weather policy", "done", "structured"),
+            live_doc=live_weather,
         )
 
     if route == "fees":
@@ -953,6 +1027,13 @@ def chat(req: ChatRequest) -> ChatResponse:
             "is_general": general,
             "facts": _serialize_hours_facts(facts),
         }
+        live_hours = ""
+        wh = facts.get("weather_hint")
+        if wh:
+            live_hours = (
+                f"Live HKO severe-weather note for the resolved date:\n{wh}\n\n"
+                "Combine with the opening-hours card; do not invent a different signal."
+            )
         return _fact_response(
             route_name="deterministic_opening_hours",
             answer=answer,
@@ -962,6 +1043,7 @@ def chat(req: ChatRequest) -> ChatResponse:
                 "hours": (decision.debug or {}).get("hours_debug"),
                 "facts": trace["opening_hours"]["facts"],
             },
+            live_doc=live_hours,
         )
 
     if route == "cancel_dialogue":
@@ -1083,6 +1165,14 @@ def chat(req: ChatRequest) -> ChatResponse:
             course, lang=lang, teacher_id=teacher_id
         )
         answer = booking_svc.format_availability_message(slots, lang=lang)
+        # Live register is privileged; LLM may elaborate from KB, then gate whether
+        # interactive seat cards (the "tool") are exposed to the parent.
+        live_register = (
+            f"LIVE CLASS REGISTER (seats_left from CSV + chat bookings):\n"
+            f"course={course} · teacher={teacher_id or 'any'} · "
+            f"open_slots={len(slots)}\n\n"
+            f"{answer}"
+        )
         return _fact_response(
             route_name="booking_tool",
             answer=answer,
@@ -1095,7 +1185,10 @@ def chat(req: ChatRequest) -> ChatResponse:
                 f"course={course}, teacher={teacher_id or 'any'}, slots={len(slots)}",
             ),
             slots=slots[:8],
-            debug={"course_key": course, "teacher_id": teacher_id},
+            debug={"course_key": course, "teacher_id": teacher_id, "slot_count": len(slots)},
+            live_doc=live_register,
+            ask_tool_ok=True,
+            tool_label="live seat / trial-slot cards",
         )
 
     if route == "greeting" or is_greeting(message):
