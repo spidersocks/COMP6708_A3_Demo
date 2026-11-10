@@ -613,15 +613,13 @@ code,
   opacity: 0.4;
 }
 
-/* Inspector — match phone widget height; label lives in .bn-right-head above */
+/* System inspector — expand freely; scroll when panels exceed the viewport */
 .bn-inspector {
   display: grid;
   gap: 10px;
   min-width: 0;
   min-height: 0;
-  flex: 1 1 auto;
   align-content: start;
-  height: min(74dvh, 760px);
   max-height: min(74dvh, 760px);
   overflow-x: hidden;
   overflow-y: auto;
@@ -629,11 +627,14 @@ code,
   overscroll-behavior: contain;
 }
 
-/* Staff desk: keep the rounded browser fully visible (no mid-box clip) */
+/* Staff desk only: fixed height matching the phone so the rounded browser fills */
 .bn-inspector--staff {
   display: flex;
   flex-direction: column;
   align-content: stretch;
+  flex: 1 1 auto;
+  height: min(74dvh, 760px);
+  max-height: min(74dvh, 760px);
   overflow: hidden;
   padding-right: 0;
 }
@@ -2564,10 +2565,13 @@ code,
   }
 
   .bn-phone,
-  .bn-inspector,
   .bn-inspector--staff {
     min-height: 420px;
     height: min(58dvh, 640px);
+    max-height: min(58dvh, 640px);
+  }
+
+  .bn-inspector {
     max-height: min(58dvh, 640px);
   }
 
