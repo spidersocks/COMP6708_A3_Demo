@@ -717,7 +717,9 @@ def score_intents(
             why="No structured scores remained — default RAG floor 0.5",
         )
 
-    # Final per-route origin snapshot for the inspector
+    # Final per-route origin snapshot for the inspector.
+    # Prefer the hard award as the story ("fees=0.90 from regex"); blend may
+    # adjust the numeric score but must not hide the detector source.
     origin_by_route: Dict[str, Dict[str, Any]] = {}
     for entry in ledger:
         r = entry.get("route")
@@ -725,6 +727,25 @@ def score_intents(
             continue
         if entry.get("op") == "clear":
             origin_by_route.pop(r, None)
+            continue
+        if entry.get("op") == "note":
+            continue
+        prev = origin_by_route.get(r) or {}
+        if (
+            entry.get("op") == "blend"
+            and prev.get("source") in {"hard_regex", "sticky_state"}
+            and float(prev.get("score") or 0) >= 0.85
+        ):
+            origin_by_route[r] = {
+                **prev,
+                "score": entry.get("score"),
+                "why": (
+                    f"{prev.get('why')} "
+                    f"(prototype blend nudged {float(prev.get('score') or 0):.3f} "
+                    f"→ {float(entry.get('score') or 0):.3f}; hard award kept)"
+                ),
+                "blended": True,
+            }
             continue
         origin_by_route[r] = {
             "source": entry.get("source"),
