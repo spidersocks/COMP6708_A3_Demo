@@ -1137,10 +1137,8 @@ export default function BrightNestBotDemo() {
           </div>
         </aside>
 
-        {/* Inspector / Staff desk */}
-        <section
-          className={`bn-inspector${rightView === "staff" ? " bn-inspector--staff" : ""}`}
-        >
+        {/* Inspector / Staff desk — label row aligns with Parent chat; body with phone */}
+        <div className="bn-right-wrap">
           <div className="bn-right-head">
             <p className="bn-col-label">
               {rightView === "staff" ? "Staff desk" : "System inspector"}
@@ -1172,6 +1170,9 @@ export default function BrightNestBotDemo() {
             </div>
           </div>
 
+          <section
+            className={`bn-inspector${rightView === "staff" ? " bn-inspector--staff" : ""}`}
+          >
           {rightView === "staff" ? (
             <div className="bn-browser">
               <div className="bn-browser-chrome">
@@ -2213,7 +2214,8 @@ export default function BrightNestBotDemo() {
           </Reveal>
             </>
           )}
-        </section>
+          </section>
+        </div>
       </div>
     </div>
   );

@@ -177,17 +177,36 @@ code,
 }
 
 .bn-col-label {
-  margin: 0 0 8px;
+  margin: 0;
   font-size: 0.72rem;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--muted);
+  line-height: 1;
 }
 
-/* Phone */
+/* Phone + right column share the same label row / body top */
+.bn-phone-wrap,
+.bn-right-wrap {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
 .bn-phone-wrap {
   position: sticky;
   top: 12px;
+}
+
+.bn-phone-wrap > .bn-col-label,
+.bn-right-head {
+  flex-shrink: 0;
+  box-sizing: border-box;
+  min-height: 34px;
+  margin: 0 0 8px;
+  display: flex;
+  align-items: center;
 }
 
 .bn-phone {
@@ -199,6 +218,7 @@ code,
   display: grid;
   grid-template-rows: auto 1fr auto;
   min-height: 520px;
+  height: min(74dvh, 760px);
   max-height: min(74dvh, 760px);
 }
 
@@ -593,13 +613,15 @@ code,
   opacity: 0.4;
 }
 
-/* Inspector — scroll inside; match phone height so the page does not grow */
+/* Inspector — match phone widget height; label lives in .bn-right-head above */
 .bn-inspector {
   display: grid;
   gap: 10px;
   min-width: 0;
   min-height: 0;
+  flex: 1 1 auto;
   align-content: start;
+  height: min(74dvh, 760px);
   max-height: min(74dvh, 760px);
   overflow-x: hidden;
   overflow-y: auto;
@@ -612,15 +634,8 @@ code,
   display: flex;
   flex-direction: column;
   align-content: stretch;
-  /* Definite height so .bn-browser can flex-fill to the rounded bottom */
-  height: min(74dvh, 760px);
-  max-height: min(74dvh, 760px);
   overflow: hidden;
   padding-right: 0;
-}
-
-.bn-inspector--staff .bn-right-head {
-  flex-shrink: 0;
 }
 
 .bn-inspector--staff .bn-browser {
@@ -1461,14 +1476,11 @@ code,
   color: var(--muted);
 }
 
-/* Right column: System / Staff desk toggle */
+/* Right column: System / Staff desk toggle — same row height as Parent chat label */
 .bn-right-head {
-  display: flex;
-  align-items: center;
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-  margin-bottom: 2px;
 }
 
 .bn-right-head .bn-col-label {
@@ -2550,14 +2562,13 @@ code,
   .bn-phone-wrap {
     position: static;
   }
-  .bn-phone {
-    min-height: 420px;
-    max-height: 58dvh;
-  }
 
+  .bn-phone,
+  .bn-inspector,
   .bn-inspector--staff {
-    height: min(62dvh, 640px);
-    max-height: min(62dvh, 640px);
+    min-height: 420px;
+    height: min(58dvh, 640px);
+    max-height: min(58dvh, 640px);
   }
 
   .bn-browser {
