@@ -607,6 +607,29 @@ code,
   overscroll-behavior: contain;
 }
 
+/* Staff desk: keep the rounded browser fully visible (no mid-box clip) */
+.bn-inspector--staff {
+  display: flex;
+  flex-direction: column;
+  align-content: stretch;
+  /* Definite height so .bn-browser can flex-fill to the rounded bottom */
+  height: min(74dvh, 760px);
+  max-height: min(74dvh, 760px);
+  overflow: hidden;
+  padding-right: 0;
+}
+
+.bn-inspector--staff .bn-right-head {
+  flex-shrink: 0;
+}
+
+.bn-inspector--staff .bn-browser {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  max-height: none;
+}
+
 .bn-route-card {
   background: rgba(255, 255, 255, 0.88);
   border: 1px solid rgba(255, 255, 255, 0.9);
@@ -1500,7 +1523,9 @@ code,
 .bn-browser {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
-  min-height: min(72dvh, 740px);
+  /* Fill the staff inspector column; avoid min-height taller than the parent */
+  min-height: 0;
+  height: 100%;
   background: #dadce0;
   border-radius: 14px;
   border: 1px solid rgba(60, 64, 67, 0.2);
@@ -1647,6 +1672,8 @@ code,
   min-height: 0;
   background: #fff;
   display: grid;
+  overflow: hidden;
+  border-radius: 0 0 13px 13px;
 }
 
 .bn-sheet-widget,
@@ -2528,8 +2555,13 @@ code,
     max-height: 58dvh;
   }
 
+  .bn-inspector--staff {
+    height: min(62dvh, 640px);
+    max-height: min(62dvh, 640px);
+  }
+
   .bn-browser {
-    min-height: 520px;
+    min-height: 0;
   }
 }
 

@@ -1138,7 +1138,9 @@ export default function BrightNestBotDemo() {
         </aside>
 
         {/* Inspector / Staff desk */}
-        <section className="bn-inspector">
+        <section
+          className={`bn-inspector${rightView === "staff" ? " bn-inspector--staff" : ""}`}
+        >
           <div className="bn-right-head">
             <p className="bn-col-label">
               {rightView === "staff" ? "Staff desk" : "System inspector"}
