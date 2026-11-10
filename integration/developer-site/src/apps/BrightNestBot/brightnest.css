@@ -1362,7 +1362,8 @@ code,
 }
 
 .bn-pre-tall {
-  max-height: 320px;
+  max-height: min(60vh, 560px);
+  overflow: auto;
 }
 
 .bn-probes {

@@ -407,9 +407,8 @@ def chat(req: ChatRequest) -> ChatResponse:
             "enabled": use_history,
             "turns_loaded": len(history),
             "limit": SETTINGS.chat_history_limit,
-            "preview": (
-                build_context_string(history, include_new=False)[-600:] if history else ""
-            ),
+            # Exact conversation context string passed into the LLM prompt (full, not truncated)
+            "preview": history_context if use_history else "",
             # Full turns for the expandable session-memory inspector
             "turns": [
                 {
