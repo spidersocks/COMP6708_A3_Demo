@@ -233,6 +233,52 @@ def _pick_route(scores: Dict[str, float]) -> str:
     return candidates[0]
 
 
+# Human legend for the inspector — where numeric scores come from.
+SCORE_SOURCE_GUIDE = [
+    {
+        "id": "hard_regex",
+        "label": "Hard regex / detector",
+        "meaning": (
+            "A fixed high score (≈0.85–1.0) assigned when a named pattern or "
+            "centre_facts detector matches a substring. Not learned; not from "
+            "RAG similarity."
+        ),
+    },
+    {
+        "id": "sticky_state",
+        "label": "Sticky session state",
+        "meaning": (
+            "Book/cancel dialogue already open for this session_id, so the "
+            "route keeps a high fixed score across turns."
+        ),
+    },
+    {
+        "id": "prototype_blend",
+        "label": "Soft prototype blend",
+        "meaning": (
+            "Embedding/prototype similarity softly mixed into scores when no "
+            "hard veto (≥0.98) owns the turn. Absolute hard hits ≥0.95 are kept."
+        ),
+    },
+    {
+        "id": "conflict_clear",
+        "label": "Conflict resolution",
+        "meaning": (
+            "A previously awarded score was removed because a higher-priority "
+            "intent won (e.g. weather>hours, availability>fees)."
+        ),
+    },
+    {
+        "id": "default_floor",
+        "label": "Default RAG floor",
+        "meaning": (
+            "No structured owner remained, so rag gets a floor score (0.5) or "
+            "multi-topic forces rag=0.65."
+        ),
+    },
+]
+
+
 def score_intents(
     message: str,
     *,
@@ -243,60 +289,192 @@ def score_intents(
     """Return raw scores for audit / tests (does not short-circuit)."""
     history = history or []
     scores: Dict[str, float] = {}
-    debug: Dict[str, Any] = {"conflicts": []}
+    ledger: List[Dict[str, Any]] = []
+    debug: Dict[str, Any] = {"conflicts": [], "score_ledger": ledger}
+
+    def _award(
+        route: str,
+        value: float,
+        *,
+        source: str,
+        why: str,
+        cue: str = "",
+    ) -> None:
+        scores[route] = float(value)
+        ledger.append(
+            {
+                "op": "award",
+                "route": route,
+                "score": float(value),
+                "source": source,
+                "why": why,
+                "cue": cue,
+            }
+        )
+
+    def _clear(route: str, conflict: str) -> None:
+        if route not in scores:
+            return
+        prev = scores.pop(route, None)
+        ledger.append(
+            {
+                "op": "clear",
+                "route": route,
+                "score": None,
+                "prev_score": prev,
+                "source": "conflict_clear",
+                "why": f"Cleared by conflict «{conflict}»",
+                "cue": conflict,
+            }
+        )
 
     esc = escalation_svc.detect_escalation(message)
     if esc:
-        scores["staff_escalation"] = 1.0
+        _award(
+            "staff_escalation",
+            1.0,
+            source="hard_regex",
+            why=f"Escalation detector · category «{esc.get('category')}»",
+            cue=str(esc.get("summary") or esc.get("category") or ""),
+        )
         debug["escalation"] = esc
 
     if is_confused(message):
-        scores["confused"] = 1.0
+        _award(
+            "confused",
+            1.0,
+            source="hard_regex",
+            why="Bare confused / huh one-liner regex",
+        )
     if _THANKS_RE.match((message or "").strip()):
-        scores["thanks"] = 1.0
+        _award("thanks", 1.0, source="hard_regex", why="Thanks / 多謝 one-liner regex")
 
     if _OFF_DOMAIN_RE.search(message or ""):
-        scores["off_domain"] = 0.98
+        span = _match_span(_OFF_DOMAIN_RE, message or "")
+        _award(
+            "off_domain",
+            0.98,
+            source="hard_regex",
+            why="Off-domain regex (politics / foreign weather / crypto…)",
+            cue=(span or {}).get("text") or "",
+        )
 
-    if centre_facts.is_severe_weather_intent(message):
-        scores["severe_weather"] = 1.0
-    if centre_facts.is_illness_intent(message):
-        scores["illness"] = 0.95
-    if centre_facts.is_allergy_intent(message):
-        scores["allergy"] = 0.95
-    if centre_facts.is_location_intent(message):
-        scores["location"] = 0.95
-    if centre_facts.is_payment_intent(message):
-        scores["payment"] = 0.95
-    if centre_facts.is_fees_intent(message):
-        scores["fees"] = 0.9
-    if centre_facts.is_teachers_intent(message):
-        scores["teachers"] = 0.95
-    if centre_facts.is_pickup_intent(message):
-        scores["pickup"] = 0.95
-    if centre_facts.is_makeup_intent(message):
-        scores["makeup"] = 0.95
-    if centre_facts.is_waiting_intent(message):
-        scores["waiting"] = 0.96
-    if centre_facts.is_sibling_intent(message):
-        scores["sibling"] = 0.96
-    if centre_facts.is_guest_intent(message):
-        scores["guest_policy"] = 0.96
+    def _fact_award(route: str, value: float, predicate: bool, why: str) -> None:
+        if predicate:
+            _award(route, value, source="hard_regex", why=why)
+
+    _fact_award(
+        "severe_weather",
+        1.0,
+        centre_facts.is_severe_weather_intent(message),
+        "centre_facts.is_severe_weather_intent · fixed 1.0 hard veto",
+    )
+    _fact_award(
+        "illness",
+        0.95,
+        centre_facts.is_illness_intent(message),
+        "centre_facts.is_illness_intent · fixed 0.95",
+    )
+    _fact_award(
+        "allergy",
+        0.95,
+        centre_facts.is_allergy_intent(message),
+        "centre_facts.is_allergy_intent · fixed 0.95",
+    )
+    _fact_award(
+        "location",
+        0.95,
+        centre_facts.is_location_intent(message),
+        "centre_facts.is_location_intent · fixed 0.95",
+    )
+    _fact_award(
+        "payment",
+        0.95,
+        centre_facts.is_payment_intent(message),
+        "centre_facts.is_payment_intent · fixed 0.95",
+    )
+    _fact_award(
+        "fees",
+        0.9,
+        centre_facts.is_fees_intent(message),
+        "centre_facts.is_fees_intent · fixed 0.9 (not a learned score)",
+    )
+    _fact_award(
+        "teachers",
+        0.95,
+        centre_facts.is_teachers_intent(message),
+        "centre_facts.is_teachers_intent · fixed 0.95",
+    )
+    _fact_award(
+        "pickup",
+        0.95,
+        centre_facts.is_pickup_intent(message),
+        "centre_facts.is_pickup_intent · fixed 0.95",
+    )
+    _fact_award(
+        "makeup",
+        0.95,
+        centre_facts.is_makeup_intent(message),
+        "centre_facts.is_makeup_intent · fixed 0.95",
+    )
+    _fact_award(
+        "waiting",
+        0.96,
+        centre_facts.is_waiting_intent(message),
+        "centre_facts.is_waiting_intent · fixed 0.96",
+    )
+    _fact_award(
+        "sibling",
+        0.96,
+        centre_facts.is_sibling_intent(message),
+        "centre_facts.is_sibling_intent · fixed 0.96",
+    )
+    _fact_award(
+        "guest_policy",
+        0.96,
+        centre_facts.is_guest_intent(message),
+        "centre_facts.is_guest_intent · fixed 0.96",
+    )
 
     if is_pets_question(message):
-        scores["pets_policy"] = 0.95
+        _award(
+            "pets_policy",
+            0.95,
+            source="hard_regex",
+            why="Pets regex · fixed 0.95",
+        )
     if is_boarding_question(message):
-        scores["unsupported_facility"] = 0.95
+        _award(
+            "unsupported_facility",
+            0.95,
+            source="hard_regex",
+            why="Boarding / overnight regex · fixed 0.95",
+        )
         debug["label"] = "overnight boarding"
 
     unk = dialogue_svc.unknown_programme(message)
     if unk:
-        scores["unknown_programme"] = 0.95
+        _award(
+            "unknown_programme",
+            0.95,
+            source="hard_regex",
+            why=f"Catalogue miss «{unk}» · fixed 0.95",
+            cue=str(unk),
+        )
         debug["label"] = unk
 
     cancel_active = cancel_svc.is_active(session_id)
     if cancel_active or cancel_svc.is_cancel_request(message):
-        scores["cancel_dialogue"] = 0.95
+        _award(
+            "cancel_dialogue",
+            0.95,
+            source="hard_regex" if not cancel_active else "sticky_state",
+            why=(
+                "Sticky cancel dialogue already open for this session"
+                if cancel_active
+                else "Fresh cancel-request detector · fixed 0.95"
+            ),
+        )
         debug["cancel_active"] = cancel_active
 
     leave_booking = dialogue_svc.should_yield_to_rag(session_id, message)
@@ -305,54 +483,92 @@ def score_intents(
         debug["left_booking"] = True
 
     if is_trial_info(message):
-        scores["trial_info"] = 0.9
+        _award(
+            "trial_info",
+            0.9,
+            source="hard_regex",
+            why="is_trial_info · fixed 0.9",
+        )
 
     dialogue_hit = (
         (not leave_booking)
         and (dialogue_active or dialogue_svc.is_booking_request(message))
     )
     if dialogue_hit:
-        scores["booking_dialogue"] = 0.85
+        _award(
+            "booking_dialogue",
+            0.85,
+            source="sticky_state" if dialogue_active else "hard_regex",
+            why=(
+                "Sticky booking dialogue active"
+                if dialogue_active
+                else "Booking-request verbs · fixed 0.85"
+            ),
+        )
         debug["dialogue_active"] = dialogue_active
 
     if is_availability_browse(message):
         # Strong seat/slot wording should beat the cheap arbiter → RAG override
-        avail_score = 0.95 if _AVAIL_STRONG_RE.search(message or "") else 0.85
-        scores["availability"] = avail_score
+        strong = bool(_AVAIL_STRONG_RE.search(message or ""))
+        avail_score = 0.95 if strong else 0.85
+        span = _match_span(_AVAIL_STRONG_RE, message or "")
+        why = (
+            "Strong availability regex · fixed 0.95"
+            if strong
+            else "Availability browse predicate · fixed 0.85"
+        )
+        _award(
+            "availability",
+            avail_score,
+            source="hard_regex",
+            why=why,
+            cue=(span or {}).get("text") or "",
+        )
         # route name used by chat()
-        scores["booking_tool"] = avail_score
+        _award(
+            "booking_tool",
+            avail_score,
+            source="hard_regex",
+            why=why + " (aliased to booking_tool)",
+            cue=(span or {}).get("text") or "",
+        )
 
     hours_intent, hours_debug = detect_opening_hours_intent(message, lang)
     if hours_intent:
-        scores["opening_hours"] = 0.8
+        _award(
+            "opening_hours",
+            0.8,
+            source="hard_regex",
+            why=f"detect_opening_hours_intent · fixed 0.8 · via {hours_debug.get('matched_via') or hours_debug.get('reason') or 'hours'}",
+        )
         debug["hours_debug"] = hours_debug
 
     # Weather always dominates hours when both fire
     if scores.get("severe_weather") and scores.get("opening_hours"):
         debug["conflicts"].append("weather>hours")
-        scores.pop("opening_hours", None)
+        _clear("opening_hours", "weather>hours")
 
     # Illness / allergy beat generic fees if somehow both matched
     if scores.get("illness") and scores.get("fees"):
         debug["conflicts"].append("illness>fees")
-        scores.pop("fees", None)
+        _clear("fees", "illness>fees")
     if scores.get("allergy") and scores.get("fees"):
         debug["conflicts"].append("allergy>fees")
-        scores.pop("fees", None)
+        _clear("fees", "allergy>fees")
 
     # Payment vs fees already separated in centre_facts; if both, prefer payment for pay verbs
     if scores.get("payment") and scores.get("fees"):
         debug["conflicts"].append("payment>fees")
-        scores.pop("fees", None)
+        _clear("fees", "payment>fees")
 
     # Sibling / waiting beat generic fees + RAG
     if scores.get("sibling") and scores.get("fees"):
         debug["conflicts"].append("sibling>fees")
-        scores.pop("fees", None)
+        _clear("fees", "sibling>fees")
     if scores.get("waiting"):
-        scores.pop("pickup", None)
-        scores.pop("booking_tool", None)
-        scores.pop("availability", None)
+        _clear("pickup", "waiting>pickup")
+        _clear("booking_tool", "waiting>booking_tool")
+        _clear("availability", "waiting>availability")
 
     # Strong live-seat browse beats fee-guide when both appear in one turn
     if (
@@ -361,13 +577,13 @@ def score_intents(
         and _AVAIL_STRONG_RE.search(message or "")
     ):
         debug["conflicts"].append("availability>fees")
-        scores.pop("fees", None)
+        _clear("fees", "availability>fees")
 
     # Trial info beats availability when both (seat words stripped in is_trial_info)
     if scores.get("trial_info") and scores.get("booking_tool"):
         debug["conflicts"].append("trial_info>availability")
-        scores.pop("booking_tool", None)
-        scores.pop("availability", None)
+        _clear("booking_tool", "trial_info>availability")
+        _clear("availability", "trial_info>availability")
 
     # Explicit book/enrol verbs beat trial explainer — except policy "need to book first?"
     if (
@@ -377,25 +593,30 @@ def score_intents(
         and not is_trial_policy_question(message)
     ):
         debug["conflicts"].append("booking>trial_info")
-        scores.pop("trial_info", None)
+        _clear("trial_info", "booking>trial_info")
     if scores.get("trial_info") and scores.get("booking_dialogue") and is_trial_policy_question(
         message
     ):
         debug["conflicts"].append("trial_policy>booking")
-        scores.pop("booking_dialogue", None)
-        scores.pop("booking_tool", None)
-        scores.pop("availability", None)
+        _clear("booking_dialogue", "trial_policy>booking")
+        _clear("booking_tool", "trial_policy>booking")
+        _clear("availability", "trial_policy>booking")
 
     # Pets beat booking/availability
     if scores.get("pets_policy"):
-        scores.pop("booking_tool", None)
-        scores.pop("availability", None)
-        scores.pop("booking_dialogue", None)
+        _clear("booking_tool", "pets>booking")
+        _clear("availability", "pets>booking")
+        _clear("booking_dialogue", "pets>booking")
 
     from rag.pipeline import is_greeting
 
     if is_greeting(message):
-        scores["greeting"] = 0.7
+        _award(
+            "greeting",
+            0.7,
+            source="hard_regex",
+            why="Greeting regex · fixed 0.7",
+        )
 
     # Long multi-topic parent dumps: don't answer only "parking/location"
     fact_keys = (
@@ -434,8 +655,13 @@ def score_intents(
     # Many parent constraints in one message → don't answer with a single fact card
     if soft >= 3 or (n_facts >= 1 and soft >= 2 and len(message or "") > 80):
         for k in fact_keys:
-            scores.pop(k, None)
-        scores["rag"] = 0.65
+            _clear(k, "multi_topic>single_fact")
+        _award(
+            "rag",
+            0.65,
+            source="default_floor",
+            why="multi_topic>single_fact forced RAG floor 0.65",
+        )
         debug["conflicts"].append("multi_topic>single_fact")
 
     # Soft prototype classifier blend (unless a hard veto already owns the turn)
@@ -443,6 +669,7 @@ def score_intents(
     proto = score_prototypes(message)
     debug["prototype_top"] = sorted(proto.items(), key=lambda kv: -kv[1])[:3]
     if not hard_hit and proto:
+        before = dict(scores)
         blended = blend_scores(scores, proto)
         # Keep absolute hard regex hits (≥0.95) from being diluted below threshold
         for k, v in scores.items():
@@ -450,10 +677,64 @@ def score_intents(
                 blended[k] = max(blended.get(k, 0), v)
         scores = blended
         debug["conflicts"].append("blended_prototypes")
+        for k, v in scores.items():
+            prev = before.get(k)
+            if prev is None or abs(float(v) - float(prev)) > 1e-6:
+                ledger.append(
+                    {
+                        "op": "blend",
+                        "route": k,
+                        "score": float(v),
+                        "prev_score": prev,
+                        "source": "prototype_blend",
+                        "why": (
+                            f"Prototype blend adjusted score"
+                            f"{'' if prev is None else f' from {prev:.3f}'}"
+                            f" → {float(v):.3f}"
+                        ),
+                        "cue": "",
+                    }
+                )
+    elif hard_hit:
+        ledger.append(
+            {
+                "op": "note",
+                "route": next(
+                    (k for k in _HARD_VETO if scores.get(k, 0) >= 0.98), "hard_veto"
+                ),
+                "score": None,
+                "source": "hard_regex",
+                "why": "Hard veto ≥0.98 — prototype blend skipped",
+                "cue": "",
+            }
+        )
 
     if not scores:
-        scores["rag"] = 0.5
+        _award(
+            "rag",
+            0.5,
+            source="default_floor",
+            why="No structured scores remained — default RAG floor 0.5",
+        )
 
+    # Final per-route origin snapshot for the inspector
+    origin_by_route: Dict[str, Dict[str, Any]] = {}
+    for entry in ledger:
+        r = entry.get("route")
+        if not r:
+            continue
+        if entry.get("op") == "clear":
+            origin_by_route.pop(r, None)
+            continue
+        origin_by_route[r] = {
+            "source": entry.get("source"),
+            "why": entry.get("why"),
+            "cue": entry.get("cue") or "",
+            "score": entry.get("score"),
+            "op": entry.get("op"),
+        }
+    debug["score_origins"] = origin_by_route
+    debug["score_source_guide"] = SCORE_SOURCE_GUIDE
     return scores, debug
 
 
@@ -1251,6 +1532,7 @@ def _build_rules_evaluated(
             row["checks"] = list(row.get("checks") or []) + [
                 _check("Survived conflict resolution", False, str(conflict_note))
             ]
+    origins = debug.get("score_origins") or {}
     # Guarantee every row carries the full query + match_evidence for the UI.
     for row in rows:
         row["query"] = msg
@@ -1261,6 +1543,21 @@ def _build_rules_evaluated(
                 kind="substring" if row.get("matched_span") else "predicate",
                 explanation=row.get("why") or row.get("why_not") or "",
             )
+        origin = origins.get(row["id"]) or {}
+        if origin:
+            row["score_origin"] = origin
+        elif row.get("matched") and row.get("score") is not None:
+            row["score_origin"] = {
+                "source": "hard_regex",
+                "why": "Detector matched; see score ledger for the exact award step.",
+                "score": row.get("score"),
+            }
+        else:
+            row["score_origin"] = {
+                "source": "none",
+                "why": "No score awarded to this rule on this turn.",
+                "score": None,
+            }
     return rows
 
 

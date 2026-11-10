@@ -372,6 +372,66 @@ def _merge_hits(
     return merged
 
 
+def retrieve_for_enrich(
+    message: str,
+    *,
+    language: Optional[str] = None,
+    top_k: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Lightweight retrieve for grounded-compose (structured fact + KB excerpts).
+    Does not generate — caller composes with the privileged fact card.
+    """
+    lang = language or "en"
+    k = int(top_k or SETTINGS.grounding_enrich_top_k or SETTINGS.rag_top_k)
+    lang_fallback = False
+    hits = retrieve(message, lang=lang, top_k=max(k, 8))
+    if not hits and lang:
+        hits = retrieve(message, lang=None, top_k=max(k, 8))
+        lang_fallback = True
+    hits = _merge_hits(hits, _age_faq_overlay(message, lang))
+    hits = _lexical_rerank(message, hits)[:k]
+    citations: List[Dict[str, Any]] = []
+    for rank, h in enumerate(hits, start=1):
+        meta = h.get("metadata") or {}
+        full_text = h.get("text") or ""
+        citations.append(
+            {
+                "rank": rank,
+                "source": meta.get("source"),
+                "title": meta.get("title"),
+                "canonical": meta.get("canonical"),
+                "score": h.get("score"),
+                "snippet": full_text[:280],
+                "text": full_text,
+                "char_count": len(full_text),
+            }
+        )
+    top_score = None
+    if hits:
+        try:
+            top_score = float(hits[0].get("score"))
+        except (TypeError, ValueError):
+            top_score = None
+    return {
+        "hits": hits,
+        "citations": citations,
+        "debug": {
+            "mode": "grounded_enrich",
+            "hit_count": len(hits),
+            "language": lang,
+            "language_fallback": lang_fallback,
+            "index_size": get_store().count,
+            "top_k": k,
+            "embedding_mode": "dashscope" if SETTINGS.has_dashscope else "local_hash",
+            "hits": citations,
+            "top_score": top_score,
+            "knowledge_gap": False,
+            "gap_reason": None,
+        },
+    }
+
+
 def chat_with_rag(
     message: str,
     *,

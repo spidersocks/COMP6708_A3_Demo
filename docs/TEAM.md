@@ -17,7 +17,7 @@ Fictional brand **BrightNest / 亮巢**. This document explains **what the syste
 
 ## 0. One-minute picture
 
-BrightNest is a WhatsApp-style parent assistant for a learning centre. It is **not** “one LLM for everything”.
+BrightNest is a WhatsApp-style parent assistant for a learning centre.
 
 1. The parent types a message.
 2. A **hybrid intent router** decides *which specialist* should answer (fee table, typhoon policy, live seats, booking dialogue, staff escalation, or the knowledge-base RAG path).
@@ -91,18 +91,19 @@ Entry: `backend/router.py::chat`.
 | 7. Persist | append user + bot turns | — |
 | 8. Return | `ChatResponse` | `answer`, `citations`, `slots?`, `trace` |
 
-### 2.1 What each branch means (plain language)
+### 2.1 Three answer tiers (plain language)
 
-| If the router picks… | The system does… | RAG? |
-|----------------------|------------------|------|
-| Structured fact (`fees`, `severe_weather`, `location`, …) | Load curated JSON/MD → optional tone rewrite | Skipped |
-| `opening_hours` | Parse a date → holiday / Sunday / open window → optional HKO hint | Skipped |
-| `booking_tool` | Read the CSV class register → return live `seats_left` / trial slots | Skipped |
-| `booking_dialogue` / `cancel_dialogue` | Multi-turn book/cancel state machine | Skipped |
-| `rag` | Embed query → Chroma retrieve → Qwen generate with citations | **Runs** |
-| `staff_escalation` | Safe parent ack + staff inbox row (+ email draft) | Skipped |
-| `unknown_programme` | Honest “we don’t offer that” + follow-up sheet row | Skipped |
-| `off_domain` | Refuse; **no** staff sheet row | Skipped |
+BrightNest does **not** treat every structured hit the same. After the router picks a route:
+
+| Tier | Routes (examples) | What runs | RAG? |
+|------|-------------------|-----------|------|
+| **1 · Hard tool** | `severe_weather`, `opening_hours`, `booking_*`, `cancel_*`, `staff_escalation`, `off_domain`, `unknown_programme` | Structured answer (JSON / CSV / FSM). Optional **tone-only** adapt. | **Bypass** — retrieve skipped |
+| **2 · Grounded compose** | `allergy`, `illness`, `fees`, `teachers`, `makeup`, `sibling`, `guest_policy`, `waiting`, `pickup`, `payment`, `location`, `trial_info`, `pets_policy` | Load fact card → retrieve top‑k KB → `compose_grounded_fact` (card is privileged; KB may elaborate) | **Enrich only** |
+| **3 · Pure RAG** | `rag` (default / multi-topic) | Retrieve → generate with citations | **Full** generate |
+
+Flag: `GROUNDING_ENRICH_ENABLED` (default true). Enrich top‑k: `GROUNDING_ENRICH_TOP_K` (default 3).
+
+Inspector: `trace.grounding.{mode,why,composed,rag_hit_count}` and `trace.rag.mode=grounded_enrich` when enrich runs.
 
 ---
 
@@ -120,22 +121,38 @@ Entry: `backend/router.py::chat`.
 | Soft prototypes | Catch paraphrases the regex missed | Blended only when no hard veto (≥ 0.98) |
 | Cheap arbiter | Second look on ambiguous turns | Skipped when top score ≥ 0.9 and no material conflict |
 
-### 3.2 Scoring pipeline
+### 3.2 Where intent scores come from (critical)
+
+**Intent scores are not RAG similarity.** They are mostly **fixed awards** from named detectors.
+
+| Source id | What it means | Example |
+|-----------|---------------|---------|
+| `hard_regex` | Detector / regex / sticky state matched → assign a **fixed** score | `allergy=0.95`, `fees=0.90`, `severe_weather=1.0` |
+| `sticky_state` | Session already in book/cancel dialogue | `booking_dialogue=0.85` |
+| `prototype_blend` | Soft prototype similarities blended in (unless hard veto ≥ 0.98) | Score may move slightly; hits ≥ 0.95 are protected |
+| `conflict_clear` | Higher-priority conflict removed this route | `availability>fees` clears `fees` |
+| `default_floor` | Nothing else owns the turn | `rag=0.5` or multi-topic `rag=0.65` |
+
+Every award / blend / clear is appended to `trace.routing.score_ledger[]`.  
+Per-route snapshot: `trace.routing.score_origins`.  
+Legend for the UI: `trace.routing.score_source_guide`.
+
+### 3.3 Scoring pipeline
 
 ```text
 message
   │
-  ├─ hard detectors → scores[route] ∈ [0.85, 1.0]
+  ├─ hard detectors → scores[route] ∈ [0.85, 1.0]   ← fixed awards (ledger: award)
   │     escalation, off_domain, severe_weather, illness, allergy, fees, …
   │     booking_tool / booking_dialogue / cancel / trial_info / hours
   │
-  ├─ conflict resolution (destructive)
+  ├─ conflict resolution (destructive)              ← ledger: clear
   │     weather>hours, payment>fees, illness>fees, availability>fees, …
   │     waiting clears pickup + booking_tool
   │     multi_topic>single_fact → drop fact keys, scores[rag]=0.65
   │
   ├─ soft prototype blend  (skipped if any hard veto score ≥ 0.98)
-  │
+  │                                                     ← ledger: blend
   ├─ clean floor (drop scores < 0.28 except availability alias)
   │
   ├─ _pick_route via _PRIORITY tie-break
@@ -145,7 +162,7 @@ message
         else review_intent → keep | reroute | force rag
 ```
 
-### 3.3 Priority order (high → low)
+### 3.4 Priority order (high → low)
 
 ```text
 staff_escalation > off_domain > severe_weather > illness > allergy >
@@ -158,7 +175,7 @@ booking_tool > opening_hours > greeting > thanks > confused > rag
 Hard veto set (`_HARD_VETO`, blocks prototype dilution):  
 `staff_escalation`, `off_domain`, `severe_weather`, `confused`, `thanks`.
 
-### 3.4 Arbiter gate
+### 3.5 Arbiter gate
 
 ```text
 IF max(scores) ≥ 0.9
@@ -171,7 +188,7 @@ ELSE
    cheap model review_intent(message, proposed_route, scores, history[-4:])
 ```
 
-### 3.5 Worked examples (read these first)
+### 3.6 Worked examples (read these first)
 
 These are the stories the demo is built to tell. Each row is what you should see in **Router decision → What matched in this query**.
 
@@ -219,7 +236,7 @@ These are the stories the demo is built to tell. Each row is what you should see
 | **Route** | `staff_escalation` (before the non-urgent `allergy` FAQ) |
 | **Side effect** | Staff inbox row (+ email draft body) |
 
-### 3.6 Rule → downstream map
+### 3.7 Rule → downstream map
 
 | Rule id | Detector | Typical score | Downstream |
 |---------|----------|---------------|------------|
@@ -234,7 +251,7 @@ These are the stories the demo is built to tell. Each row is what you should see
 | `unknown_programme` | catalogue miss | 0.95 | refuse + sheet row |
 | `rag` | default / multi-topic | 0.5–0.65 | Chroma → Qwen |
 
-### 3.7 Inspector evidence (what “open a rule” shows)
+### 3.8 Inspector evidence (what “open a rule” shows)
 
 The router does not only say *which* rule won. For every rule it emits an evidence object the UI can expand.
 
@@ -249,6 +266,7 @@ The router does not only say *which* rule won. For every rule it emits an eviden
 | `checks[]` | Nested `{label, passed, detail}` sub-conditions |
 | `mechanism` / `pattern_summary` | Which code path / what the detector looks for |
 | `downstream` | What runs if this rule wins |
+| `score_origin` | `{source, why, score}` — **why this number exists** (not RAG sim) |
 | `suppressed_by_conflict` | Matched then cleared by conflict resolution |
 
 **Winning glance card** — `trace.routing.match_summary`:
@@ -260,7 +278,7 @@ The router does not only say *which* rule won. For every rule it emits an eviden
 
 In the UI: **Router decision** opens with that card; the winning rule auto-expands; click any other rule to see the same query with *that* rule’s cue (or why it stayed idle).
 
-### 3.8 Routing invariants (stress-tested)
+### 3.9 Routing invariants (stress-tested)
 
 - Typhoon / T8 / black rain → `severe_weather` (RAG skipped; adapt may run).
 - “How much is phonics?” / `月費幾多？` / `幾錢一個月` → `fees` (not RAG).
@@ -383,13 +401,13 @@ Used by: RAG prompt, fact adapt, hours follow-up (“tomorrow?”), arbiter hist
 **Left:** parent chat + probe chips + seat cards.  
 **Right — System tab:**
 
-1. Route pill + pipeline step rail  
-2. **Router decision** — match summary (highlighted cue) → path → expandable rule map  
-3. Hours / holiday / weather panel  
-4. RAG hits (rank, score, full chunk) — only when route is RAG  
-5. Register, booking, session memory  
+1. Route pill + pipeline step rail
+2. **Router decision** — match summary (highlighted cue) → path → expandable rule map
+3. Hours / holiday / weather panel
+4. RAG hits (rank, score, full chunk) — only when route is RAG
+5. Register, booking, session memory
 
-**Right — Staff desk:** Sheets-style follow-ups (formula bar shows full cell text) | Gmail-style inbox (`**bold**` rendered).
+**Right — Staff desk:** Sheets-style follow-ups (formula bar shows full cell text) | Gmail-style inbox (`**bold`** rendered).
 
 Canonical probes:
 
@@ -444,4 +462,4 @@ Stress: `python scripts/stress_intent_router.py`
 - [architecture.md](architecture.md) — compact diagram  
 - [demo-script.md](demo-script.md) — 5-minute talk track  
 - [DEVELOPER_SITE_INTEGRATION.md](DEVELOPER_SITE_INTEGRATION.md)  
-- [../deploy/REDEPLOY.md](../deploy/REDEPLOY.md)  
+- [../deploy/REDEPLOY.md](../deploy/REDEPLOY.md)

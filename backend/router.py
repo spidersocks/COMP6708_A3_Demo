@@ -25,8 +25,8 @@ from llm.hours_intent import (
 )
 from llm.lang import get_language_code
 from llm.opening_hours import _get_opening_facts, compute_opening_answer
-from rag.generator import adapt_structured_fact
-from rag.pipeline import chat_with_rag, is_greeting
+from rag.generator import adapt_structured_fact, compose_grounded_fact
+from rag.pipeline import chat_with_rag, is_greeting, retrieve_for_enrich
 from services import admin_todos
 from services import answer_cache
 from services import booking as booking_svc
@@ -45,6 +45,24 @@ _ADAPT_PROVIDERS = {
     "deterministic_opening_hours",
     "unsupported_facility",
     "booking_tool",
+}
+
+# Soft structured routes: retrieve KB, then compose with the fact card as truth.
+# Hard tools (weather calendar, seats, booking FSM, escalation) stay RAG-bypass.
+_GROUNDING_ENRICH_ROUTES = {
+    "allergy",
+    "illness",
+    "fees",
+    "teachers",
+    "makeup",
+    "sibling",
+    "guest_policy",
+    "waiting",
+    "pickup",
+    "payment",
+    "location",
+    "trial_info",
+    "pets_policy",
 }
 
 router = APIRouter()
@@ -352,6 +370,9 @@ def chat(req: ChatRequest) -> ChatResponse:
             "decision_path": (decision.debug or {}).get("decision_path") or [],
             "winning_rule": (decision.debug or {}).get("winning_rule") or {},
             "match_summary": (decision.debug or {}).get("match_summary") or {},
+            "score_ledger": (decision.debug or {}).get("score_ledger") or [],
+            "score_origins": (decision.debug or {}).get("score_origins") or {},
+            "score_source_guide": (decision.debug or {}).get("score_source_guide") or [],
             "hours_followup_promoted": followup_promoted,
             "dialogue_active": dialogue_active,
             "cancel_active": cancel_active,
@@ -384,65 +405,187 @@ def chat(req: ChatRequest) -> ChatResponse:
         slots: Optional[List[Dict[str, Any]]] = None,
         debug: Optional[Dict[str, Any]] = None,
         adapt: bool = True,
+        enrich: Optional[bool] = None,
     ) -> ChatResponse:
         if extra_step:
             steps.append(extra_step)
         final = answer
         final_provider = provider
-        # Demo fluency: always polish centre_facts; optionally other stiff templates
-        should_adapt = adapt and (
-            provider == "centre_facts"
-            or (SETTINGS.arbiter_adapt_extra and provider in _ADAPT_PROVIDERS)
+        out_citations = list(citations or [])
+        do_enrich = (
+            SETTINGS.grounding_enrich_enabled
+            and SETTINGS.has_dashscope
+            and (
+                enrich
+                if enrich is not None
+                else route_name in _GROUNDING_ENRICH_ROUTES
+            )
         )
-        if should_adapt:
-            polished = adapt_structured_fact(
+
+        if do_enrich:
+            steps.append(
+                _step(
+                    "rag_enrich",
+                    "KB retrieve for grounded compose",
+                    "running",
+                    f"top_k={SETTINGS.grounding_enrich_top_k}",
+                )
+            )
+            enrich_pack = retrieve_for_enrich(
+                message,
+                language=lang,
+                top_k=SETTINGS.grounding_enrich_top_k,
+            )
+            rag_hits = enrich_pack.get("hits") or []
+            rag_cites = enrich_pack.get("citations") or []
+            rag_dbg = enrich_pack.get("debug") or {}
+            composed = compose_grounded_fact(
                 message,
                 answer,
+                rag_hits,
                 lang=lang,
                 history_context=history_context,
                 route=route_name,
             )
-            if polished.get("adapted"):
-                final = polished["answer"]
-                final_provider = f"{provider}+llm"
-                steps.append(
-                    _step(
-                        "adapt",
-                        "Main LLM fact rewrite",
-                        "done",
-                        (
-                            f"{SETTINGS.llm_model} · "
-                            f"{polished.get('provider') or 'dashscope'} · "
-                            f"why=structured_{provider}_fluency"
-                        ),
-                    )
+            if composed.get("composed") or composed.get("adapted"):
+                final = composed["answer"]
+                final_provider = (
+                    f"{provider}+grounded_rag"
+                    if composed.get("composed")
+                    else f"{provider}+llm"
                 )
-                trace["adapt"] = {
-                    "ran": True,
-                    "why": (
-                        "Structured tool answer is correct but terse; "
-                        "main LLM rewrites for parent-facing fluency "
-                        "without changing facts."
+            # Merge citations: structured first, then enrich hits (tagged)
+            for c in rag_cites:
+                tagged = dict(c)
+                tagged["role"] = "enrichment"
+                out_citations.append(tagged)
+            steps[-1] = _step(
+                "rag_enrich",
+                "KB retrieve for grounded compose",
+                "done" if rag_hits else "empty",
+                f"hits={len(rag_hits)} · top={rag_dbg.get('top_score')}",
+            )
+            steps.append(
+                _step(
+                    "grounded_compose",
+                    "Compose fact card + KB (card wins)",
+                    "done" if composed.get("composed") else "fallback",
+                    (
+                        f"{SETTINGS.llm_model} · "
+                        f"{composed.get('provider') or 'n/a'} · "
+                        f"composed={bool(composed.get('composed'))}"
                     ),
-                    "model": SETTINGS.llm_model,
-                    "provider": polished.get("provider") or "dashscope",
-                    "input_provider": provider,
-                }
-            else:
-                steps.append(
-                    _step(
-                        "adapt",
-                        "Main LLM fact rewrite",
-                        "skipped",
-                        polished.get("provider") or "passthrough",
-                    )
                 )
-                trace["adapt"] = {
-                    "ran": False,
-                    "why": polished.get("provider") or "passthrough",
-                    "input_provider": provider,
-                }
-        steps.append(_step("rag", "RAG retrieve → generate", "skipped", route_name))
+            )
+            steps.append(
+                _step(
+                    "rag",
+                    "RAG retrieve → generate",
+                    "enrich_only",
+                    "full RAG generate skipped — structured card remains source of truth",
+                )
+            )
+            trace["rag"] = {
+                **rag_dbg,
+                "mode": "grounded_enrich",
+                "privileged_route": route_name,
+            }
+            trace["grounding"] = {
+                "mode": "grounded_compose" if composed.get("composed") else "adapt_fallback",
+                "route": route_name,
+                "structured_privileged": True,
+                "rag_hit_count": len(rag_hits),
+                "composed": bool(composed.get("composed")),
+                "used_rag": bool(composed.get("used_rag")),
+                "model": SETTINGS.llm_model,
+                "why": (
+                    "Soft structured route: fact card is privileged truth; "
+                    "KB chunks may elaborate but must not override fees/times/policy."
+                    if composed.get("composed")
+                    else (
+                        "Enrich retrieve ran but compose fell back to tone-only adapt "
+                        f"({composed.get('compose_fallback') or composed.get('provider')})."
+                    )
+                ),
+            }
+            trace["adapt"] = {
+                "ran": bool(composed.get("adapted")),
+                "why": trace["grounding"]["why"],
+                "model": SETTINGS.llm_model,
+                "provider": composed.get("provider") or "passthrough",
+                "input_provider": provider,
+                "mode": "grounded_compose",
+            }
+        else:
+            # Demo fluency: always polish centre_facts; optionally other stiff templates
+            should_adapt = adapt and (
+                provider == "centre_facts"
+                or (SETTINGS.arbiter_adapt_extra and provider in _ADAPT_PROVIDERS)
+            )
+            if should_adapt:
+                polished = adapt_structured_fact(
+                    message,
+                    answer,
+                    lang=lang,
+                    history_context=history_context,
+                    route=route_name,
+                )
+                if polished.get("adapted"):
+                    final = polished["answer"]
+                    final_provider = f"{provider}+llm"
+                    steps.append(
+                        _step(
+                            "adapt",
+                            "Main LLM fact rewrite",
+                            "done",
+                            (
+                                f"{SETTINGS.llm_model} · "
+                                f"{polished.get('provider') or 'dashscope'} · "
+                                f"why=structured_{provider}_fluency"
+                            ),
+                        )
+                    )
+                    trace["adapt"] = {
+                        "ran": True,
+                        "why": (
+                            "Structured tool answer is correct but terse; "
+                            "main LLM rewrites for parent-facing fluency "
+                            "without changing facts."
+                        ),
+                        "model": SETTINGS.llm_model,
+                        "provider": polished.get("provider") or "dashscope",
+                        "input_provider": provider,
+                        "mode": "adapt_only",
+                    }
+                else:
+                    steps.append(
+                        _step(
+                            "adapt",
+                            "Main LLM fact rewrite",
+                            "skipped",
+                            polished.get("provider") or "passthrough",
+                        )
+                    )
+                    trace["adapt"] = {
+                        "ran": False,
+                        "why": polished.get("provider") or "passthrough",
+                        "input_provider": provider,
+                        "mode": "adapt_only",
+                    }
+            steps.append(_step("rag", "RAG retrieve → generate", "skipped", route_name))
+            trace["grounding"] = {
+                "mode": "bypass",
+                "route": route_name,
+                "structured_privileged": True,
+                "rag_hit_count": 0,
+                "composed": False,
+                "used_rag": False,
+                "why": (
+                    "Hard / tool route — RAG retrieve skipped so live numbers or "
+                    "safety hand-off cannot be diluted by KB narrative."
+                ),
+            }
+
         trace["route"] = route_name
         trace["provider"] = final_provider
         trace["answer_provider"] = final_provider
@@ -456,7 +599,7 @@ def chat(req: ChatRequest) -> ChatResponse:
             trace["booking"] = dbg["dialogue"]
         resp = ChatResponse(
             answer=final,
-            citations=citations,
+            citations=out_citations,
             provider=final_provider,
             slots=slots,
             session_id=session_id,

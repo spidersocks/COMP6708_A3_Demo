@@ -92,6 +92,13 @@ class Settings:
         "yes",
     )
 
+    # Soft structured routes: retrieve KB chunks, then compose with the fact card
+    # as privileged context (allergy, fees, teachers, …). Hard tools stay bypass.
+    grounding_enrich_enabled: bool = os.environ.get(
+        "GROUNDING_ENRICH_ENABLED", "true"
+    ).lower() in ("1", "true", "yes")
+    grounding_enrich_top_k: int = int(os.environ.get("GROUNDING_ENRICH_TOP_K", "3"))
+
     # Multi-turn memory (~5 user/bot turns ≈ 10 messages)
     chat_history_enabled: bool = os.environ.get("CHAT_HISTORY_ENABLED", "true").lower() in (
         "1",

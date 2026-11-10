@@ -36,7 +36,7 @@
 **Show:** Live UI (parent chat + system inspector). Title slide only if walking in.
 
 **Narrator (≈35s) — tutoring-centre framing:**
-> Imagine you run a bilingual learning centre in Hong Kong. After hours, parents keep messaging the same things — *are we open in a typhoon? how much is phonics? are there seats on Saturday? can I book a trial?* Staff cannot live on WhatsApp. A wrong fee or hours answer costs trust. So you hired us — Group 15. A couple of weeks later, we built **BrightNest**: an assistant that answers from centre truth, acts with tools, and hands off when a human must.
+> Imagine you run a bilingual children's tutoring centre in Hong Kong. After hours, parents always ask a lot of questions — how much is it for phonics lessons? are you open if tomorrow has a typhoon? are there spaces on saturday? can I book a trial? But here's the problem. Admin staff cannot reply to messages 24/7. If you take too long to reply, you frustrate parents. But if you give a wrong fee or hours answer, you lose trust. So to solve your problem, you hired us, Group 15, and a couple of weeks later, we built **BrightNest**: an assistant that answers from centre truth, acts with tools, and hands off when a human must.
 
 **Pilot:** Cursor on demo probes. Do not click yet.
 
@@ -47,7 +47,7 @@
 **Show:** Technique slide briefly, then Architecture, then **back to live UI**.
 
 **Narrator (technical — this is Advanced Big Data Computing):**
-> Training-free on purpose. Centre documents change every week, so we do **not** fine-tune a model. We use **RAG** — retrieve-augmented generation: chunk our own markdown knowledge base, embed with DashScope, store in Chroma, retrieve top-k by similarity, then generate with Qwen. On top of that sits a **hybrid intent router**: hard regex / structured rules for typhoons, fees, and seats; a soft prototype blend for paraphrase; and a cheap LLM review pass only when confidence is low. High-confidence structured picks skip the arbiter — you will see that in the inspector. Self-built pipeline, deployed on Alibaba SAE, UI on the public web.
+> Training-free on purpose. Centre documents change every week, so we do **not** fine-tune a model. We use **RAG** — chunk our own markdown KB, embed with DashScope, store in Chroma, retrieve top-k, generate with Qwen. On top sits a **hybrid intent router**. Important: the router’s **scores are not retrieval similarities** — hard detectors award fixed numbers (allergy 0.95, fees 0.90, typhoon 1.0); you can open the **score ledger** in the inspector and see every award, blend, and conflict clear. Soft FAQ routes then do **grounded compose**: structured fact card stays privileged, KB chunks may enrich. Hard tools — typhoon, seats, booking, escalation — still **bypass** retrieve. Self-built pipeline, SAE + public web.
 
 **Pilot:** Optional 2-second point at Architecture, then live UI.
 
@@ -71,12 +71,12 @@
 **Show A:** Probe **Phonics fee**.
 
 **Say:**
-> “How much is phonics?” is a **fee-guide tool**, not RAG — published numbers must not be guessed from a random chunk.
+> “How much is phonics?” is a **fee-guide** route. Open **Intent scores** — `fees=0.90` from `hard_regex`, not from Chroma. Then check **Answer grounding**: soft routes **retrieve KB as enrichment** while the fee card stays privileged — the model may elaborate, but must not invent tuition over the card.
 
 **Show B (immediately):** Probe **RAG · Private 1:1**.
 
 **Say:**
-> Now expand **RAG retrieval**. Index size, top-k, hit ranks, retrieval scores — click a chunk to open the **full** retrieved text. That is our chunk → embed → retrieve → generate path, not a managed black-box KB.
+> Now expand **RAG retrieval**. Pure retrieve→generate: index size, top-k, hit ranks, retrieval scores — click a chunk for the **full** text. Contrast with fees: there the card wins; here RAG owns the answer.
 
 **Point at:** Rank #1 score · Expand full chunk · sources under the answer.
 

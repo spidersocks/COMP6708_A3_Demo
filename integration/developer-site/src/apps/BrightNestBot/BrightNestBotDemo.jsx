@@ -258,6 +258,12 @@ function RuleEvidence({ rule, defaultOpen = false, isWinner = false }) {
           </strong>
           <code>{rule.id}</code>
           {rule.score != null ? <em>score {Number(rule.score).toFixed(2)}</em> : null}
+          {rule.score_origin?.source && rule.score_origin.source !== "none" ? (
+            <p className="bn-rule-score-origin">
+              score from <code>{rule.score_origin.source}</code>
+              {rule.score_origin.why ? ` — ${rule.score_origin.why}` : ""}
+            </p>
+          ) : null}
           {cue ? (
             <p className="bn-rule-cue-chip">
               cue <code>«{cue}»</code>
@@ -316,6 +322,24 @@ function RuleEvidence({ rule, defaultOpen = false, isWinner = false }) {
                 <p>{rule.why_not}</p>
               </div>
             ) : null
+          ) : null}
+          {rule.score_origin?.source && rule.score_origin.source !== "none" ? (
+            <div className="bn-rule-block">
+              <span>Where this score came from</span>
+              <p>
+                <code>{rule.score_origin.source}</code>
+                {rule.score_origin.score != null
+                  ? ` = ${Number(rule.score_origin.score).toFixed(3)}`
+                  : ""}
+                {" — "}
+                {rule.score_origin.why || "see score ledger"}
+              </p>
+              <p className="bn-rule-cue-meta">
+                Intent scores are <strong>not</strong> RAG similarity. Hard detectors
+                award fixed values (e.g. fees=0.90); prototypes may blend; conflicts
+                clear losers.
+              </p>
+            </div>
           ) : null}
           {rule.pattern_summary ? (
             <div className="bn-rule-block">
@@ -848,15 +872,18 @@ export default function BrightNestBotDemo() {
   const steps = trace?.pipeline_steps || [];
   const facts = trace?.opening_hours?.facts;
   const rag = trace?.rag;
-  // Only true RAG retrieve hits — structured-fact citations must not look like retrieval.
-  const hits = route === "rag" ? rag?.hits || [] : [];
+  const grounding = trace?.grounding;
+  const enrichMode = rag?.mode === "grounded_enrich" || grounding?.used_rag;
+  // Full RAG generate hits, or enrichment hits under a privileged structured card.
+  const hits =
+    route === "rag" || enrichMode ? rag?.hits || [] : [];
 
   const turnKey = String(trace?.latency_ms ?? "idle");
   const hoursOpen =
     route === "deterministic_opening_hours" ||
     route === "opening_hours" ||
     route === "severe_weather";
-  const ragOpen = route === "rag";
+  const ragOpen = route === "rag" || Boolean(enrichMode);
   const bookingOpen =
     route === "booking_tool" || route === "booking_dialogue" || route === "cancel_dialogue";
   const dialogue = trace?.booking;
@@ -891,6 +918,11 @@ export default function BrightNestBotDemo() {
   }, [facts]);
 
   const ragSummary = useMemo(() => {
+    if (enrichMode) {
+      const n = rag?.hit_count ?? hits.length;
+      const top = scoreLabel(rag?.top_score ?? hits[0]?.score);
+      return `Enrich · ${n}/${rag?.top_k ?? "k"} · top ${top ?? "—"} · card wins`;
+    }
     if (route && route !== "rag" && !hits.length) {
       return `Skipped · route=${route}`;
     }
@@ -898,7 +930,7 @@ export default function BrightNestBotDemo() {
     const n = rag?.hit_count ?? hits.length;
     const top = scoreLabel(rag?.top_score ?? hits[0]?.score);
     return `${n}/${rag?.top_k ?? "k"} · idx ${rag?.index_size ?? "—"} · top ${top ?? "—"}`;
-  }, [rag, hits, route]);
+  }, [rag, hits, route, enrichMode]);
 
   const routing = trace?.routing;
   const decisionPath = routing?.decision_path || routing?.debug?.decision_path || [];
@@ -906,8 +938,18 @@ export default function BrightNestBotDemo() {
     routing?.rules_evaluated || routing?.debug?.rules_evaluated || [];
   const winningRule = routing?.winning_rule || routing?.debug?.winning_rule || {};
   const matchSummary = routing?.match_summary || routing?.debug?.match_summary || {};
+  const scoreLedger = routing?.score_ledger || routing?.debug?.score_ledger || [];
+  const scoreGuide =
+    routing?.score_source_guide || routing?.debug?.score_source_guide || [];
   const arbiter = routing?.debug?.arbiter || {};
   const winningRuleId = matchSummary?.rule_id || winningRule?.route || route;
+  const groundingSummary = grounding
+    ? grounding.mode === "grounded_compose"
+      ? `compose · ${grounding.rag_hit_count || 0} KB hits · card privileged`
+      : grounding.mode === "bypass"
+        ? `bypass · ${grounding.why ? "RAG skipped" : "tool"}`
+        : grounding.mode || "—"
+    : "—";
   const routerSummary = useMemo(() => {
     if (!route) return "Idle until a query";
     const arbReason = winningRule?.arbiter_reason || arbiter?.reason;
@@ -1570,6 +1612,21 @@ export default function BrightNestBotDemo() {
               <>
                 <MatchSummaryCard summary={matchSummary} />
 
+                {grounding ? (
+                  <div className="bn-grounding-card">
+                    <div className="bn-match-summary-kicker">Answer grounding</div>
+                    <p className="bn-match-headline">
+                      Mode <code>{grounding.mode}</code>
+                      {grounding.structured_privileged ? " · structured card privileged" : ""}
+                    </p>
+                    <p className="bn-match-explain">{grounding.why}</p>
+                    <p className="bn-match-down">
+                      Summary: {groundingSummary}
+                      {grounding.composed ? " · composed with KB" : ""}
+                    </p>
+                  </div>
+                ) : null}
+
                 <ul className="bn-fact-list">
                   <li>
                     <span>Final route</span>
@@ -1671,18 +1728,72 @@ export default function BrightNestBotDemo() {
                 )}
 
                 {routing?.scores && Object.keys(routing.scores).length > 0 && (
-                  <details className="bn-rules">
-                    <summary>Raw intent scores</summary>
+                  <details className="bn-rules" open>
+                    <summary>
+                      Intent scores · where the numbers come from
+                    </summary>
+                    <p className="bn-rules-hint">
+                      These are <strong>not</strong> RAG retrieval similarities.
+                      Hard detectors award fixed scores (e.g. allergy=0.95,
+                      fees=0.90). Soft prototypes may blend. Conflicts clear
+                      losers. RAG only gets a floor when nothing else owns the turn.
+                    </p>
+                    {scoreGuide.length > 0 && (
+                      <ul className="bn-score-guide">
+                        {scoreGuide.map((g) => (
+                          <li key={g.id}>
+                            <code>{g.id}</code>
+                            <strong>{g.label}</strong>
+                            <span>{g.meaning}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                     <ul className="bn-fact-list">
                       {Object.entries(routing.scores)
                         .sort((a, b) => Number(b[1]) - Number(a[1]))
-                        .map(([k, v]) => (
-                          <li key={k}>
-                            <span>{k}</span>
-                            <code>{Number(v).toFixed(3)}</code>
-                          </li>
-                        ))}
+                        .map(([k, v]) => {
+                          const origin =
+                            routing.score_origins?.[k] ||
+                            scoreLedger.filter((e) => e.route === k).slice(-1)[0];
+                          return (
+                            <li key={k}>
+                              <span>
+                                {k}
+                                {origin?.source ? (
+                                  <em className="bn-score-src"> · {origin.source}</em>
+                                ) : null}
+                              </span>
+                              <code>{Number(v).toFixed(3)}</code>
+                            </li>
+                          );
+                        })}
                     </ul>
+                    {scoreLedger.length > 0 && (
+                      <details className="bn-rules bn-ledger">
+                        <summary>
+                          Score ledger · {scoreLedger.length} steps (award / blend / clear)
+                        </summary>
+                        <ol className="bn-score-ledger">
+                          {scoreLedger.map((e, i) => (
+                            <li key={`led-${i}`} className={`bn-led-${e.op || "note"}`}>
+                              <strong>{e.op || "note"}</strong>
+                              <span>
+                                <code>{e.route}</code>
+                                {e.score != null ? ` = ${Number(e.score).toFixed(3)}` : ""}
+                                {e.prev_score != null
+                                  ? ` (was ${Number(e.prev_score).toFixed(3)})`
+                                  : ""}
+                                {" · "}
+                                {e.source}
+                                {e.why ? ` — ${e.why}` : ""}
+                                {e.cue ? ` · cue «${e.cue}»` : ""}
+                              </span>
+                            </li>
+                          ))}
+                        </ol>
+                      </details>
+                    )}
                   </details>
                 )}
               </>
@@ -1738,32 +1849,46 @@ export default function BrightNestBotDemo() {
             )}
           </Reveal>
 
-          <Reveal key={`rag-${turnKey}`} title="RAG retrieval" summary={ragSummary} defaultOpen={ragOpen}>
+          <Reveal
+            key={`rag-${turnKey}`}
+            title={enrichMode ? "RAG enrichment (card privileged)" : "RAG retrieval"}
+            summary={ragSummary}
+            defaultOpen={ragOpen}
+          >
             {hits.length === 0 ? (
               <div className="bn-rag-skip">
                 <p className="bn-empty">
                   {route === "rag"
                     ? "No chunks returned."
                     : route
-                      ? `RAG did not run — router chose “${route}” instead.`
+                      ? `Full RAG generate did not run — router chose “${route}” (hard bypass or empty enrich).`
                       : "Idle until a KB question."}
                 </p>
                 {route && route !== "rag" ? (
                   <p className="bn-note">
-                    Expand <strong>Router decision</strong> above to see which rule fired
-                    (and which rules stayed idle). For a live retrieve→generate path, use
-                    the <strong>RAG · Private 1:1</strong> probe.
+                    Soft routes (allergy, fees, teachers…) retrieve KB as{" "}
+                    <strong>enrichment</strong> under a privileged structured card.
+                    Hard tools (typhoon, seats, booking, escalation) skip retrieve.
+                    For pure retrieve→generate, use <strong>RAG · Private 1:1</strong>.
                   </p>
                 ) : null}
               </div>
             ) : (
               <>
+                {enrichMode ? (
+                  <p className="bn-note">
+                    These chunks are <strong>secondary</strong>. The structured{" "}
+                    <code>{route}</code> fact card remains source of truth; the model
+                    may elaborate from KB but must not override fees, times, or policy.
+                  </p>
+                ) : null}
                 <div className="bn-rag-strip">
                   <span>index size {rag?.index_size ?? "—"}</span>
                   <span>top_k {rag?.top_k ?? hits.length}</span>
                   <span>hits returned {rag?.hit_count ?? hits.length}</span>
                   <span>top score {scoreLabel(rag?.top_score ?? hits[0]?.score) ?? "—"}</span>
                   <span>embed {rag?.embedding_mode || "—"}</span>
+                  {enrichMode ? <span>mode grounded_enrich</span> : null}
                   {rag?.language_fallback ? <span>lang fallback</span> : null}
                   {rag?.gap_reason ? <span>gap {rag.gap_reason}</span> : null}
                 </div>
