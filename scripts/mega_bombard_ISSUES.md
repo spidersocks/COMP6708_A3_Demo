@@ -38,7 +38,9 @@ Turns: **221** · OK: **169** · P0: **3** · P1: **11** · P2: **38**
 3. RAG guardrail: outreach-promise answers always create SheetPro row; affirmative after assessment offer short-circuits to todo.
 4. Pure RAG sets `trace.grounding.mode=pure_rag`; strip internal filename echoes; broaden off-domain + callback + ZH book detectors.
 
-## Retest target
+## Retest (v34) — all pass
 
-- Exact Jason → Little Sound Explorers → Yes (assert `trace.admin_todo` + open todos).
-- Failing subset: LSE, Smart Spell, zh-book, callback soft, leak1/2, grounding on RAG.
+- Jason → Little Sound Explorers → Yes → `booking_dialogue` / `confirm_assessment` / `assessment_queued` + `admin_todo` on SheetPro.
+- Smart Spell → Yes → admin todo.
+- ZH book, callback→staff_escalation, leak1/2→off_domain (no filename echo), RAG `grounding=pure_rag`.
+- See `scripts/retest_v34_results.json`.

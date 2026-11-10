@@ -1,0 +1,122 @@
+{
+  "lse_ok": true,
+  "smartspell_yes": true,
+  "rows": [
+    {
+      "id": "lse#0",
+      "msg": "I'd like to book a class for Jason",
+      "route": "booking_dialogue",
+      "stage": "need_course",
+      "admin_todo": false,
+      "admin_id": null,
+      "grounding": "bypass",
+      "answer": "Got it \u2014 booking for **Jason Chan** (family: Demo Parent).  Which class should I look at? On file they usually take: Phonics, Early Math."
+    },
+    {
+      "id": "lse#1",
+      "msg": "Little Sound Explorers",
+      "route": "booking_dialogue",
+      "stage": "confirm_assessment",
+      "admin_todo": false,
+      "admin_id": null,
+      "grounding": "bypass",
+      "answer": "Wonderful choice \u2014 **Little Sound Explorer** builds early phonics foundations in a small group.  Placement is confirmed with a short **diagnostic assessment** b"
+    },
+    {
+      "id": "lse#2",
+      "msg": "Yes",
+      "route": "booking_dialogue",
+      "stage": "assessment_queued",
+      "admin_todo": true,
+      "admin_id": "e1ad226f",
+      "grounding": "bypass",
+      "answer": "Great \u2014 we'll arrange a short **diagnostic assessment** for **Jason Chan** toward **Little Sound Explorer**.  Our team will reach out shortly with available tim"
+    },
+    {
+      "id": "zh-book",
+      "ok": true,
+      "route": "booking_dialogue",
+      "expect": [
+        "booking_dialogue",
+        "booking_tool"
+      ],
+      "admin": false,
+      "staff": false,
+      "grounding": "bypass",
+      "leak": false,
+      "answer": "Looking at **Phonics** for **Jason Chan**.  Jason Chan's upcoming classes: \u2022 Wed 11 Nov 2026, 10:00 \u2014 Early Math with Mr"
+    },
+    {
+      "id": "callback",
+      "ok": true,
+      "route": "staff_escalation",
+      "expect": [
+        "staff_escalation"
+      ],
+      "admin": false,
+      "staff": true,
+      "grounding": "bypass",
+      "leak": false,
+      "answer": "I've let our team know you'd like to speak with a staff member. Somebody will reach out to you during working hours."
+    },
+    {
+      "id": "leak1",
+      "ok": true,
+      "route": "off_domain",
+      "expect": [
+        "off_domain"
+      ],
+      "admin": false,
+      "staff": false,
+      "grounding": "bypass",
+      "leak": false,
+      "answer": "That\u2019s outside what we can help with as BrightNest\u2019s learning-centre assistant. Ask about programmes, fees, hours, locat"
+    },
+    {
+      "id": "leak2",
+      "ok": true,
+      "route": "off_domain",
+      "expect": [
+        "off_domain"
+      ],
+      "admin": false,
+      "staff": false,
+      "grounding": "bypass",
+      "leak": false,
+      "answer": "That\u2019s outside what we can help with as BrightNest\u2019s learning-centre assistant. Ask about programmes, fees, hours, locat"
+    },
+    {
+      "id": "rag-ground",
+      "ok": true,
+      "route": "rag",
+      "expect": [
+        "rag",
+        "booking_dialogue",
+        "trial_info"
+      ],
+      "admin": false,
+      "staff": false,
+      "grounding": "pure_rag",
+      "leak": false,
+      "answer": "Little Sound Explorer is our early phonics programme where children learn the sounds of letters a\u2013z. It\u2019s designed for k"
+    },
+    {
+      "id": "smartspell",
+      "ok": true,
+      "route": "booking_dialogue",
+      "expect": [
+        "booking_dialogue"
+      ],
+      "admin": false,
+      "staff": false,
+      "grounding": "bypass",
+      "leak": false,
+      "answer": "Wonderful choice \u2014 **Smart Spell** builds early phonics foundations in a small group.  Placement is confirmed with a sho"
+    },
+    {
+      "id": "smartspell-yes",
+      "ok": true,
+      "admin": true
+    }
+  ]
+}
