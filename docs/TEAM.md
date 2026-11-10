@@ -7,10 +7,38 @@
 | 3 | MAO Shiwei | 25038479r |
 | 4 | YAN Xingzhuo | 25013043r |
 
-**Live:** https://seanfontaine.dev/COMP6708_A3_Demo · **API:** Alibaba SAE via `/brightnest-api`  
+**Live demo:** https://seanfontaine.dev/COMP6708_A3_Demo  
+**API:** Alibaba SAE, reached from the SPA via same-origin `/brightnest-api`  
 **Code:** FastAPI (`backend/`) · React inspector (`developer-site` BrightNestBot) · KB `content/`
 
-Fictional brand **BrightNest / 亮巢**. This document describes runtime behaviour end-to-end.
+Fictional brand **BrightNest / 亮巢**. This document explains **what the system does**, **why each path exists**, and **how a single parent message becomes an answer** — written so a teammate or marker can follow it without reading every source file first.
+
+---
+
+## 0. One-minute picture
+
+BrightNest is a WhatsApp-style parent assistant for a learning centre. It is **not** “one LLM for everything”.
+
+1. The parent types a message.
+2. A **hybrid intent router** decides *which specialist* should answer (fee table, typhoon policy, live seats, booking dialogue, staff escalation, or the knowledge-base RAG path).
+3. That specialist produces a grounded answer (JSON fact, CSV register, or retrieved Markdown chunks).
+4. Optionally a main LLM **rewrites tone only** (`adapt`) — it must not invent new policies.
+5. The demo UI shows the decision: route, exact cue in the query, every rule’s pass/fail checks, RAG chunks, and staff surfaces.
+
+```text
+Parent message
+    │
+    ▼
+Intent router  ──►  structured tool   OR   RAG   OR   staff / refuse
+    │                    │                   │
+    │                    ▼                   ▼
+    │              facts / CSV / FSM    Chroma → Qwen
+    │                    │                   │
+    └──────────► optional tone adapt ◄───────┘
+                         │
+                         ▼
+                   answer + trace
+```
 
 ---
 
@@ -26,7 +54,7 @@ Browser (HTTPS)
        ▼
      FastAPI  (Docker image brightnest-api:vN on Alibaba SAE)
        │
-       ├─ services/intent_router.py     hybrid intent scores + arbiter gate
+       ├─ services/intent_router.py     hybrid scores + arbiter gate + match evidence
        ├─ services/centre_facts.py      structured JSON facts + regex intents
        ├─ llm/opening_hours.py          deterministic calendar / holidays / HKO
        ├─ services/booking_*.py         sticky book/cancel + CSV register
@@ -52,50 +80,47 @@ Redeploy ritual: abort change-order → **StopApplication** → build/push tag �
 
 Entry: `backend/router.py::chat`.
 
-| Step | Module | Output on `trace` |
-|------|--------|-------------------|
+| Step | Module | What you see on `trace` |
+|------|--------|-------------------------|
 | 1. Language | `get_language_code` | `language` |
-| 2. History load | `get_recent_history(session_id, limit)` | `history.turns[]`, `turns_loaded`, `limit` |
-| 3. Intent | `intent_router.decide_intent` | `routing.{scores,rules_evaluated,decision_path,winning_rule}` |
-| 4. Hours follow-up promote | if route was `rag` but “tomorrow?” after hours | may rewrite to `opening_hours` |
+| 2. History | `get_recent_history` | `history.turns[]` (full window for the inspector) |
+| 3. Intent | `intent_router.decide_intent` | `routing.{scores, rules_evaluated, decision_path, winning_rule, match_summary}` |
+| 4. Hours follow-up | promote “tomorrow?” after an hours turn | may rewrite `rag` → `opening_hours` |
 | 5. Branch | tool / RAG / escalation / unknown | `route`, `pipeline_steps[]`, domain payloads |
-| 6. Optional adapt | `adapt_structured_fact` (main LLM) | `adapt.{ran,why,model}` |
-| 7. Persist | append user+bot turns | — |
-| 8. Return | `ChatResponse` | `answer`, `citations`, `slots?`, `trace`, `latency_ms` |
+| 6. Optional adapt | `adapt_structured_fact` | `adapt.{ran, why, model}` |
+| 7. Persist | append user + bot turns | — |
+| 8. Return | `ChatResponse` | `answer`, `citations`, `slots?`, `trace` |
 
-### 2.1 Branch semantics
+### 2.1 What each branch means (plain language)
 
-```text
-route ∈ structured fact set
-  → load JSON/MD fact → optional adapt → pipeline rag=skipped
-
-route = opening_hours
-  → parse datetime → holiday/Sunday/HKO → adapt → rag skipped
-
-route ∈ {booking_tool, booking_dialogue, cancel_dialogue}
-  → CSV register / sticky dialogue state machine
-
-route = rag
-  → retrieve(top_k) → lexical rerank → generate → citations[rank,score,text]
-
-route = staff_escalation
-  → parent-safe ack + staff_messages row (+ email body)
-
-route = unknown_programme | soft KB gap
-  → parent refuse + admin_todos row (no hallucinated programme)
-
-route = off_domain
-  → refuse · no admin todo
-```
+| If the router picks… | The system does… | RAG? |
+|----------------------|------------------|------|
+| Structured fact (`fees`, `severe_weather`, `location`, …) | Load curated JSON/MD → optional tone rewrite | Skipped |
+| `opening_hours` | Parse a date → holiday / Sunday / open window → optional HKO hint | Skipped |
+| `booking_tool` | Read the CSV class register → return live `seats_left` / trial slots | Skipped |
+| `booking_dialogue` / `cancel_dialogue` | Multi-turn book/cancel state machine | Skipped |
+| `rag` | Embed query → Chroma retrieve → Qwen generate with citations | **Runs** |
+| `staff_escalation` | Safe parent ack + staff inbox row (+ email draft) | Skipped |
+| `unknown_programme` | Honest “we don’t offer that” + follow-up sheet row | Skipped |
+| `off_domain` | Refuse; **no** staff sheet row | Skipped |
 
 ---
 
-## 3. Hybrid intent router
+## 3. Hybrid intent router (the decision brain)
 
-**File:** `backend/services/intent_router.py`  
-**Supporting:** `centre_facts.py`, `escalation.py`, `intent_classifier.py` (prototypes), `intent_arbiter.py` (cheap LLM).
+**Files:** `backend/services/intent_router.py`  
+**Helpers:** `centre_facts.py` (regex facts), `escalation.py`, `intent_classifier.py` (soft prototypes), `intent_arbiter.py` (cheap LLM review).
 
-### 3.1 Scoring pipeline
+### 3.1 Why hybrid?
+
+| Layer | Role | Example |
+|-------|------|---------|
+| Hard regex / detectors | High-stakes intents must be deterministic | Typhoon → always policy fact, never a vague RAG paragraph |
+| Conflict resolution | When two detectors fire, pick the safer owner | Weather beats hours; strong seats beat fees |
+| Soft prototypes | Catch paraphrases the regex missed | Blended only when no hard veto (≥ 0.98) |
+| Cheap arbiter | Second look on ambiguous turns | Skipped when top score ≥ 0.9 and no material conflict |
+
+### 3.2 Scoring pipeline
 
 ```text
 message
@@ -110,7 +135,6 @@ message
   │     multi_topic>single_fact → drop fact keys, scores[rag]=0.65
   │
   ├─ soft prototype blend  (skipped if any hard veto score ≥ 0.98)
-  │     intent_classifier.score_prototypes → blend_scores
   │
   ├─ clean floor (drop scores < 0.28 except availability alias)
   │
@@ -121,7 +145,7 @@ message
         else review_intent → keep | reroute | force rag
 ```
 
-### 3.2 Priority order (high → low)
+### 3.3 Priority order (high → low)
 
 ```text
 staff_escalation > off_domain > severe_weather > illness > allergy >
@@ -134,7 +158,7 @@ booking_tool > opening_hours > greeting > thanks > confused > rag
 Hard veto set (`_HARD_VETO`, blocks prototype dilution):  
 `staff_escalation`, `off_domain`, `severe_weather`, `confused`, `thanks`.
 
-### 3.3 Arbiter gate
+### 3.4 Arbiter gate
 
 ```text
 IF max(scores) ≥ 0.9
@@ -147,9 +171,55 @@ ELSE
    cheap model review_intent(message, proposed_route, scores, history[-4:])
 ```
 
-`trace.routing.winning_rule` records `pre_arbiter_route`, `arbiter_called`, `arbiter_reason`, `skip_detail`, `override`.
+### 3.5 Worked examples (read these first)
 
-### 3.4 Rule → downstream map
+These are the stories the demo is built to tell. Each row is what you should see in **Router decision → What matched in this query**.
+
+#### A. Typhoon — structured policy, not RAG
+
+| | |
+|--|--|
+| **Parent says** | “What happens when there is a typhoon signal 8?” |
+| **Exact cue** | `typhoon` / `signal 8` (weather-policy regex) |
+| **Route** | `severe_weather` |
+| **Why not RAG** | High-stakes ops answers come from `facts/severe_weather.json`, then optional tone adapt |
+| **UI** | Match card highlights the weather cue; RAG panel shows *Skipped · route=severe_weather* |
+
+#### B. Monthly fee in Cantonese — fee table
+
+| | |
+|--|--|
+| **Parent says** | `月費幾多？` |
+| **Exact cue** | `月費` (fee regex also covers `學費`, `費用`, `班費`, `幾錢`, …) |
+| **Route** | `fees` |
+| **Why this wording mattered** | Earlier builds only caught `學費` / `幾多錢`, so bare `月費幾多？` fell through to RAG. That gap is closed. |
+| **Not fees** | `小朋友幾多歲…` — bare `幾多` alone is deliberately **not** a fee cue |
+
+#### C. Seats vs waitlist (same language family, different route)
+
+| Parent says | Cue | Route |
+|-------------|-----|-------|
+| `仲有冇位？` | `有冇位` / `冇位` as **seat browse** | `booking_tool` → live CSV seats |
+| `冇位，可以候補嗎` | waitlist language (`候補` / full-class) | `waiting` → waitlist policy fact |
+| `有冇位同月費幾多？` | strong availability **wins over** fees | `booking_tool` (`availability>fees`) |
+
+#### D. Private 1:1 — real RAG
+
+| | |
+|--|--|
+| **Parent says** | “Do you offer private 1:1 tutoring?” / “What is BrightNest Private 1:1 coaching?” |
+| **Route** | `rag` |
+| **Why** | No structured fact owns this; KB Markdown is retrieved (rank, score, full chunk text in the inspector) |
+
+#### E. Safety escalation
+
+| | |
+|--|--|
+| **Parent says** | allergy + reaction + “call me ASAP” |
+| **Route** | `staff_escalation` (before the non-urgent `allergy` FAQ) |
+| **Side effect** | Staff inbox row (+ email draft body) |
+
+### 3.6 Rule → downstream map
 
 | Rule id | Detector | Typical score | Downstream |
 |---------|----------|---------------|------------|
@@ -164,33 +234,44 @@ ELSE
 | `unknown_programme` | catalogue miss | 0.95 | refuse + sheet row |
 | `rag` | default / multi-topic | 0.5–0.65 | Chroma → Qwen |
 
-### 3.5 Inspector evidence (`rules_evaluated[]`)
+### 3.7 Inspector evidence (what “open a rule” shows)
 
-Each rule emits:
+The router does not only say *which* rule won. For every rule it emits an evidence object the UI can expand.
 
 | Field | Meaning |
 |-------|---------|
-| `matched` | predicate true after scoring |
-| `score` | numeric score if present |
-| `mechanism` | which code path owns the rule |
-| `pattern_summary` | human summary of the detector |
-| `matched_span` | `{text,start,end}` if a regex hit |
-| `why` / `why_not` | plain-language trigger or idle reason |
-| `checks[]` | nested `{label, passed, detail}` sub-conditions |
-| `downstream` | what runs if this rule wins |
-| `suppressed_by_conflict` | matched then cleared by conflict resolution |
+| `matched` | Predicate true after scoring |
+| `score` | Numeric score if present |
+| `query` | Full parent message for this turn |
+| `matched_span` | `{text, start, end}` when a regex hit a substring |
+| `match_evidence` | Rich payload: `cue`, character offsets, `segments[]` (for highlight), `annotated`, `explanation`, `kind` |
+| `why` / `why_not` | Plain-language fire / idle reason |
+| `checks[]` | Nested `{label, passed, detail}` sub-conditions |
+| `mechanism` / `pattern_summary` | Which code path / what the detector looks for |
+| `downstream` | What runs if this rule wins |
+| `suppressed_by_conflict` | Matched then cleared by conflict resolution |
 
-### 3.6 Routing invariants (stress-tested)
+**Winning glance card** — `trace.routing.match_summary`:
+
+- `headline` — one sentence (“Matched because the message contains «月費» → route `fees`.”)
+- `cue` — exact substring
+- `segments` — full query split into highlighted / non-highlighted pieces
+- `explanation` / `downstream` — why that cue matters and what runs next
+
+In the UI: **Router decision** opens with that card; the winning rule auto-expands; click any other rule to see the same query with *that* rule’s cue (or why it stayed idle).
+
+### 3.8 Routing invariants (stress-tested)
 
 - Typhoon / T8 / black rain → `severe_weather` (RAG skipped; adapt may run).
-- “How much is phonics?” → `fees` (not RAG). “Do you offer private 1:1?” → `rag`.
-- “How much time does phonics take?” → not fees (`_FEE_DURATION_RE` exclusion) → RAG.
-- Strong seat browse (`seats left`, `有冇位`, `仲有冇位`) → `booking_tool`, even if fee words co-occur (`availability>fees`).
-- Bare waitlist (`候補`, `滿班`, `waiting list`) → `waiting`; bare `冇位` no longer implies waitlist (would steal Cantonese seat asks).
+- “How much is phonics?” / `月費幾多？` / `幾錢一個月` → `fees` (not RAG).
+- “Do you offer private 1:1?” → `rag`.
+- “How much time does phonics take?” → not fees (`_FEE_DURATION_RE`) → RAG / other.
+- Strong seat browse (`seats left`, `有冇位`, `仲有冇位`) → `booking_tool`, even if fee words co-occur.
+- Bare waitlist (`候補`, `滿班`, `waiting list`) → `waiting`; bare `冇位` alone no longer implies waitlist.
 - Safety “allergy + reaction” → `staff_escalation` before non-urgent `allergy` FAQ.
 - Off-domain city weather → refuse without admin todo.
 
-Probe script: `scripts/stress_intent_router.py`.
+Probe script: `scripts/stress_intent_router.py` (50+ cases).
 
 ---
 
@@ -198,25 +279,25 @@ Probe script: `scripts/stress_intent_router.py`.
 
 ### 4.1 Centre facts
 
-`backend/services/centre_facts.py` + `backend/facts/*.json` (SAE image path; not the mutable `/app/data` volume).
+`backend/services/centre_facts.py` + `backend/facts/*.json` (baked into the SAE image; not the mutable `/app/data` volume).
 
-Flow: intent → `format_*_answer` → citations pointing at JSON/MD → `adapt_structured_fact(question, answer, route=…)` rewrites tone only (`enable_thinking: false`).
+Flow: intent → `format_*_answer` → citations pointing at JSON/MD → `adapt_structured_fact(question, answer, route=…)` rewrites **tone only** (`enable_thinking: false`).
 
 ### 4.2 Opening hours
 
-`detect_opening_hours_intent` → `_get_opening_facts` / `compute_opening_answer`:
+`detect_opening_hours_intent` → calendar engine:
 
 1. Resolve datetime (explicit date, weekday name, or now).
 2. Public holiday table → closed + name.
 3. Sunday → closed.
 4. Else weekday open/close window.
-5. Optional HKO severe-weather hint when query is “today”.
+5. Optional HKO severe-weather hint when the query is “today”.
 
 ### 4.3 Seats & booking
 
 CSV under `backend/data/sheets/`: teachers, windows, sessions, enrolments, trial_slots, families.
 
-- `booking_tool`: compute `seats_left = capacity − enrolments`, return bookable `slots[]`.
+- `booking_tool`: `seats_left = capacity − enrolments`, return bookable `slots[]`.
 - `booking_dialogue` / `cancel_dialogue`: session-sticky FSM; identity from `phone` → `families.csv`.
 - Confirmed chat books append `chat_bookings.csv` (provisional, no payment).
 
@@ -234,7 +315,7 @@ Parent chat copy never names internal sheets.
 
 ## 5. RAG pipeline
 
-Training-free by design: KB edits → reingest; no fine-tune loop.
+Training-free by design: edit Markdown → reingest; no fine-tune loop.
 
 ### 5.1 Ingest
 
@@ -246,8 +327,6 @@ Training-free by design: KB edits → reingest; no fine-tune loop.
 - Offline fallback: deterministic local hash embeddings.
 
 ### 5.2 Retrieve → generate
-
-`rag/pipeline.py::answer_question`:
 
 ```text
 embed(query)
@@ -261,13 +340,14 @@ embed(query)
   → gap heuristics (weak_score, off_topic, NO_ANSWER, soft hand-off)
 ```
 
-Weak-score thresholds: cloud ≈ 0.28, local-hash ≈ 0.42.
-
-Generation: DashScope chat (`LLM_MODEL`) with numbered excerpts; `enable_thinking: false`; extractive fallback if no key.
+Weak-score thresholds: cloud ≈ 0.28, local-hash ≈ 0.42.  
+Generation: DashScope chat with numbered excerpts; `enable_thinking: false`.
 
 ### 5.3 Debug payload (`trace.rag`)
 
 `index_size`, `top_k`, `hit_count`, `top_score`, `embedding_mode`, `language_fallback`, `gap_reason`, `hits[]` (full `text`).
+
+The inspector only treats `rag.hits` as retrieval evidence when `route === "rag"` — tool citations must not masquerade as KB chunks.
 
 ---
 
@@ -279,8 +359,8 @@ Generation: DashScope chat (`LLM_MODEL`) with numbered excerpts; `enable_thinkin
 | `CHAT_HISTORY_LIMIT` | 10 messages |
 | Store | SQLite `CHAT_HISTORY_DB` |
 
-Consumed by: RAG prompt, fact adapt, hours follow-up (“tomorrow?”), arbiter history preview (last 4 turns).  
-`trace.history.turns[]` exposes full loaded window to the inspector.
+Used by: RAG prompt, fact adapt, hours follow-up (“tomorrow?”), arbiter history preview (last 4 turns).  
+`trace.history.turns[]` exposes the full loaded window to the inspector.
 
 ---
 
@@ -300,22 +380,27 @@ Consumed by: RAG prompt, fact adapt, hours follow-up (“tomorrow?”), arbiter 
 
 ## 8. Demo UI contract
 
-Left: parent chat + probes + seat cards.  
-Right:
+**Left:** parent chat + probe chips + seat cards.  
+**Right — System tab:**
 
-- **System** — route pill, `pipeline_steps`, Router decision (path + expandable rule evidence), hours panel, RAG hits (rank/score/full text), register, booking, session memory.
-- **Staff desk** — Sheets-style follow-ups | Gmail-style inbox (`**bold**` rendered).
+1. Route pill + pipeline step rail  
+2. **Router decision** — match summary (highlighted cue) → path → expandable rule map  
+3. Hours / holiday / weather panel  
+4. RAG hits (rank, score, full chunk) — only when route is RAG  
+5. Register, booking, session memory  
+
+**Right — Staff desk:** Sheets-style follow-ups (formula bar shows full cell text) | Gmail-style inbox (`**bold**` rendered).
 
 Canonical probes:
 
-| Probe | Route |
-|-------|-------|
-| Typhoon | `severe_weather` |
-| Phonics fee | `fees` |
-| RAG · Private 1:1 | `rag` |
-| Phonics seats | `booking_tool` |
-| Unknown ask | `unknown_programme` |
-| Safety call | `staff_escalation` |
+| Probe | Expected route | What to point at |
+|-------|----------------|------------------|
+| Typhoon | `severe_weather` | Match cue + RAG skipped |
+| Phonics fee / `月費幾多？` | `fees` | Highlighted fee cue |
+| RAG · Private 1:1 | `rag` | Chunk rank/score/text |
+| Phonics seats / `仲有冇位？` | `booking_tool` | Seat cards from CSV |
+| Unknown ask | `unknown_programme` | Follow-up sheet row |
+| Safety call | `staff_escalation` | Inbox + email draft |
 
 ---
 
@@ -340,7 +425,21 @@ Stress: `python scripts/stress_intent_router.py`
 
 ---
 
-## 10. Related
+## 10. Glossary
+
+| Term | Meaning |
+|------|---------|
+| **Route** | Named specialist chosen for this turn (`fees`, `rag`, …) |
+| **Cue / matched span** | Exact substring in the parent message that fired a detector |
+| **Adapt** | Main-LLM tone rewrite of a structured fact; must not invent policy |
+| **Arbiter** | Cheap LLM that may confirm or override an ambiguous route |
+| **Hard veto** | Ultra-high-confidence score that blocks soft prototype dilution |
+| **RAG** | Retrieve Markdown chunks from Chroma, then generate with citations |
+| **Sticky dialogue** | Book/cancel FSM that stays active across turns for one `session_id` |
+
+---
+
+## 11. Related
 
 - [architecture.md](architecture.md) — compact diagram  
 - [demo-script.md](demo-script.md) — 5-minute talk track  

@@ -351,6 +351,7 @@ def chat(req: ChatRequest) -> ChatResponse:
             "rules_evaluated": (decision.debug or {}).get("rules_evaluated") or [],
             "decision_path": (decision.debug or {}).get("decision_path") or [],
             "winning_rule": (decision.debug or {}).get("winning_rule") or {},
+            "match_summary": (decision.debug or {}).get("match_summary") or {},
             "hours_followup_promoted": followup_promoted,
             "dialogue_active": dialogue_active,
             "cancel_active": cancel_active,

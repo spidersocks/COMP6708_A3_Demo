@@ -144,12 +144,75 @@ function RagHit({ hit, index }) {
   );
 }
 
-function RuleEvidence({ rule }) {
-  const [open, setOpen] = useState(false);
+function QueryHighlight({ segments, fallback, cue }) {
+  const parts =
+    Array.isArray(segments) && segments.length > 0
+      ? segments
+      : fallback
+        ? [{ text: fallback, hit: false }]
+        : [];
+  if (!parts.length) return <p className="bn-empty">No query text.</p>;
+  return (
+    <p className="bn-query-hl" title={cue ? `Cue: ${cue}` : undefined}>
+      {parts.map((seg, i) =>
+        seg.hit ? (
+          <mark key={`h-${i}`} className="bn-query-cue">
+            {seg.text}
+          </mark>
+        ) : (
+          <span key={`t-${i}`}>{seg.text}</span>
+        )
+      )}
+    </p>
+  );
+}
+
+function MatchSummaryCard({ summary }) {
+  if (!summary || (!summary.headline && !summary.query)) return null;
+  return (
+    <div className="bn-match-summary">
+      <div className="bn-match-summary-kicker">What matched in this query</div>
+      <p className="bn-match-headline">{summary.headline}</p>
+      <QueryHighlight
+        segments={summary.segments}
+        fallback={summary.query || summary.annotated}
+        cue={summary.cue}
+      />
+      {summary.cue ? (
+        <p className="bn-match-cue-line">
+          Exact cue: <code>«{summary.cue}»</code>
+          {summary.rule_label ? (
+            <>
+              {" "}
+              → <strong>{summary.rule_label}</strong> (<code>{summary.route}</code>)
+            </>
+          ) : null}
+        </p>
+      ) : null}
+      {summary.explanation ? (
+        <p className="bn-match-explain">{summary.explanation}</p>
+      ) : null}
+      {summary.downstream ? (
+        <p className="bn-match-down">
+          Downstream: {summary.downstream}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function RuleEvidence({ rule, defaultOpen = false, isWinner = false }) {
+  const [open, setOpen] = useState(Boolean(defaultOpen));
+  useEffect(() => {
+    setOpen(Boolean(defaultOpen));
+  }, [defaultOpen, rule?.id]);
+
   const flag = rule.matched
     ? rule.suppressed_by_conflict
       ? "cleared"
-      : "fired"
+      : isWinner
+        ? "winner"
+        : "fired"
     : "idle";
   const reason =
     rule.status_reason ||
@@ -157,14 +220,24 @@ function RuleEvidence({ rule }) {
     rule.detail ||
     "";
   const checks = rule.checks || [];
+  const evidence = rule.match_evidence || {};
+  const cue =
+    evidence.cue ||
+    rule.matched_span?.text ||
+    "";
+  const queryText = rule.query || evidence.full_query || "";
+  const segments = evidence.segments || [];
+
   return (
     <li
       className={
-        rule.matched
+        (rule.matched
           ? rule.suppressed_by_conflict
             ? "bn-rule-suppressed"
-            : "bn-rule-hit"
-          : "bn-rule-miss"
+            : isWinner
+              ? "bn-rule-winner"
+              : "bn-rule-hit"
+          : "bn-rule-miss") + (open ? " bn-rule-open" : "")
       }
     >
       <button
@@ -175,22 +248,70 @@ function RuleEvidence({ rule }) {
       >
         <span className="bn-rule-flag">{flag}</span>
         <div className="bn-rule-main">
-          <strong>{rule.label}</strong>
+          <strong>
+            {rule.label}
+            {isWinner ? <em className="bn-rule-winner-tag"> · winning</em> : null}
+          </strong>
           <code>{rule.id}</code>
           {rule.score != null ? <em>score {Number(rule.score).toFixed(2)}</em> : null}
+          {cue ? (
+            <p className="bn-rule-cue-chip">
+              cue <code>«{cue}»</code>
+            </p>
+          ) : null}
           {reason ? <p className="bn-rule-reason">{reason}</p> : null}
           <span className="bn-hit-expand-hint">
-            {open ? "Hide why" : "Why this decision"}
+            {open ? "Hide match detail" : "Show what matched"}
           </span>
         </div>
       </button>
       {open ? (
         <div className="bn-rule-why">
-          {rule.mechanism ? (
+          <div className="bn-rule-block bn-rule-block-query">
+            <span>Parent message · matched cue highlighted</span>
+            <QueryHighlight
+              segments={segments}
+              fallback={queryText || evidence.annotated}
+              cue={cue}
+            />
+            {cue ? (
+              <p className="bn-rule-cue-meta">
+                Exact cue <code>«{cue}»</code>
+                {evidence.start != null && evidence.end != null
+                  ? ` at characters [${evidence.start}:${evidence.end}]`
+                  : ""}
+                {evidence.kind ? ` · kind=${evidence.kind}` : ""}
+              </p>
+            ) : (
+              <p className="bn-rule-cue-meta">
+                No single substring cue — matched by{" "}
+                {evidence.kind || "predicate / session state"}.
+              </p>
+            )}
+          </div>
+          {evidence.explanation ? (
             <div className="bn-rule-block">
-              <span>How this rule works</span>
-              <p>{rule.mechanism}</p>
+              <span>Why this cue matters</span>
+              <p>{evidence.explanation}</p>
             </div>
+          ) : null}
+          {rule.matched && rule.why ? (
+            <div className="bn-rule-block">
+              <span>Why this rule fired</span>
+              <p>{rule.why}</p>
+            </div>
+          ) : null}
+          {!rule.matched || rule.suppressed_by_conflict ? (
+            rule.why_not ? (
+              <div className="bn-rule-block">
+                <span>
+                  {rule.suppressed_by_conflict
+                    ? "Why it was cleared after matching"
+                    : "Why it stayed idle"}
+                </span>
+                <p>{rule.why_not}</p>
+              </div>
+            ) : null
           ) : null}
           {rule.pattern_summary ? (
             <div className="bn-rule-block">
@@ -198,30 +319,15 @@ function RuleEvidence({ rule }) {
               <p>{rule.pattern_summary}</p>
             </div>
           ) : null}
-          {rule.matched_span?.text ? (
+          {rule.mechanism ? (
             <div className="bn-rule-block">
-              <span>Matched substring</span>
-              <code>
-                «{rule.matched_span.text}» @ [{rule.matched_span.start}:
-                {rule.matched_span.end}]
-              </code>
-            </div>
-          ) : null}
-          {rule.why ? (
-            <div className="bn-rule-block">
-              <span>Why it fired</span>
-              <p>{rule.why}</p>
-            </div>
-          ) : null}
-          {rule.why_not ? (
-            <div className="bn-rule-block">
-              <span>Why it stayed idle / was cleared</span>
-              <p>{rule.why_not}</p>
+              <span>How this rule works in code</span>
+              <p>{rule.mechanism}</p>
             </div>
           ) : null}
           {checks.length > 0 ? (
             <div className="bn-rule-block">
-              <span>Checks</span>
+              <span>Checks run on this message</span>
               <ul className="bn-rule-checks">
                 {checks.map((c, i) => (
                   <li key={`${rule.id}-c-${i}`} className={c.passed ? "pass" : "fail"}>
@@ -778,7 +884,9 @@ export default function BrightNestBotDemo() {
   const rulesEvaluated =
     routing?.rules_evaluated || routing?.debug?.rules_evaluated || [];
   const winningRule = routing?.winning_rule || routing?.debug?.winning_rule || {};
+  const matchSummary = routing?.match_summary || routing?.debug?.match_summary || {};
   const arbiter = routing?.debug?.arbiter || {};
+  const winningRuleId = matchSummary?.rule_id || winningRule?.route || route;
   const routerSummary = useMemo(() => {
     if (!route) return "Idle until a query";
     const arbReason = winningRule?.arbiter_reason || arbiter?.reason;
@@ -1419,6 +1527,8 @@ export default function BrightNestBotDemo() {
               <p className="bn-empty">Send a probe to see which rules fired and why.</p>
             ) : (
               <>
+                <MatchSummaryCard summary={matchSummary} />
+
                 <ul className="bn-fact-list">
                   <li>
                     <span>Final route</span>
@@ -1497,10 +1607,23 @@ export default function BrightNestBotDemo() {
                       Rule map ·{" "}
                       {rulesEvaluated.filter((r) => r.matched).length} fired /{" "}
                       {rulesEvaluated.length} checked
+                      {matchSummary?.cue
+                        ? ` · winning cue «${matchSummary.cue}»`
+                        : ""}
                     </summary>
+                    <p className="bn-rules-hint">
+                      Click any rule to see the parent message with the exact
+                      matched substring highlighted, plus every check that
+                      passed or failed.
+                    </p>
                     <ul className="bn-rule-list">
                       {rulesEvaluated.map((r) => (
-                        <RuleEvidence key={r.id} rule={r} />
+                        <RuleEvidence
+                          key={r.id}
+                          rule={r}
+                          isWinner={r.id === winningRuleId && Boolean(r.matched)}
+                          defaultOpen={r.id === winningRuleId}
+                        />
                       ))}
                     </ul>
                   </details>

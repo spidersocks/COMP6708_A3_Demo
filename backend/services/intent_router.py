@@ -464,6 +464,63 @@ def _match_span(pattern: re.Pattern[str], message: str) -> Optional[Dict[str, An
     return {"text": m.group(0), "start": m.start(), "end": m.end()}
 
 
+def _match_evidence(
+    message: str,
+    *,
+    span: Optional[Dict[str, Any]] = None,
+    cue: str = "",
+    kind: str = "substring",
+    explanation: str = "",
+) -> Dict[str, Any]:
+    """Explicit 'what in the query matched' payload for the inspector."""
+    msg = message or ""
+    text = ""
+    start: Optional[int] = None
+    end: Optional[int] = None
+    if span and span.get("text") is not None:
+        text = str(span["text"])
+        start = int(span["start"])
+        end = int(span["end"])
+    elif cue:
+        text = str(cue)
+        idx = msg.find(text)
+        if idx >= 0:
+            start, end = idx, idx + len(text)
+
+    before = after = ""
+    segments: List[Dict[str, Any]] = []
+    annotated = msg
+    if text and start is not None and end is not None and 0 <= start < end <= len(msg):
+        before = msg[max(0, start - 24) : start]
+        after = msg[end : min(len(msg), end + 24)]
+        annotated = f"{before}«{text}»{after}"
+        if start > 0:
+            segments.append({"text": msg[:start], "hit": False})
+        segments.append({"text": text, "hit": True})
+        if end < len(msg):
+            segments.append({"text": msg[end:], "hit": False})
+    elif msg:
+        segments = [{"text": msg, "hit": False}]
+
+    return {
+        "kind": kind,
+        "cue": text or cue or "",
+        "start": start,
+        "end": end,
+        "before": before,
+        "after": after,
+        "annotated": annotated,
+        "segments": segments,
+        "full_query": msg,
+        "explanation": explanation
+        or (
+            f"The substring «{text}» inside the parent message triggered this rule."
+            if text
+            else "No single substring cue — matched by predicate / session state."
+        ),
+    }
+
+
 def _check(label: str, passed: bool, detail: str = "") -> Dict[str, Any]:
     return {"label": label, "passed": bool(passed), "detail": detail}
 
@@ -478,12 +535,28 @@ def _rule_row(
     mechanism: str = "",
     pattern_summary: str = "",
     matched_span: Optional[Dict[str, Any]] = None,
+    match_evidence: Optional[Dict[str, Any]] = None,
+    query: str = "",
     why: str = "",
     why_not: str = "",
     checks: Optional[List[Dict[str, Any]]] = None,
     downstream: str = "",
 ) -> Dict[str, Any]:
     status_reason = why if matched else why_not
+    evidence = match_evidence
+    if evidence is None and (matched_span or query):
+        evidence = _match_evidence(
+            query,
+            span=matched_span,
+            kind="substring" if matched_span else "predicate",
+            explanation=(
+                why
+                if matched and why
+                else why_not
+                if not matched and why_not
+                else ""
+            ),
+        )
     return {
         "id": rule_id,
         "label": label,
@@ -493,6 +566,8 @@ def _rule_row(
         "mechanism": mechanism,
         "pattern_summary": pattern_summary,
         "matched_span": matched_span,
+        "match_evidence": evidence,
+        "query": query,
         "why": why,
         "why_not": why_not,
         "status_reason": status_reason,
@@ -533,6 +608,20 @@ def _regex_rule(
         why = why_template.format(span=span["text"])
     elif matched:
         why = why_template.format(span="(predicate true without a single span)")
+    evidence = _match_evidence(
+        message,
+        span=span,
+        kind="substring" if span else "predicate",
+        explanation=(
+            f"Detector looked for: {pattern_summary}. "
+            + (
+                f"Found cue «{span['text']}» at character positions "
+                f"[{span['start']}:{span['end']}] in the parent message."
+                if span
+                else "No cue substring found in this message."
+            )
+        ),
+    )
     return _rule_row(
         rule_id,
         label,
@@ -541,11 +630,52 @@ def _regex_rule(
         mechanism=mechanism,
         pattern_summary=pattern_summary,
         matched_span=span,
+        match_evidence=evidence,
+        query=message,
         why=why,
         why_not=why_not,
         checks=checks,
         downstream=downstream,
     )
+
+
+def _summarize_winning_match(
+    message: str,
+    *,
+    route: str,
+    rules: List[Dict[str, Any]],
+    scores: Dict[str, float],
+) -> Dict[str, Any]:
+    """One-glance explanation of why this query took the final route."""
+    winner = next((r for r in rules if r.get("id") == route), None)
+    if winner is None and route == "booking_tool":
+        winner = next((r for r in rules if r.get("id") == "booking_tool"), None)
+    evidence = (winner or {}).get("match_evidence") or {}
+    cue = evidence.get("cue") or ((winner or {}).get("matched_span") or {}).get("text") or ""
+    why = (winner or {}).get("why") or (winner or {}).get("status_reason") or ""
+    headline = (
+        f"Matched because the message contains «{cue}» → route `{route}`."
+        if cue
+        else f"Route `{route}` won"
+        + (f": {why}" if why else f" (score {scores.get(route)}).")
+    )
+    return {
+        "route": route,
+        "score": scores.get(route),
+        "rule_id": (winner or {}).get("id") or route,
+        "rule_label": (winner or {}).get("label") or route,
+        "cue": cue,
+        "headline": headline,
+        "why": why,
+        "query": message or "",
+        "annotated": evidence.get("annotated") or message or "",
+        "segments": evidence.get("segments")
+        or ([{"text": message, "hit": False}] if message else []),
+        "explanation": evidence.get("explanation") or why,
+        "mechanism": (winner or {}).get("mechanism") or "",
+        "pattern_summary": (winner or {}).get("pattern_summary") or "",
+        "downstream": (winner or {}).get("downstream") or "",
+    }
 
 
 def _build_rules_evaluated(
@@ -621,6 +751,18 @@ def _build_rules_evaluated(
             ),
             pattern_summary="safety / anger / refund-withdraw / speak-to-human cues",
             matched_span=esc_span,
+            match_evidence=_match_evidence(
+                msg,
+                span=esc_span,
+                kind="substring" if esc_span else "predicate",
+                explanation=(
+                    f"Escalation category «{(esc or {}).get('category')}» fired on cue "
+                    f"«{(esc_span or {}).get('text') or (esc or {}).get('summary') or 'n/a'}»."
+                    if esc
+                    else "No escalation cue in this message."
+                ),
+            ),
+            query=msg,
             why=(
                 f"Triggered as category «{(esc or {}).get('category')}» "
                 f"({(esc or {}).get('priority')}): {(esc or {}).get('summary')}"
@@ -952,10 +1094,27 @@ def _build_rules_evaluated(
                 "fees/weather/facts/trial-info/pets/unknown."
             ),
             pattern_summary="seats left, availability, open slots, 有冇位…",
-            matched_span=_match_span(_AVAIL_STRONG_RE, msg),
+            matched_span=(avail_span := _match_span(_AVAIL_STRONG_RE, msg)),
+            match_evidence=_match_evidence(
+                msg,
+                span=avail_span,
+                kind="substring" if avail_span else "predicate",
+                explanation=(
+                    f"Seat/availability cue «{avail_span['text']}» at "
+                    f"[{avail_span['start']}:{avail_span['end']}] — "
+                    "live register browse, not a waitlist ask."
+                    if avail_span
+                    else (
+                        "Availability browse predicate true without a single span."
+                        if is_availability_browse(message)
+                        else "No seat/slot browse wording in this message."
+                    )
+                ),
+            ),
+            query=msg,
             why=(
-                f"Availability browse matched «{_match_span(_AVAIL_STRONG_RE, msg)['text']}»."
-                if _match_span(_AVAIL_STRONG_RE, msg)
+                f"Availability browse matched «{avail_span['text']}»."
+                if avail_span
                 else "Availability browse predicate true."
                 if is_availability_browse(message)
                 else ""
@@ -964,12 +1123,8 @@ def _build_rules_evaluated(
             checks=[
                 _check(
                     "Strong avail regex",
-                    bool(_match_span(_AVAIL_STRONG_RE, msg)),
-                    (
-                        f"«{_match_span(_AVAIL_STRONG_RE, msg)['text']}»"
-                        if _match_span(_AVAIL_STRONG_RE, msg)
-                        else "no match"
-                    ),
+                    bool(avail_span),
+                    f"«{avail_span['text']}»" if avail_span else "no match",
                 ),
                 _check("is_availability_browse", is_availability_browse(message)),
             ],
@@ -1096,6 +1251,16 @@ def _build_rules_evaluated(
             row["checks"] = list(row.get("checks") or []) + [
                 _check("Survived conflict resolution", False, str(conflict_note))
             ]
+    # Guarantee every row carries the full query + match_evidence for the UI.
+    for row in rows:
+        row["query"] = msg
+        if not row.get("match_evidence"):
+            row["match_evidence"] = _match_evidence(
+                msg,
+                span=row.get("matched_span"),
+                kind="substring" if row.get("matched_span") else "predicate",
+                explanation=row.get("why") or row.get("why_not") or "",
+            )
     return rows
 
 
@@ -1307,5 +1472,11 @@ def decide_intent(
         "arbiter_skip_detail": (debug.get("arbiter") or {}).get("skip_detail"),
         "override": debug.get("arbiter_override"),
     }
+    debug["match_summary"] = _summarize_winning_match(
+        message,
+        route=route,
+        rules=debug["rules_evaluated"],
+        scores=cleaned,
+    )
 
     return IntentDecision(route, cleaned, debug)
