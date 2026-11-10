@@ -910,11 +910,15 @@ export default function BrightNestBotDemo() {
 
   const hoursSummary = useMemo(() => {
     if (!facts) return "Idle until a date/hours query";
-    if (facts.weather_hint) return "Severe weather closure";
-    if (facts.is_holiday) return facts.holiday_name || "Public holiday";
-    if (facts.is_sunday) return "Sunday · closed";
-    if (facts.open_time) return `${facts.open_time}–${facts.close_time}`;
-    return "Parsed";
+    const bits = [];
+    if (facts.is_holiday) bits.push(facts.holiday_name || "holiday");
+    else bits.push("not holiday");
+    if (facts.weather_hint) bits.push("HKO closure");
+    else if (facts.parse_debug?.weather_applied) bits.push("HKO clear");
+    else if (facts.parse_debug?.weather_same_day_only) bits.push("HKO skip·not today");
+    if (facts.is_sunday) bits.push("Sunday");
+    else if (facts.open_time) bits.push(`${facts.open_time}–${facts.close_time}`);
+    return bits.join(" · ");
   }, [facts]);
 
   const ragSummary = useMemo(() => {
@@ -1815,43 +1819,80 @@ export default function BrightNestBotDemo() {
             {!facts ? (
               <p className="bn-empty">Ask an hours/date question to populate this panel.</p>
             ) : (
-              <ul className="bn-fact-list">
-                <li>
-                  <span>Resolved</span>
-                  <code>{facts.datetime}</code>
-                </li>
-                <li>
-                  <span>Matched via</span>
-                  <code>
-                    {facts.parse_debug?.matched_via ||
-                      (facts.parse_debug?.is_fallback_to_now ? "fallback_now" : "—")}
-                  </code>
-                </li>
-                <li>
-                  <span>Window</span>
-                  <code>
-                    {facts.open_time && facts.close_time
-                      ? `${facts.open_time}–${facts.close_time}`
-                      : facts.is_sunday
-                        ? "closed (Sunday)"
-                        : "—"}
-                  </code>
-                </li>
-                <li>
-                  <span>Holiday</span>
-                  <code>{facts.is_holiday ? facts.holiday_name || "yes" : "no"}</code>
-                </li>
-                <li>
-                  <span>HKO weather</span>
-                  <code>{facts.weather_hint || "none / not today"}</code>
-                </li>
-                {trace?.opening_hours?.effective_message && (
-                  <li>
-                    <span>Effective msg</span>
-                    <code>{trace.opening_hours.effective_message}</code>
-                  </li>
+              <>
+                <p className="bn-rules-hint">
+                  Every hours ask runs an explicit <strong>public-holiday</strong> check
+                  on the resolved date and an <strong>HKO severe-weather</strong> check
+                  (live signals only when that date is today).
+                </p>
+                {(facts.checks || []).length > 0 && (
+                  <ul className="bn-rule-checks bn-hours-checks">
+                    {facts.checks.map((c) => (
+                      <li
+                        key={c.id || c.label}
+                        className={c.passed ? "pass" : c.checked ? "fail" : "fail"}
+                      >
+                        <strong>
+                          {c.passed ? "hit" : c.checked ? "clear" : "skip"}
+                        </strong>
+                        <span>
+                          {c.label}
+                          {c.detail ? ` — ${c.detail}` : ""}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
                 )}
-              </ul>
+                <ul className="bn-fact-list">
+                  <li>
+                    <span>Resolved</span>
+                    <code>{facts.datetime}</code>
+                  </li>
+                  <li>
+                    <span>Matched via</span>
+                    <code>
+                      {facts.parse_debug?.matched_via ||
+                        (facts.parse_debug?.is_fallback_to_now ? "fallback_now" : "—")}
+                    </code>
+                  </li>
+                  <li>
+                    <span>Window</span>
+                    <code>
+                      {facts.open_time && facts.close_time
+                        ? `${facts.open_time}–${facts.close_time}`
+                        : facts.is_sunday
+                          ? "closed (Sunday)"
+                          : "—"}
+                    </code>
+                  </li>
+                  <li>
+                    <span>Holiday result</span>
+                    <code>
+                      {facts.is_holiday
+                        ? `YES · ${facts.holiday_name || "public holiday"}`
+                        : "NO · not a public holiday"}
+                    </code>
+                  </li>
+                  <li>
+                    <span>HKO weather result</span>
+                    <code>
+                      {facts.weather_hint
+                        ? `CLOSURE · ${facts.weather_hint}`
+                        : facts.parse_debug?.weather_applied
+                          ? "CHECKED · no severe signal today"
+                          : facts.parse_debug?.weather_same_day_only
+                            ? "SKIPPED · date is not today (same-day live HKO only)"
+                            : "not run"}
+                    </code>
+                  </li>
+                  {trace?.opening_hours?.effective_message && (
+                    <li>
+                      <span>Effective msg</span>
+                      <code>{trace.opening_hours.effective_message}</code>
+                    </li>
+                  )}
+                </ul>
+              </>
             )}
           </Reveal>
 

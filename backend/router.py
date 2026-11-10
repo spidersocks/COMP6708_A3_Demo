@@ -169,18 +169,70 @@ def _serialize_hours_facts(facts: Dict[str, Any]) -> Dict[str, Any]:
     dt = facts.get("datetime")
     open_t = facts.get("open_time")
     close_t = facts.get("close_time")
+    dbg = facts.get("parse_debug") or {}
+    is_holiday = bool(facts.get("is_holiday"))
+    holiday_name = facts.get("holiday_name")
+    weather_hint = facts.get("weather_hint")
+    weather_applied = bool(dbg.get("weather_applied"))
+    same_day_only = bool(dbg.get("weather_same_day_only"))
+    # Explicit inspector rows: what we checked and what we found
+    checks: List[Dict[str, Any]] = [
+        {
+            "id": "public_holiday",
+            "label": "Public holiday check (HK calendar)",
+            "checked": True,
+            "passed": is_holiday,
+            "detail": (
+                f"Closed — {holiday_name}"
+                if is_holiday
+                else "Not a Hong Kong public holiday on the resolved date"
+            ),
+        },
+        {
+            "id": "sunday",
+            "label": "Sunday closed check",
+            "checked": True,
+            "passed": bool(facts.get("is_sunday")),
+            "detail": (
+                "Sunday — centre closed"
+                if facts.get("is_sunday")
+                else "Not Sunday (weekday/Saturday window applies if open)"
+            ),
+        },
+        {
+            "id": "hko_weather",
+            "label": "HKO severe-weather check (live)",
+            "checked": weather_applied or same_day_only,
+            "passed": bool(weather_hint),
+            "detail": (
+                f"Live signal applied: {weather_hint}"
+                if weather_hint
+                else (
+                    "Checked for today — no Black Rain / T8+ / Pre-T8 closure active"
+                    if weather_applied
+                    else (
+                        "Skipped — resolved date is not today "
+                        "(live HKO is same-day only; future dates do not inherit tonight’s signal)"
+                        if same_day_only
+                        else "Weather check disabled or not run"
+                    )
+                ),
+            ),
+        },
+    ]
     return {
         "datetime": dt.isoformat() if hasattr(dt, "isoformat") else str(dt),
         "lang": facts.get("lang"),
         "open_time": open_t.strftime("%H:%M") if open_t else None,
         "close_time": close_t.strftime("%H:%M") if close_t else None,
         "is_sunday": bool(facts.get("is_sunday")),
-        "is_holiday": bool(facts.get("is_holiday")),
-        "holiday_name": facts.get("holiday_name"),
-        "weather_hint": facts.get("weather_hint"),
+        "is_holiday": is_holiday,
+        "holiday_name": holiday_name,
+        "weather_hint": weather_hint,
         "asked_specific_time": bool(facts.get("asked_specific_time")),
         "is_general_query": bool(facts.get("is_general_query")),
-        "parse_debug": facts.get("parse_debug") or {},
+        "parse_debug": dbg,
+        "checks": checks,
     }
 
 
@@ -821,6 +873,17 @@ def chat(req: ChatRequest) -> ChatResponse:
                 )
         except Exception:
             live_weather = ""
+        # Inspector: still surface today's holiday + HKO checks alongside the policy route
+        try:
+            today_facts = _get_opening_facts("today", lang=lang, is_general=False)
+            trace["opening_hours"] = {
+                "effective_message": message,
+                "is_general": False,
+                "facts": _serialize_hours_facts(today_facts),
+                "context": "severe_weather_also_checks_today_calendar",
+            }
+        except Exception:
+            pass
         return _fact_response(
             route_name="severe_weather",
             answer=answer,

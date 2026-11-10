@@ -1078,6 +1078,10 @@ code,
   margin-top: 8px;
 }
 
+.bn-hours-checks {
+  margin: 8px 0 10px;
+}
+
 .bn-match-summary-kicker {
   font-size: 0.65rem;
   font-weight: 700;
