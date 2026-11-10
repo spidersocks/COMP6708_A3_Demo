@@ -21,13 +21,15 @@ HK_TZ = ZoneInfo("Asia/Hong_Kong")
 _lock = threading.Lock()
 
 _BOOK_REQUEST_RE = re.compile(
+    r"("
     r"\b("
     r"book|booking|reserve|enrol|enroll|sign\s*up|register|"
     r"can\s+i\s+book|could\s+i\s+book|want\s+to\s+book|need\s+to\s+book|"
     r"make\s+a\s+booking|book\s+a\s+class|book\s+a\s+lesson|"
-    r"any\s+(?:class|lesson|slot)s?\s+for|"
-    r"預約|预约|报名|報名"
-    r")\b",
+    r"any\s+(?:class|lesson|slot)s?\s+for"
+    r")\b|"
+    r"預約|预约|报名|報名|報讀|报读|想幫.{0,12}報|想帮.{0,12}报"
+    r")",
     re.I,
 )
 # Abort the *booking chat* — not "cancel my class" (that belongs to cancel_dialogue)
@@ -56,14 +58,41 @@ _UNKNOWN_PROGRAMME_RE = re.compile(
     r")\b",
     re.I,
 )
+# Named KB programmes map into the live seat register keys (phonics / trial / …)
 _COURSE_HINTS = [
+    # English progression names (must win before bare "spell"/"sound" noise)
+    (
+        re.compile(
+            r"little\s+sound\s+explorer|sound\s+explorers?|little\s+linguist|"
+            r"smart\s+spell|language\s+arts|小小發音|小小发音|拼音探索",
+            re.I,
+        ),
+        "phonics",
+    ),
     (re.compile(r"phonic|拼音", re.I), "phonics"),
     (re.compile(r"mandarin|putonghua|普通話|普通话", re.I), "mandarin"),
     (re.compile(r"writ|寫作|写作", re.I), "writing"),
     (re.compile(r"play\s*group|遊戲班|游戏班", re.I), "playgroup"),
-    (re.compile(r"\bmath\b|數學|数学|numeracy", re.I), "math"),
-    (re.compile(r"trial|試堂|试听|assessment|評估|评估", re.I), "trial"),
+    (re.compile(r"\bmath\b|early\s+math|數學|数学|numeracy", re.I), "math"),
+    (
+        re.compile(
+            r"\b(trial|試堂|试听|diagnostic\s+assessment|placement\s+assessment|"
+            r"assessment|評估|评估)\b",
+            re.I,
+        ),
+        "trial",
+    ),
 ]
+_NAMED_ENGLISH_PROGRAMME_RE = re.compile(
+    r"little\s+sound\s+explorer|sound\s+explorers?|little\s+linguist|"
+    r"smart\s+spell|language\s+arts|小小發音|小小发音",
+    re.I,
+)
+_AFFIRM_RE = re.compile(
+    r"^\s*(yes|yeah|yep|yup|sure|ok|okay|please|go\s+ahead|confirm|"
+    r"好|係|是|可以|要|嗯|ok啦|好呀|好的)\s*[!.。！？]*\s*$",
+    re.I,
+)
 _TEACHER_HINTS = [
     # "Ms Chen" is a common parent typo for Avery Chan in the demo roster
     (re.compile(r"\b(avery|ms\.?\s*chan|ms\.?\s*chen)\b", re.I), "avery"),
@@ -181,6 +210,24 @@ def _detect_course(text: str) -> Optional[str]:
     return None
 
 
+def _named_english_programme(text: str) -> Optional[str]:
+    m = _NAMED_ENGLISH_PROGRAMME_RE.search(text or "")
+    if not m:
+        return None
+    raw = re.sub(r"\s+", " ", m.group(0)).strip()
+    # Canonicalise plurals for staff sheet copy
+    low = raw.lower()
+    if "sound explorer" in low:
+        return "Little Sound Explorer"
+    if "linguist" in low:
+        return "Little Linguist"
+    if "smart spell" in low:
+        return "Smart Spell"
+    if "language arts" in low:
+        return "Language Arts"
+    return raw.title()
+
+
 def unknown_programme(text: str) -> Optional[str]:
     """Return a named activity if the parent asked about something we don't teach."""
     if _detect_course(text):
@@ -189,9 +236,17 @@ def unknown_programme(text: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def is_affirmative(text: str) -> bool:
+    return bool(_AFFIRM_RE.match((text or "").strip()))
+
+
 def _is_booking_refine(text: str) -> bool:
     """Signals that should stay inside the booking dialogue."""
     if _detect_course(text) or _detect_teacher(text) or _parse_when(text):
+        return True
+    if _named_english_programme(text):
+        return True
+    if is_affirmative(text):
         return True
     if re.search(
         r"\b((option\s*)?\d{1,2}|different|another|refine|slot|seats?|earlier|later)\b",
@@ -214,6 +269,9 @@ def should_yield_to_rag(session_id: str, text: str) -> bool:
         return True
     if not active:
         return False
+    # Affirmative while waiting on assessment / slot confirm stays in booking
+    if st.get("stage") == "confirm_assessment" and is_affirmative(text):
+        return False
     if _is_booking_refine(text):
         return False
     if is_booking_request(text) and _detect_course(text):
@@ -225,8 +283,13 @@ def should_yield_to_rag(session_id: str, text: str) -> bool:
         re.I,
     ):
         return True
-    # Short non-refine follow-ups ("How much", "fees", "ok thanks") while offering seats
-    if st.get("stage") in {"offer_slots", "no_slots", "need_course", "need_when_asked"}:
+    # Short non-refine follow-ups while offering seats / clarifying when
+    # (need_course + known programme name is handled by _is_booking_refine above)
+    if st.get("stage") in {"offer_slots", "no_slots", "need_when_asked"}:
+        if not is_booking_request(text) and not _is_booking_refine(text):
+            return True
+    if st.get("stage") == "need_course":
+        # Bare junk at need_course still yields; programme names do not
         if not is_booking_request(text) and not _is_booking_refine(text):
             return True
     return False
@@ -505,6 +568,9 @@ def handle_turn(
                     teacher = _detect_teacher(str(hints["teacher_hint"])) or teacher
         except Exception as e:
             print(f"[BOOKING] parse arbiter failed: {e}", flush=True)
+    named_prog = _named_english_programme(text)
+    if named_prog:
+        state["programme_label"] = named_prog
     if course:
         state["course_key"] = course
     if teacher:
@@ -614,6 +680,67 @@ def handle_turn(
         else ""
     )
 
+    # --- Assessment confirm (named English programmes need placement) ---
+    if state.get("stage") == "confirm_assessment":
+        prog = state.get("programme_label") or course_label(state.get("course_key") or "phonics")
+        if is_affirmative(text):
+            clear_state(session_id)
+            answer = (
+                f"Great — we'll arrange a short **diagnostic assessment** for **{child_name}** "
+                f"toward **{prog}**.\n\n"
+                "Our team will reach out shortly with available time slots."
+            )
+            return {
+                "answer": answer,
+                "slots": None,
+                "provider": "booking_dialogue",
+                "admin_followup": {
+                    "reason": "assessment_request",
+                    "question": (
+                        f"Arrange diagnostic assessment for {child_name} "
+                        f"({prog})"
+                    ),
+                    "info_needed": (
+                        f"Parent confirmed assessment for {child_name} toward {prog}. "
+                        f"Propose 2–3 assessment slots on WhatsApp "
+                        f"({state.get('phone') or 'demo phone'})."
+                    ),
+                    "reply": answer,
+                    "parent_name": state.get("parent_name") or "",
+                    "child_name": child_name,
+                    "phone": state.get("phone") or "",
+                },
+                "trace_booking": {
+                    "stage": "assessment_queued",
+                    "child_name": child_name,
+                    "programme_label": prog,
+                    "course_key": state.get("course_key"),
+                    "steps": steps,
+                },
+                "state": None,
+            }
+        # Parent gave a when/teacher instead — fall through to seat offer
+        if when_bits or teacher:
+            state["stage"] = "need_when_asked" if not (state.get("when") or {}).get("window") else "offer_slots"
+        else:
+            save_state(session_id, {**state, "stage": "confirm_assessment"})
+            return {
+                "answer": (
+                    f"Just to confirm — should I ask the team to arrange a short diagnostic "
+                    f"assessment for **{child_name}** ({prog})?\n\n"
+                    "Reply **yes**, or tell me a preferred day/time to browse open seats instead."
+                ),
+                "slots": None,
+                "provider": "booking_dialogue",
+                "trace_booking": {
+                    "stage": "confirm_assessment",
+                    "child_name": child_name,
+                    "programme_label": prog,
+                    "steps": steps,
+                },
+                "state": state,
+            }
+
     # --- Clarify course ---
     if not state.get("course_key"):
         preferred = state.get("preferred_courses") or []
@@ -640,6 +767,36 @@ def handle_turn(
                 "steps": steps,
             },
             "state": state,
+        }
+
+    # Named English programme just chosen → offer diagnostic assessment hand-off
+    if (
+        state.get("programme_label")
+        and state.get("course_key") == "phonics"
+        and state.get("stage") in {None, "start", "need_course", "need_child"}
+        and not (state.get("when") or {}).get("window")
+        and state.get("when", {}).get("weekday") is None
+    ):
+        prog = state["programme_label"]
+        save_state(session_id, {**state, "stage": "confirm_assessment", "hide_register": True})
+        return {
+            "answer": (
+                f"Wonderful choice — **{prog}** builds early phonics foundations in a small group.\n\n"
+                f"Placement is confirmed with a short **diagnostic assessment** before the first class.\n\n"
+                f"Would you like us to arrange that assessment for **{child_name}**?"
+            ),
+            "slots": None,
+            "provider": "booking_dialogue",
+            "trace_booking": {
+                "stage": "confirm_assessment",
+                "child_name": child_name,
+                "programme_label": prog,
+                "course_key": state.get("course_key"),
+                "phone": state.get("phone"),
+                "parent_name": state.get("parent_name"),
+                "steps": steps,
+            },
+            "state": {**state, "stage": "confirm_assessment"},
         }
 
     # --- Default when-window if still empty ---

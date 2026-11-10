@@ -1208,6 +1208,29 @@ def chat(req: ChatRequest) -> ChatResponse:
                         bp_detail,
                     )
                 )
+            follow = result.get("admin_followup")
+            admin_todo = None
+            if isinstance(follow, dict) and follow.get("reason"):
+                todo_parent, todo_child = _family_names()
+                admin_todo = admin_todos.add_todo(
+                    question=follow.get("question") or message,
+                    reply=follow.get("reply") or result["answer"],
+                    info_needed=follow.get("info_needed") or "",
+                    reason=str(follow.get("reason") or "assessment_request"),
+                    phone=follow.get("phone") or phone,
+                    parent_name=follow.get("parent_name") or todo_parent,
+                    child_name=follow.get("child_name") or todo_child,
+                    session_id=session_id,
+                )
+                steps.append(
+                    _step(
+                        "admin_todo",
+                        "Flag for admin to-do",
+                        "done",
+                        f"{admin_todo.get('id')} · {follow.get('reason')}",
+                    )
+                )
+                trace["admin_todo"] = admin_todo
             return _fact_response(
                 route_name="booking_dialogue",
                 answer=result["answer"],
@@ -1223,7 +1246,10 @@ def chat(req: ChatRequest) -> ChatResponse:
                     tb.get("stage") or "turn",
                 ),
                 slots=result.get("slots"),
-                debug={"dialogue": tb},
+                debug={
+                    "dialogue": tb,
+                    **({"admin_todo": admin_todo} if admin_todo else {}),
+                },
                 adapt=False,
             )
 
@@ -1321,6 +1347,89 @@ def chat(req: ChatRequest) -> ChatResponse:
         _persist_turn(session_id, message, answer, lang, use_history)
         return resp
 
+    def _answer_promises_outreach(text: str) -> bool:
+        low = (text or "").lower()
+        return any(
+            p in low
+            for p in (
+                "reach out",
+                "will arrange",
+                "we'll arrange",
+                "we will arrange",
+                "get back to you",
+                "team will",
+                "somebody will",
+                "our team will",
+                "staff will",
+            )
+        )
+
+    def _history_offered_assessment() -> bool:
+        blob = " ".join(
+            str(t.get("message") or t.get("content") or "")
+            for t in (history or [])[-6:]
+        ).lower()
+        return any(
+            k in blob
+            for k in (
+                "diagnostic assessment",
+                "arrange that assessment",
+                "arrange an assessment",
+                "trial assessment",
+                "would you like us to arrange",
+            )
+        )
+
+    # Affirmative after bot offered assessment → SheetPro (skip RAG)
+    if dialogue_svc.is_affirmative(message) and _history_offered_assessment():
+        todo_parent, todo_child = _family_names()
+        answer = (
+            f"Great — we'll arrange a short diagnostic assessment"
+            f"{f' for **{todo_child}**' if todo_child else ''}.\n\n"
+            "Our team will reach out shortly with available time slots."
+        )
+        admin_todo = admin_todos.add_todo(
+            question="Arrange diagnostic assessment (parent confirmed)",
+            reply=answer,
+            info_needed=(
+                f"Parent said yes to assessment"
+                f"{f' for {todo_child}' if todo_child else ''}. "
+                f"Propose slots on WhatsApp ({phone})."
+            ),
+            reason="assessment_request",
+            phone=phone,
+            parent_name=todo_parent,
+            child_name=todo_child,
+            session_id=session_id,
+        )
+        steps.append(_step("rag", "RAG retrieve → generate", "skipped", "assessment_confirm"))
+        steps.append(
+            _step(
+                "admin_todo",
+                "Flag for admin to-do",
+                "done",
+                f"{admin_todo.get('id')} · assessment_request",
+            )
+        )
+        trace["admin_todo"] = admin_todo
+        trace["route"] = "rag"
+        trace["rag"] = {"assessment_confirm": True, "hit_count": 0}
+        trace["provider"] = "assessment_followup"
+        trace["answer_provider"] = "assessment_followup"
+        trace["llm"] = _llm_trace_summary(decision.debug or {}, steps, "assessment_followup")
+        trace["latency_ms"] = int((time.perf_counter() - t0) * 1000)
+        resp = ChatResponse(
+            answer=answer,
+            citations=[],
+            provider="assessment_followup",
+            slots=None,
+            session_id=session_id,
+            debug={"admin_todo": admin_todo, "assessment_confirm": True},
+            trace=trace,
+        )
+        _persist_turn(session_id, message, answer, lang, use_history)
+        return resp
+
     result = chat_with_rag(
         message,
         language=lang,
@@ -1354,6 +1463,8 @@ def chat(req: ChatRequest) -> ChatResponse:
         pass
 
     admin_todo = None
+    todo_parent, todo_child = _family_names()
+
     # Greetings / small-talk must never spam the admin to-do list
     if rag_debug.get("knowledge_gap") and is_greeting(message):
         rag_debug = {**rag_debug, "knowledge_gap": False, "gap_reason": None}
@@ -1456,11 +1567,68 @@ def chat(req: ChatRequest) -> ChatResponse:
         )
         trace["admin_todo"] = admin_todo
 
+    # Guardrail: never promise staff outreach without a SheetPro row
+    if not admin_todo and _answer_promises_outreach(answer):
+        reason = (
+            "assessment_request"
+            if any(k in answer.lower() for k in ("assessment", "diagnostic", "試堂", "评估", "評估"))
+            else "callback_request"
+        )
+        admin_todo = admin_todos.add_todo(
+            question=message,
+            reply=answer,
+            info_needed=(
+                "Bot promised a staff follow-up / callback. "
+                f"Contact parent on WhatsApp ({phone}) and complete the request."
+            ),
+            reason=reason,
+            phone=phone,
+            parent_name=todo_parent,
+            child_name=todo_child,
+            session_id=session_id,
+            top_score=rag_debug.get("top_score"),
+            hit_count=int(rag_debug.get("hit_count") or 0),
+        )
+        steps.append(
+            _step(
+                "admin_todo",
+                "Flag for admin to-do",
+                "done",
+                f"{admin_todo.get('id')} · {reason} · outreach_guard",
+            )
+        )
+        trace["admin_todo"] = admin_todo
+
+    # Never echo internal sheet / tool filenames in parent-facing copy
+    _INTERNAL_LEAK_RE = re.compile(
+        r"(?i)\b(admin_todos(?:\.csv)?|staff_messages(?:\.csv)?|spreadsheet|vector\s+store|"
+        r"\[\[ADMIN_GAP\]\])\b"
+    )
+    if _INTERNAL_LEAK_RE.search(answer or ""):
+        answer = (
+            "I can’t share internal centre systems or files. "
+            "Ask me about programmes, fees, hours, booking, or policies — "
+            "or ask to speak with our team during working hours."
+        )
+
     rag_provider = result.get("provider") or "rag"
     if any(s.get("id") == "gap_polish" and s.get("status") == "done" for s in steps):
         rag_provider = f"{rag_provider}+llm"
     trace["route"] = "rag"
     trace["rag"] = rag_debug
+    trace["grounding"] = {
+        "mode": "pure_rag",
+        "route": "rag",
+        "structured_privileged": False,
+        "rag_hit_count": int(rag_debug.get("hit_count") or 0),
+        "composed": False,
+        "used_rag": True,
+        "knowledge_gap": bool(rag_debug.get("knowledge_gap")),
+        "why": (
+            "No hard tool / fact card owned this turn — retrieve KB chunks and "
+            "generate. SheetPro rows are written when the model gaps or promises outreach."
+        ),
+    }
     trace["provider"] = rag_provider
     trace["answer_provider"] = rag_provider
     trace["llm"] = _llm_trace_summary(decision.debug or {}, steps, rag_provider)

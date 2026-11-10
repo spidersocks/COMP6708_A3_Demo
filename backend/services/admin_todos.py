@@ -58,6 +58,8 @@ REASON_LABELS = {
     "model_no_answer": "Assistant couldn't answer from centre materials",
     "model_admin_gap": "Needs a staff decision or private record",
     "generic_fallback": "Only a generic reply was available",
+    "assessment_request": "Arrange diagnostic / placement assessment",
+    "callback_request": "Parent expects a staff callback",
 }
 
 _STATUS_LABELS = {"open": "Open", "done": "Done"}

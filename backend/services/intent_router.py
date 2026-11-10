@@ -90,6 +90,8 @@ _OFF_DOMAIN_RE = re.compile(
     r"\b(politics|political|election|scrap(?:e|ing)|malware|hack(?:ing)?|"
     r"system\s+prompt|admin\s+password|api\s*keys?|"
     r"admin\s+to-?do|show\s+(me\s+)?(the\s+)?admin)\b|"
+    r"\b(admin_todos|staff_messages)(\.csv)?\b|"
+    r"\b(print|show|dump|reveal|export)\b.{0,40}\b(spreadsheet|csv|\.csv)\b|"
     # Clear non-centre chit-chat — refuse without spamming the follow-up sheet
     r"\b(weather|temperature|forecast|climate)\b.{0,50}\b("
     r"tokyo|london|paris|beijing|shanghai|seoul|sydney|new\s+york|nyc|"
