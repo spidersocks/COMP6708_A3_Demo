@@ -26,7 +26,6 @@ const DEMO_PROBES = [
   { label: "Location", text: "Where are you located?" },
   { label: "Friend guest", text: "Can I bring my friend to the trial class?" },
   { label: "Phonics seats", text: "How many seats are left in Saturday phonics?" },
-  { label: "Trial slots", text: "Show trial class availability" },
   { label: "Book Jason", text: "Can I book a class for Jason next week?" },
   { label: "Cancel class", text: "Can I cancel Jason's class next Tuesday?" },
   { label: "Unknown ask", text: "Does BrightNest offer scuba diving for toddlers?" },
@@ -94,7 +93,7 @@ function routeMeta(route) {
     return { label: "Cancel dialogue", tone: "book" };
   }
   if (route === "booking_tool") {
-    return { label: "Booking tool", tone: "book" };
+    return { label: "Availability (chat)", tone: "book" };
   }
   if (route === "rag") {
     return { label: "RAG retrieve → generate", tone: "rag" };
@@ -577,13 +576,9 @@ export default function BrightNestBotDemo() {
   const [chatHistory, setChatHistory] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [courses, setCourses] = useState([]);
-  const [courseKey, setCourseKey] = useState("trial");
   const [parentName, setParentName] = useState("Demo Parent");
   const [childName, setChildName] = useState("Jason Chan");
   const [phone, setPhone] = useState("+852 9000 0000");
-  const [lastBooking, setLastBooking] = useState(null);
-  const [pendingSlot, setPendingSlot] = useState(null);
   const [sessionLabel, setSessionLabel] = useState(() => shortSessionLabel());
   const [trace, setTrace] = useState(null);
   const [apiOnline, setApiOnline] = useState(null);
@@ -616,10 +611,6 @@ export default function BrightNestBotDemo() {
     fetch(`${API_BASE}/healthz`)
       .then((r) => setApiOnline(r.ok))
       .catch(() => setApiOnline(false));
-    fetch(`${API_BASE}/courses`)
-      .then((r) => r.json())
-      .then((d) => setCourses(d.courses || []))
-      .catch(() => {});
     refreshSchedule();
     refreshAdminTodos();
     refreshStaffMessages();
@@ -702,8 +693,6 @@ export default function BrightNestBotDemo() {
     const finish = () => {
       setChatHistory([]);
       setError(null);
-      setLastBooking(null);
-      setPendingSlot(null);
       setTrace(null);
       setAdminTodos([]);
       setStaffMessages([]);
@@ -797,11 +786,10 @@ export default function BrightNestBotDemo() {
           message: data.answer || "(no answer)",
           time: formatTime(),
           citations: data.citations || [],
-          slots: data.slots || null,
           provider: data.provider,
         },
       ]);
-      // Dialogue / tool bookings mutate chat_bookings.csv — keep the register in sync
+      // Dialogue bookings mutate chat_bookings.csv — keep the register in sync
       if (
         data.booking ||
         nextTrace.route === "booking_dialogue" ||
@@ -819,49 +807,6 @@ export default function BrightNestBotDemo() {
       );
     } finally {
       setIsLoading(false);
-    }
-  }
-
-  async function bookSlot(slot) {
-    setPendingSlot(slot);
-    setCourseKey(slot.course_key || courseKey);
-    try {
-      const res = await fetch(`${API_BASE}/bookings`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          course_key: slot.course_key || courseKey,
-          slot_start: slot.slot_start,
-          parent_name: parentName || "Demo Parent",
-          child_name: childName || "Demo Child",
-          phone: phone || "+852 9000 0000",
-          notes: "Booked from COMP6708 technical demo UI",
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Booking failed");
-      setLastBooking(data);
-      setChatHistory((prev) => [
-        ...prev,
-        {
-          role: "bot",
-          message:
-            `Booking confirmed!\n` +
-            `• Ref: ${data.id}\n` +
-            `• ${data.course_label}\n` +
-            `• ${data.slot_display}\n` +
-            `• ${data.teacher_name || "Teacher TBC"}` +
-            (data.room ? ` · ${data.room}` : ""),
-          time: formatTime(),
-          booking: data,
-        },
-      ]);
-      // Refresh admin register so seats_left / later dates update in the inspector
-      refreshSchedule();
-    } catch (err) {
-      setError(err.message || "Booking failed");
-    } finally {
-      setPendingSlot(null);
     }
   }
 
@@ -884,10 +829,19 @@ export default function BrightNestBotDemo() {
     route === "opening_hours" ||
     route === "severe_weather";
   const ragOpen = route === "rag" || Boolean(enrichMode);
-  const bookingOpen =
+  const registerOpen =
     route === "booking_tool" || route === "booking_dialogue" || route === "cancel_dialogue";
   const dialogue = trace?.booking;
   const cancelTrace = trace?.cancel;
+  const dialogueSummary = cancelTrace?.stage
+    ? `Cancel chat · ${cancelTrace.stage}${
+        cancelTrace.child_name ? ` · ${cancelTrace.child_name}` : ""
+      }`
+    : dialogue?.stage
+      ? `Booking chat · ${dialogue.stage}${
+          dialogue.child_name ? ` · ${dialogue.child_name}` : ""
+        }${dialogue.course_key ? ` · ${dialogue.course_key}` : ""}`
+      : null;
   const teachers = schedule?.teachers || [];
   const scheduleDays = useMemo(() => {
     const days = schedule?.days || [];
@@ -1063,31 +1017,6 @@ export default function BrightNestBotDemo() {
                       <WaMarkdown>{msg.message}</WaMarkdown>
                     ) : (
                       <p className="bn-msg-text">{msg.message}</p>
-                    )}
-
-                    {msg.slots?.length > 0 && (
-                      <div className="bn-slots">
-                        {msg.slots.slice(0, 4).map((slot) => (
-                          <div className="bn-slot" key={slot.slot_start}>
-                            <div>
-                              <strong>{slot.slot_display}</strong>
-                              <span>
-                                {slot.course_label}
-                                {slot.teacher_name ? ` · ${slot.teacher_name}` : ""}
-                                {slot.room ? ` · ${slot.room}` : ""}
-                                {` · ${slot.seats_left} left`}
-                              </span>
-                            </div>
-                            <button
-                              type="button"
-                              disabled={!!pendingSlot}
-                              onClick={() => bookSlot(slot)}
-                            >
-                              Book
-                            </button>
-                          </div>
-                        ))}
-                      </div>
                     )}
                     <span className="bn-time">{msg.time || formatTime()}</span>
                   </div>
@@ -1955,7 +1884,7 @@ export default function BrightNestBotDemo() {
             key={`register-${turnKey}`}
             title="Class register"
             summary={scheduleSummary}
-            defaultOpen={bookingOpen}
+            defaultOpen={registerOpen}
           >
             <p className="bn-note">
               Backed by local CSV admin sheets (teachers, windows, sessions, enrolments,
@@ -1968,6 +1897,14 @@ export default function BrightNestBotDemo() {
                 </>
               ) : null}
             </p>
+            {dialogueSummary ? (
+              <p className="bn-note">
+                Active WhatsApp dialogue: <strong>{dialogueSummary}</strong>
+                {dialogue?.child_schedule?.length
+                  ? ` · ${dialogue.child_schedule.length} upcoming on file`
+                  : ""}
+              </p>
+            ) : null}
             <div className="bn-register-filters">
               <label>
                 Teacher
@@ -2042,108 +1979,6 @@ export default function BrightNestBotDemo() {
                   ) : null
                 )}
               </div>
-            )}
-          </Reveal>
-
-          <Reveal
-            key={`book-${turnKey}`}
-            title="Booking tool"
-            summary={
-              cancelTrace?.stage
-                ? `cancel · ${cancelTrace.stage}${
-                    cancelTrace.child_name ? ` · ${cancelTrace.child_name}` : ""
-                  }`
-                : dialogue?.stage
-                  ? `${dialogue.stage}${dialogue.child_name ? ` · ${dialogue.child_name}` : ""}${
-                      dialogue.course_key ? ` · ${dialogue.course_key}` : ""
-                    }`
-                  : trace?.booking?.course_key
-                    ? `${trace.booking.course_key} · ${trace.booking.slot_count ?? 0} slots`
-                    : trace?.route === "booking_tool"
-                      ? `live seats · ${trace?.booking?.slot_count ?? "open"} slots`
-                      : "Idle — try book / cancel for Jason"
-            }
-            defaultOpen={bookingOpen}
-          >
-            <p className="bn-note">
-              Identity comes from the messaging number (<code>families.csv</code>). Demo
-              number <code>+852 9000 0000</code> → Demo Parent / Jason Chan + Mia Chan.
-            </p>
-            {dialogue?.child_schedule?.length > 0 && (
-              <ul className="bn-child-sched">
-                {dialogue.child_schedule.slice(0, 4).map((s) => (
-                  <li key={s.slot_start}>
-                    <strong>{s.slot_display}</strong>
-                    <span>
-                      {s.course_label} · {s.teacher_name}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-            <div className="bn-book-grid">
-              <label>
-                Course
-                <select value={courseKey} onChange={(e) => setCourseKey(e.target.value)}>
-                  {(courses.length
-                    ? courses
-                    : [
-                        { key: "trial", label: "Trial Assessment" },
-                        { key: "phonics", label: "Phonics" },
-                      ]
-                  ).map((c) => (
-                    <option key={c.key} value={c.key}>
-                      {c.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Parent
-                <input value={parentName} onChange={(e) => setParentName(e.target.value)} />
-              </label>
-              <label>
-                Child
-                <input value={childName} onChange={(e) => setChildName(e.target.value)} />
-              </label>
-              <label>
-                Phone
-                <input value={phone} onChange={(e) => setPhone(e.target.value)} />
-              </label>
-            </div>
-            <div className="bn-book-actions">
-              <button
-                type="button"
-                className="bn-secondary"
-                disabled={isLoading}
-                onClick={() => sendMessage(`Can I book a class for ${childName.split(" ")[0]} next week?`)}
-              >
-                Start booking dialogue
-              </button>
-              <button
-                type="button"
-                className="bn-secondary"
-                disabled={isLoading}
-                onClick={() =>
-                  sendMessage(`Can I cancel ${childName.split(" ")[0]}'s class next Tuesday?`)
-                }
-              >
-                Start cancel dialogue
-              </button>
-              <button
-                type="button"
-                className="bn-secondary"
-                disabled={isLoading}
-                onClick={() => sendMessage(`Show availability for ${courseKey}`)}
-              >
-                Browse slots only
-              </button>
-            </div>
-            {lastBooking && (
-              <p className="bn-note">
-                Last booking <code>{lastBooking.id}</code> · {lastBooking.slot_display}
-                {lastBooking.teacher_name ? ` · ${lastBooking.teacher_name}` : ""}
-              </p>
             )}
           </Reveal>
 
