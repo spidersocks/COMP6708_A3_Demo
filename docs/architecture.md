@@ -47,7 +47,8 @@ flowchart TB
 | Typhoon / Christmas / hours | Structured / calendar | Must not be guessed |
 | Phonics fee | Fee guide tool | Published numbers |
 | Private 1:1 explainer | RAG | Narrative KB |
-| Saturday seats | Booking tool | Live CSV register |
+| Saturday seats | Availability (chat) | Live CSV register |
+| Book Jason / assessment Yes | Booking dialogue | Sticky FSM → SheetPro |
 | Scuba | Unknown programme | Honest refuse + sheet |
 | Allergy emergency | Escalation | Human + inbox |
 

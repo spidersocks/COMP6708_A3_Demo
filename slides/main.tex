@@ -146,7 +146,7 @@
       \begin{itemize}\setlength\itemsep{0.15em}
         \item Scores are \textbf{fixed detector awards}, not RAG sim
         \item Soft FAQ: grounded compose (card $>$ KB)
-        \item Hard tools (T8, seats, book) bypass retrieve
+        \item Hard FSM (book / cancel / escalate) bypasses retrieve
         \item Cheap arbiter only if low confidence
       \end{itemize}
       \vspace{0.35em}
@@ -163,8 +163,8 @@
     \toprule
     \textbf{Tier} & \textbf{Examples} & \textbf{RAG role} \\
     \midrule
-    Hard FSM / hand-off & Book dialogue, cancel, escalate, refuse & Bypass \\
-    Grounded compose & Typhoon+HKO, seats+tool gate, fees, allergy & Live doc + KB enrich \\
+    Hard FSM / hand-off & Book / cancel dialogue, escalate, refuse & Bypass \\
+    Grounded compose & Typhoon+HKO, seats, fees, allergy & Live doc + KB enrich \\
     Pure RAG & Private 1:1, multi-topic narrative & Full generate \\
     \bottomrule
   \end{tabular}}
@@ -194,7 +194,7 @@
 
     % Row 2 — three clear branches under router
     \node[box, below left=0.7cm and 0.05cm of route] (tools)
-      {\textbf{Hard tools}\\{\scriptsize T8 · seats · book}};
+      {\textbf{Hard FSM}\\{\scriptsize book · cancel · escalate}};
     \node[box, below=0.7cm of route] (compose)
       {\textbf{Grounded compose}\\{\scriptsize card + KB enrich}};
     \node[box, below right=0.7cm and 0.05cm of route] (rag)
@@ -202,7 +202,7 @@
 
     % Row 3
     \node[cloud, below=0.55cm of tools] (adapt) {Tone adapt\\{\scriptsize bypass RAG}};
-    \node[cloud, below=0.55cm of compose] (ds) {Qwen compose\\{\scriptsize card wins}};
+    \node[cloud, below=0.55cm of compose] (ds) {Qwen compose\\{\scriptsize T8 · seats · fees}};
     \node[cloud, below=0.55cm of rag] (gen) {Chroma + Qwen\\{\scriptsize citations}};
 
     \draw[arr] (ui) -- (api);
@@ -226,24 +226,24 @@
 \begin{frame}{What you will see live}{\thesection}
   \begin{columns}[T]
     \begin{column}{0.48\textwidth}
-      \textbf{Parent chat}
+      \textbf{Parent chat (WhatsApp-shaped)}
       \begin{itemize}
         \item Messaging surface + probes
-        \item Bookable seat cards
+        \item Chat only --- no booking form / Book buttons
       \end{itemize}
       \vspace{0.4em}
       \textbf{System inspector}
       \begin{itemize}
-        \item Router decision (rules fired / idle)
-        \item RAG chunks: expand, rank, score
-        \item Session memory: expand turns
+        \item Router decision + score ledger
+        \item Grounding mode · RAG expand
+        \item Class register · session memory
       \end{itemize}
     \end{column}
     \begin{column}{0.48\textwidth}
       \textbf{Staff desk}
       \begin{itemize}
-        \item Follow-up sheet (soft gaps)
-        \item Gmail-style urgent inbox
+        \item SheetPro follow-ups (gaps / assessment)
+        \item MailBox urgent inbox
       \end{itemize}
       \vspace{0.5em}
       \begin{block}{5-minute rule}
@@ -261,10 +261,10 @@
     \toprule
     \textbf{Beat} & \textbf{Show} & \textbf{Point at} \\
     \midrule
-    1 & Typhoon & Score 1.0 hard\_regex · grounding bypass \\
+    1 & Typhoon & Score 1.0 · live/policy privileged \\
     2a & Phonics fee & fees=0.90 ledger · grounded compose \\
     2b & RAG · Private 1:1 & Pure retrieve · expand chunk \\
-    3 & Saturday seats $\rightarrow$ Book & Live register + cards \\
+    3 & Seats $\rightarrow$ Book Jason & Chat seats · register · assessment$\rightarrow$SheetPro \\
     4 & Scuba (unknown) & Follow-up \textbf{SheetPro} row \\
     5 & Safety allergy call & \textbf{MailBox} urgent mail \\
     \bottomrule

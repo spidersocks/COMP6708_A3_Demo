@@ -1,53 +1,26 @@
-# PowerPoint outline — COMP6708 Assignment 3
+# Slides outline — Assignment3-Group15
 
-Suggested file name on submission: `Assignment3-GroupX.pptx` (plus this repo / zip as needed).
+**Source:** `slides/main.tex`  
+**PDF:** `slides/Assignment3-Group15.pdf` (also `slides/main.pdf`)  
+**Compile:** `pdflatex main.tex` twice from `slides/`
 
-Keep slides sparse — the live system carries 70% of the grade.
+Supporting material only — live demo is 70% of the grade.  
+Talk track: [demo-script.md](demo-script.md) · System truth: [TEAM.md](TEAM.md).
 
----
+| # | Slide | Purpose |
+|---|-------|---------|
+| 1 | Title | BrightNest · Group 15 · full names · COMP logo · clean bg |
+| 2 | One sentence | Pitch line |
+| 3 | Problem | Scenario + opportunity (WhatsApp after-hours) |
+| 4 | Technique | RAG + hybrid router (scores ≠ retrieval sim) |
+| 5 | Three answer tiers | Hard FSM / grounded compose / pure RAG |
+| 6 | Architecture | Router → three branches diagram |
+| 7 | What you will see live | Chat-only UI · inspector · Staff desk (SheetPro / MailBox) |
+| 8 | Demo beats | Cue card: Typhoon → fees → RAG → seats/Book Jason → scuba → safety |
+| 9 | Impact & why it works | Impact + creativity + evaluation |
+| 10 | Closing | Tagline + full team + COMP |
+| 11 | Q&A | Template end card |
 
-## Slide 1 — Title
+**Demo beat 3 (updated):** no Book buttons — chat seat counts + conversational booking; assessment Yes → SheetPro.
 
-- **BrightNest Learning Centre Assistant**
-- COMP6708 Mini Demo · Group X
-- Tagline: Grounded after-hours help for parents (RAG + booking tools)
-
-## Slide 2 — Problem & scenario
-
-- HK bilingual learning centres get repetitive WhatsApp/parent questions after hours
-- Staff cannot answer 24/7; wrong answers about fees/hours are costly
-- Opportunity: LLM assistant grounded in centre knowledge + soft booking
-
-## Slide 3 — Technique choice: RAG (+ light tools)
-
-- Why RAG (not fine-tuning): docs change weekly; training-free; citations
-- Pipeline: chunk markdown → embed (DashScope) → Chroma retrieve → Qwen generate
-- Tools: opening hours, availability, booking (structured, demo-safe)
-
-## Slide 4 — Architecture
-
-Diagram (also in README):
-
-```
-UI (OSS/CDN) → FastAPI (SAE/ECS) → RAG (Chroma) → DashScope Qwen
-                              ↘ booking SQLite
-                              ↘ content/*.md
-```
-
-## Slide 5 — Implementation highlights
-
-- Isolated monorepo (not production tutoring stack)
-- Self-built RAG (not AWS Bedrock Knowledge Base)
-- Multilingual KB (en / zh-HK / zh-CN)
-- UI shows **sources** + **bookable slots**
-
-## Slide 6 — Impact & evaluation (qualitative)
-
-- Faster parent triage; fewer missed after-hours leads
-- Groundedness via citations; fallback when offline
-- Demo metrics you can mention: index size, top-k, latency feel
-
-## Slide 7 — Thank you / Q&A
-
-- Repo + live URL
-- Contact / group members
+Assets: `src/PolyU/title-bg-clean.jpg` (no campus building), `gallery/polyu-comp-logo.png`, PolyU mark on every slide.

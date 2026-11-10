@@ -25,7 +25,7 @@
 3. Hit **Reset** once (clean chat + desk).
 4. Slides on a second screen / phone — **do not** fullscreen slides over the demo.
 5. Spotter: hotspot ready if Wi-Fi dies → localhost backup.
-6. Cold-rehearse probes: **Typhoon → Phonics fee → RAG · Private 1:1 → Phonics seats → Unknown ask → Safety call**.
+6. Cold-rehearse probes: **Typhoon → Phonics fee → RAG · Private 1:1 → Phonics seats → Book Jason → Unknown ask → Safety call**.
 
 ---
 
@@ -47,18 +47,18 @@
 **Show:** Technique slide briefly, then Architecture, then **back to live UI**.
 
 **Narrator (technical — this is Advanced Big Data Computing):**
-> Training-free on purpose. Centre documents change every week, so we do **not** fine-tune a model. We use **RAG** — chunk our own markdown KB, embed with DashScope, store in Chroma, retrieve top-k, generate with Qwen. On top sits a **hybrid intent router**. Important: the router’s **scores are not retrieval similarities** — hard detectors award fixed numbers (allergy 0.95, fees 0.90, typhoon 1.0); you can open the **score ledger** in the inspector and see every award, blend, and conflict clear. Soft FAQ routes then do **grounded compose**: structured fact card stays privileged, KB chunks may enrich. Hard tools — typhoon, seats, booking, escalation — still **bypass** retrieve. Self-built pipeline, SAE + public web.
+> Training-free on purpose. Centre documents change every week, so we do **not** fine-tune a model. We use **RAG** — chunk our own markdown KB, embed with DashScope, store in Chroma, retrieve top-k, generate with Qwen. On top sits a **hybrid intent router**. Important: the router’s **scores are not retrieval similarities** — hard detectors award fixed numbers (allergy 0.95, fees 0.90, typhoon 1.0); you can open the **score ledger** in the inspector and see every award, blend, and conflict clear. Soft FAQ routes then do **grounded compose**: structured fact card stays privileged, KB chunks may enrich. Hard FSM paths — booking dialogue, cancel, escalation — **bypass** retrieve. The parent surface is WhatsApp-shaped: **chat only**, no fake booking form. Self-built pipeline, SAE + public web.
 
 **Pilot:** Optional 2-second point at Architecture, then live UI.
 
 ---
 
-### 1:20–1:55 · Beat 1 — Typhoon = structured tool (not RAG)
+### 1:20–1:55 · Beat 1 — Typhoon = structured tool (not pure RAG)
 
 **Show:** Probe **Typhoon**.
 
 **Say:**
-> Watch **Router decision**. Severe-weather fires at score 1.0 from hard_regex. We still **retrieve** general weather advice from the KB, but a **live HKO / policy doc is privileged** — Answer grounding shows grounded compose, not a hard RAG bypass. The model may elaborate; it must not invent a different signal.
+> Watch **Router decision**. Severe-weather fires at score 1.0 from hard_regex. We still **retrieve** general weather advice from the KB, but a **live HKO / policy doc is privileged** — Answer grounding shows grounded compose. The model may elaborate; it must not invent a different signal.
 
 **Point at:** Match cue · grounding (live doc + enrich) · RAG enrichment panel · score ledger.
 
@@ -84,25 +84,27 @@
 
 ---
 
-### 2:35–3:20 · Beat 3 — Live seats + booking
+### 2:35–3:20 · Beat 3 — Live seats + WhatsApp booking
 
-**Show:** Probe **Phonics seats**.
+**Show A:** Probe **Phonics seats**.
 
 **Say:**
-> Seat counts come from the admin register — CSV-backed tool — the model is not inventing capacity. Here are bookable cards.
+> Seat counts come from the admin **Class register** — CSV-backed — the model is not inventing capacity. The answer stays in the chat, the way WhatsApp would.
 
-**Pilot:** Tap **Book** on one card if time; show confirmation id. Flash class register if useful.
+**Pilot:** Expand **Class register** if useful (opens on booking-related routes).
 
-**Say (if book):**
-> Provisional after-hours capture — no payment — staff confirm later.
+**Show B (if time):** Probe **Book Jason**.
 
-**Backup:** Trial slots · Book Jason.
+**Say:**
+> Multi-turn booking dialogue — sticky FSM, identity from the messaging number. If the parent names a programme like Little Sound Explorer, we confirm a diagnostic assessment and write a quiet **SheetPro** follow-up — we never promise outreach without a staff row.
+
+**Backup:** Cancel class · skip assessment demo if behind.
 
 ---
 
 ### 3:20–4:00 · Beat 4 — Soft gap → Follow-up sheet
 
-**Show:** Probe **Unknown ask** (scuba). Switch **Staff desk → Follow-up sheet**.
+**Show:** Probe **Unknown ask** (scuba). Switch **Staff desk → SheetPro**.
 
 **Say:**
 > We do not invent programmes we do not offer. Parent gets an honest refuse; staff get a Sheets-style follow-up row — quiet research queue, not a hallucination.
@@ -113,7 +115,7 @@
 
 ### 4:00–4:40 · Beat 5 — Safety → Gmail inbox
 
-**Show:** Probe **Safety call**. Switch **Staff inbox**.
+**Show:** Probe **Safety call**. Switch **MailBox**.
 
 **Say:**
 > Allergy reaction after class — urgent. Parent hears a safety-aware reply. Staff get a Gmail-style draft: call now, child name, phone, quoted message.
@@ -137,10 +139,10 @@
 
 1. **Problem:** “Imagine you run a tutoring centre — parents ask the same things after hours; staff cannot live on WhatsApp.”
 2. **Hire joke:** “So you hired us — Group 15 — and a couple of weeks later we built BrightNest.”
-3. **Technique:** “Training-free RAG plus a hybrid router so typhoons and seats are tools, not guesses.”
-4. **Typhoon:** “Rule fires at 1.0 — arbiter skipped — RAG skipped — policy plus fluency rewrite.”
+3. **Technique:** “Training-free RAG plus a hybrid router — scores are detector awards, not retrieval similarities.”
+4. **Typhoon:** “Score 1.0 hard_regex — live policy privileged — KB may enrich — no invented signal.”
 5. **RAG:** “Expand the chunk — rank, score, full text — that is our retrieve then generate.”
-6. **Seats:** “Live register — not the model inventing capacity.”
+6. **Seats / book:** “Live register in chat — book by conversation, not a fake form — assessment Yes lands on SheetPro.”
 7. **Safety:** “When a child may be hurt, we escalate — we do not chat forever.”
 8. **Close:** “Grounded answers. Structured actions. Honest hand-offs.”
 
@@ -152,16 +154,17 @@
 |---------|----------------|
 | API offline | Spotter: hotspot / localhost; Narrator covers architecture 20s |
 | Wrong route | Open **Router decision** — narrate which rule fired; probe **Friend guest** (fast structured) |
-| Typhoon “no RAG” | That is correct — explain skip; switch to **RAG · Private 1:1** |
+| Typhoon looks “soft” | Open **Answer grounding** — narrate privileged live/policy doc |
 | Slow RAG | Narrator: “DashScope generate — watch the step rail” |
 | Empty inbox | Re-send **Safety call**; refresh Staff desk |
-| Booking fail | Stay on seat list; skip Book |
+| Booking stalls | Stay on chat copy + Class register; skip assessment follow-up |
 
 ---
 
 ## What not to do
 
 - Do not claim phonics fee is RAG — it is the fees tool.
+- Do not look for Book buttons or a Booking tool panel — removed on purpose (WhatsApp).
 - Do not read PowerPoint for more than ~20 seconds total.
 - Do not apologise at length for latency — narrate the pipeline.
 - Do not mention real customer data (BrightNest is fictional).

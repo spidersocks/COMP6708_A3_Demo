@@ -81,7 +81,7 @@ Entry: `backend/router.py::chat`.
 | Step | Module | What you see on `trace` |
 |------|--------|-------------------------|
 | 1. Language | `get_language_code` | `language` |
-| 2. History | `get_recent_history` | `history.turns[]` (full window for the inspector) |
+| 2. History | `get_recent_history` | `history.turns[]` + full `history.preview` (exact LLM context string) |
 | 3. Intent | `intent_router.decide_intent` | `routing.{scores, rules_evaluated, decision_path, winning_rule, match_summary}` |
 | 4. Hours follow-up | promote “tomorrow?” after an hours turn | may rewrite `rag` → `opening_hours` |
 | 5. Branch | tool / RAG / escalation / unknown | `route`, `pipeline_steps[]`, domain payloads |
@@ -96,11 +96,11 @@ BrightNest does **not** treat every structured hit the same. After the router pi
 | Tier | Routes (examples) | What runs | RAG? |
 |------|-------------------|-----------|------|
 | **1 · Hard FSM / hand-off** | `booking_dialogue`, `cancel_*`, `staff_escalation`, `off_domain`, `unknown_programme` | Sticky dialogue / inbox / refuse. Optional tone adapt. | **Bypass** |
-| **2 · Grounded compose** | `severe_weather`, `opening_hours`, `booking_tool`, `allergy`, `fees`, `teachers`, … | **Live doc** (HKO / register) + structured card → retrieve KB → compose (docs privileged). Seat browse: LLM `[[TOOL_OK]]` / `[[TOOL_SKIP]]` before exposing bookable cards. | **Enrich only** |
+| **2 · Grounded compose** | `severe_weather`, `opening_hours`, `booking_tool`, `allergy`, `fees`, `teachers`, … | **Live doc** (HKO / register) + structured card → retrieve KB → compose (docs privileged). Seat browse keeps the live register privileged. | **Enrich only** |
 | **3 · Pure RAG** | `rag` (default / multi-topic) | Retrieve → generate with citations | **Full** generate |
 
 **Weather:** live HKO status (when available) is a privileged live doc; centre severe-weather policy is the structured card; KB may add general advice.  
-**Seats:** live register text is privileged; interactive slot cards only appear if the tool gate returns OK.
+**Seats / booking (WhatsApp-shaped):** answers stay in chat text. Named programmes (e.g. Little Sound Explorer) stay in `booking_dialogue` → `confirm_assessment` → **Yes** writes a SheetPro `assessment_request` row. There is **no** separate “Booking tool” form or in-chat Book buttons in the demo UI.
 
 Flag: `GROUNDING_ENRICH_ENABLED` (default true). Enrich top‑k: `GROUNDING_ENRICH_TOP_K` (default 3).
 
@@ -217,9 +217,10 @@ These are the stories the demo is built to tell. Each row is what you should see
 
 | Parent says | Cue | Route |
 |-------------|-----|-------|
-| `仲有冇位？` | `有冇位` / `冇位` as **seat browse** | `booking_tool` → live CSV seats |
+| `仲有冇位？` | `有冇位` / `冇位` as **seat browse** | `booking_tool` → live CSV seats **in chat text** |
 | `冇位，可以候補嗎` | waitlist language (`候補` / full-class) | `waiting` → waitlist policy fact |
 | `有冇位同月費幾多？` | strong availability **wins over** fees | `booking_tool` (`availability>fees`) |
+| “Book Jason” → “Little Sound Explorers” → “Yes” | named programme + affirm | `booking_dialogue` → assessment queued → **SheetPro** |
 
 #### D. Private 1:1 — real RAG
 
@@ -245,8 +246,8 @@ These are the stories the demo is built to tell. Each row is what you should see
 | `off_domain` | politics / foreign-city weather / crypto / malware | 0.98 | refuse, no todo |
 | `severe_weather` | `_WEATHER_POLICY_RE` (T8, black rain, 風球…) | 1.0 | `facts/severe_weather.json` + adapt |
 | `fees` | `_FEE_RE` minus `_FEE_DURATION_RE` | 0.9 | `facts/fees.json` + adapt |
-| `booking_tool` | `_AVAIL_STRONG_RE` / seat browse | 0.85–0.95 | CSV `seats_left` cards |
-| `booking_dialogue` | book verbs + sticky state | ~0.85 | multi-turn book FSM |
+| `booking_tool` | `_AVAIL_STRONG_RE` / seat browse | 0.85–0.95 | CSV `seats_left` answered in chat |
+| `booking_dialogue` | book verbs + sticky / named programmes | ~0.85 | multi-turn book FSM (+ assessment → SheetPro) |
 | `cancel_dialogue` | cancel verbs + sticky | 0.95 | multi-turn cancel FSM |
 | `opening_hours` | `detect_opening_hours_intent` | 0.8 | calendar engine |
 | `unknown_programme` | catalogue miss | 0.95 | refuse + sheet row |
@@ -316,16 +317,17 @@ Flow: intent → `format_*_answer` → citations pointing at JSON/MD → `adapt_
 
 CSV under `backend/data/sheets/`: teachers, windows, sessions, enrolments, trial_slots, families.
 
-- `booking_tool`: `seats_left = capacity − enrolments`, return bookable `slots[]`.
+- `booking_tool`: `seats_left = capacity − enrolments` → **chat answer** (live register privileged under grounded compose). Demo UI does **not** render clickable Book cards.
 - `booking_dialogue` / `cancel_dialogue`: session-sticky FSM; identity from `phone` → `families.csv`.
+- Named English programmes (Little Sound Explorer, Smart Spell, …) map into register keys and open `confirm_assessment`; affirmative → SheetPro `assessment_request`.
 - Confirmed chat books append `chat_bookings.csv` (provisional, no payment).
 
 ### 4.4 Staff surfaces
 
 | Surface | Store | Trigger |
 |---------|-------|---------|
-| Follow-up sheet | `admin_todos` | unknown programme / soft RAG gap |
-| Inbox | `staff_messages` | escalation categories |
+| Follow-up sheet | `admin_todos` | unknown programme / soft RAG gap / assessment confirm / outreach promise |
+| Inbox | `staff_messages` | escalation categories (safety / angry / ask-human / …) |
 | Email draft | `staff_email` | optional outbound; body kept for inbox UI |
 
 Parent chat copy never names internal sheets.
@@ -399,27 +401,30 @@ Used by: RAG prompt, fact adapt, hours follow-up (“tomorrow?”), arbiter hist
 
 ## 8. Demo UI contract
 
-**Left:** parent chat + probe chips + seat cards.  
-**Right — System tab:**
+WhatsApp-shaped: parents only chat. No Booking-tool form, no in-chat Book buttons.
 
-1. Route pill + pipeline step rail
-2. **Router decision** — match summary (highlighted cue) → path → expandable rule map
-3. Hours / holiday / weather panel
-4. RAG hits (rank, score, full chunk) — only when route is RAG
-5. Register, booking, session memory
+**Left:** parent chat + probe chips.  
+**Right — System tab** (scrolls when panels expand):
 
-**Right — Staff desk:** Sheets-style follow-ups (formula bar shows full cell text) | Gmail-style inbox (`**bold`** rendered).
+1. Route pill + pipeline step rail + **Answer grounding**
+2. **Router decision** — match summary (highlighted cue) → path → score ledger → expandable rule map
+3. Hours / holiday / weather panel (HKO + holiday checks)
+4. RAG hits (rank, score, full chunk) — pure RAG or enrich mode
+5. **Class register** (opens on book/cancel) + session memory (full `history.preview`)
+
+**Right — Staff desk:** SheetPro follow-ups | MailBox inbox (aligned with the phone widget).
 
 Canonical probes:
 
 | Probe | Expected route | What to point at |
 |-------|----------------|------------------|
-| Typhoon | `severe_weather` | Match cue + RAG skipped |
-| Phonics fee / `月費幾多？` | `fees` | Highlighted fee cue |
-| RAG · Private 1:1 | `rag` | Chunk rank/score/text |
-| Phonics seats / `仲有冇位？` | `booking_tool` | Seat cards from CSV |
-| Unknown ask | `unknown_programme` | Follow-up sheet row |
-| Safety call | `staff_escalation` | Inbox + email draft |
+| Typhoon | `severe_weather` | Match cue + grounding (live/policy privileged) |
+| Phonics fee / `月費幾多？` | `fees` | Highlighted fee cue · ledger |
+| RAG · Private 1:1 | `rag` | Chunk rank/score/text · `pure_rag` |
+| Phonics seats | `booking_tool` | Chat seat counts + Class register |
+| Book Jason | `booking_dialogue` | Sticky FSM · register · optional assessment → SheetPro |
+| Unknown ask | `unknown_programme` | SheetPro follow-up row |
+| Safety call | `staff_escalation` | MailBox + email draft |
 
 ---
 
