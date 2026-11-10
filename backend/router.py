@@ -725,6 +725,13 @@ def chat(req: ChatRequest) -> ChatResponse:
         from services import staff_email
 
         esc = decision.debug.get("escalation") or escalation_svc.detect_escalation(message)
+        # Soft prototypes can award this route without the hard detector — never 500
+        if not isinstance(esc, dict) or not esc.get("category"):
+            esc = {
+                "category": "ask_human",
+                "priority": "high",
+                "summary": "Follow up: parent asked to speak with a staff member",
+            }
         todo_parent, todo_child = _family_names()
         topic = escalation_svc.topic_hint_from_message(message, esc["category"])
         answer = escalation_svc.parent_reply(

@@ -717,6 +717,10 @@ def score_intents(
             why="No structured scores remained — default RAG floor 0.5",
         )
 
+    # Hard-only: prototypes must not invent a staff hand-off without the detector
+    if "staff_escalation" in scores and not debug.get("escalation"):
+        _clear("staff_escalation", "escalation_requires_hard_detector")
+
     # Final per-route origin snapshot for the inspector.
     # Prefer the hard award as the story ("fees=0.90 from regex"); blend may
     # adjust the numeric score but must not hide the detector source.
