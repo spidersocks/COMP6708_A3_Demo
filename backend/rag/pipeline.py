@@ -632,6 +632,7 @@ def _corrective_retrieve(
         "retried": False,
     }
     chosen = pass1
+    pass2: Optional[Dict[str, Any]] = None
     if grade["grade"] != "correct":
         try:
             from services import demo_polish
@@ -676,11 +677,48 @@ def _corrective_retrieve(
     return {
         "pack": chosen,
         "pass1": pass1,
+        "pass2": pass2,
         "grade": grade,
         "rewrite": rewrite,
         "lang_fallback": bool(
             chosen.get("lang_fallback") or pass1.get("lang_fallback")
         ),
+    }
+
+
+def _pack_citations(pack: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not pack:
+        return []
+    return [
+        _citation_from_hit(rank, h)
+        for rank, h in enumerate(pack.get("hits") or [], start=1)
+    ]
+
+
+def _retrieval_debug_fields(corr: Dict[str, Any], *, message: str) -> Dict[str, Any]:
+    """Shared inspector fields: pass-1 always; pass-2 only after corrective retry."""
+    pack = corr["pack"]
+    pass1 = corr["pass1"]
+    pass2 = corr.get("pass2")
+    rewrite = corr["rewrite"]
+    pass1_hits = _pack_citations(pass1)
+    pass2_hits = _pack_citations(pass2) if pass2 else []
+    final_hits = _pack_citations(pack)
+    return {
+        "pass1_query": message,
+        "pass1_hits": pass1_hits,
+        "pass1_hit_count": len(pass1_hits),
+        "pass2_query": (rewrite.get("pass2_query") or rewrite.get("query"))
+        if rewrite.get("retried")
+        else None,
+        "pass2_hits": pass2_hits or None,
+        "pass2_hit_count": len(pass2_hits) if pass2_hits else 0,
+        "final_pass": rewrite.get("kept")
+        or ("pass2" if rewrite.get("retried") and pack is pass2 else "pass1"),
+        "retrieval_query": pack.get("query") or message,
+        "query_rewrite": rewrite,
+        "retrieval_grade": corr["grade"],
+        "hits": final_hits,
     }
 
 
@@ -705,12 +743,11 @@ def retrieve_for_enrich(
     )
     pack = corr["pack"]
     hits = pack["hits"]
-    citations = [_citation_from_hit(rank, h) for rank, h in enumerate(hits, start=1)]
     stats = _score_stats(hits)
-    search_q = pack.get("query") or message
+    fields = _retrieval_debug_fields(corr, message=message)
     return {
         "hits": hits,
-        "citations": citations,
+        "citations": fields["hits"],
         "debug": {
             "mode": "grounded_enrich",
             "hit_count": len(hits),
@@ -723,16 +760,17 @@ def retrieve_for_enrich(
             "order_rule": (
                 "lexical then vector score — age/path/folder/overlap beat raw similarity"
             ),
-            "retrieval_query": search_q,
-            "query_rewrite": corr["rewrite"],
-            "retrieval_grade": corr["grade"],
+            "keep_rule": (
+                f"Pass 1 always uses the raw parent message. "
+                f"Pass 2 only if grade ≠ Correct and a rewrite fires (pool_k={pool_k}, top_k={k})."
+            ),
             "embedding_mode": "dashscope" if SETTINGS.has_dashscope else "local_hash",
-            "hits": citations,
             "top_score": stats["rank1_score"],
             "rank1_score": stats["rank1_score"],
             "max_score": stats["max_score"],
             "knowledge_gap": False,
             "gap_reason": None,
+            **fields,
         },
     }
 
@@ -770,9 +808,10 @@ def chat_with_rag(
         history_context=history_context,
     )
     answer = gen.get("answer") or ""
-    citations = [_citation_from_hit(rank, h) for rank, h in enumerate(hits, start=1)]
     stats = _score_stats(hits)
     top_score = stats["rank1_score"]
+    fields = _retrieval_debug_fields(corr, message=message)
+    citations = fields["hits"]
 
     gap_reason = None
     provider = gen.get("provider") or ""
@@ -829,25 +868,22 @@ def chat_with_rag(
         "pool_k": pool_k,
         "pool_returned": pool_returned,
         "keep_rule": (
-            f"Ask Chroma for pool_k={pool_k}; keep up to top_k={keep_k} after "
-            "lexical re-rank. Fewer hits ⇒ language filter / index had fewer matches "
-            "(not a random subset)."
+            f"Pass 1 always retrieves with the raw parent message "
+            f"(pool_k={pool_k}, keep top_k={keep_k}). "
+            "Pass 2 only after a failed grade + rewrite."
         ),
         "order_rule": (
             "Not sorted by similarity alone. Order: age filename match → "
             "path/keyword → preferred folder → token overlap → vector score."
         ),
-        "retrieval_query": search_q,
-        "query_rewrite": rewrite,
-        "retrieval_grade": corr["grade"],
         "history_chars": len(history_context or ""),
         "embedding_mode": "dashscope" if SETTINGS.has_dashscope else "local_hash",
-        "hits": citations,
         "top_score": top_score,
         "rank1_score": stats["rank1_score"],
         "max_score": stats["max_score"],
         "knowledge_gap": bool(gap_reason),
         "gap_reason": gap_reason,
         "admin_gap_note": gen.get("admin_gap"),
+        **fields,
     }
     return out

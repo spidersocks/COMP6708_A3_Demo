@@ -38,11 +38,12 @@ const LAYOUT = {
   fsm: { x: -168, y: 560, w: 140, h: 46 },
   rag: { x: 168, y: 560, w: 140, h: 46 },
   live: { x: -168, y: 650, w: 140, h: 46 },
-  rewrite: { x: 168, y: 650, w: 148, h: 46 },
-  chroma: { x: 168, y: 740, w: 124, h: 58 },
-  sheets: { x: -168, y: 840, w: 132, h: 58 },
-  llm: { x: 40, y: 840, w: 156, h: 46 },
-  answer: { x: 0, y: 940, w: 156, h: 42 },
+  chroma: { x: 168, y: 650, w: 132, h: 58 },
+  rewrite: { x: 168, y: 740, w: 148, h: 46 },
+  chroma2: { x: 168, y: 830, w: 132, h: 58 },
+  sheets: { x: -168, y: 930, w: 132, h: 58 },
+  llm: { x: 40, y: 930, w: 156, h: 46 },
+  answer: { x: 0, y: 1030, w: 156, h: 42 },
 };
 
 const EDGES = [
@@ -58,18 +59,46 @@ const EDGES = [
   { id: "e-fsm-live", from: "fsm", to: "live", dashed: true },
   { id: "e-fsm-llm", from: "fsm", to: "llm" },
   { id: "e-fsm-sheets", from: "fsm", to: "sheets" },
-  { id: "e-rag-rewrite", from: "rag", to: "rewrite" },
-  { id: "e-rewrite-chroma", from: "rewrite", to: "chroma" },
-  { id: "e-chroma-llm", from: "chroma", to: "llm" },
+  { id: "e-rag-chroma", from: "rag", to: "chroma" },
+  { id: "e-chroma-rewrite", from: "chroma", to: "rewrite" },
+  { id: "e-rewrite-chroma2", from: "rewrite", to: "chroma2", dashed: true },
+  { id: "e-chroma2-llm", from: "chroma2", to: "llm", dashed: true },
+  { id: "e-rewrite-llm", from: "rewrite", to: "llm" },
   { id: "e-live-llm", from: "live", to: "llm", dashed: true },
-  { id: "e-live-rewrite", from: "live", to: "rewrite", dashed: true },
+  { id: "e-live-chroma", from: "live", to: "chroma", dashed: true },
   { id: "e-llm-answer", from: "llm", to: "answer" },
   { id: "e-sheets-answer", from: "sheets", to: "answer" },
 ];
 
-const WORLD = { minX: -340, minY: -28, maxX: 340, maxY: 1000 };
+const WORLD = { minX: -340, minY: -28, maxX: 340, maxY: 1100 };
+/** Default Fit: top of the spine (parent → path), not the whole flowchart. */
+const FIT_FOCUS = { minX: -210, minY: -24, maxX: 230, maxY: 460 };
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2.0;
+const PAN_MARGIN = 72;
+
+function clampPan(pan, zoom, vw, vh, margin = PAN_MARGIN) {
+  const L = WORLD.minX * zoom;
+  const R = WORLD.maxX * zoom;
+  const T = WORLD.minY * zoom;
+  const B = WORLD.maxY * zoom;
+  let minX = margin - R;
+  let maxX = vw - margin - L;
+  let minY = margin - B;
+  let maxY = vh - margin - T;
+  if (minX > maxX) {
+    const mid = ((WORLD.minX + WORLD.maxX) / 2) * zoom;
+    minX = maxX = vw / 2 - mid;
+  }
+  if (minY > maxY) {
+    const mid = ((WORLD.minY + WORLD.maxY) / 2) * zoom;
+    minY = maxY = vh / 2 - mid;
+  }
+  return {
+    x: Math.min(maxX, Math.max(minX, pan.x)),
+    y: Math.min(maxY, Math.max(minY, pan.y)),
+  };
+}
 
 function llmRoleLabel(role) {
   const raw = String(role || "");
@@ -383,6 +412,74 @@ function RagHit({ hit, index }) {
   );
 }
 
+function ChromaHitsPanel({
+  title,
+  query,
+  hits,
+  rag,
+  stripExtra,
+  emptyHint,
+}) {
+  const list = hits || [];
+  const stats = {
+    rank1: scoreLabel(list[0]?.score),
+    max: scoreLabel(
+      list.reduce(
+        (m, h) =>
+          Math.max(m, Number.isFinite(Number(h.score)) ? Number(h.score) : m),
+        -Infinity
+      ) === -Infinity
+        ? null
+        : list.reduce(
+            (m, h) =>
+              Math.max(m, Number.isFinite(Number(h.score)) ? Number(h.score) : m),
+            -Infinity
+          )
+    ),
+  };
+  return (
+    <>
+      {title ? <p className="bn-rules-hint">{title}</p> : null}
+      {query ? (
+        <ul className="bn-fact-list">
+          <li>
+            <span>Query</span>
+            <code>{query}</code>
+          </li>
+        </ul>
+      ) : null}
+      <div className="bn-rag-strip">
+        <span>hits {list.length}</span>
+        <span>#1 {stats.rank1 ?? "—"}</span>
+        <span>max {stats.max ?? "—"}</span>
+        {rag?.embedding_mode ? <span>{rag.embedding_mode}</span> : null}
+        {stripExtra}
+      </div>
+      {!list.length ? (
+        <Skipped>{emptyHint || "No chunks for this pass."}</Skipped>
+      ) : (
+        <>
+          <StageIO
+            request={{ query: query || null }}
+            payload={list.map((h) => ({
+              rank: h.rank,
+              source: h.source,
+              score: h.score,
+              title: h.title,
+              order: h.rerank?.why || null,
+            }))}
+          />
+          <ul className="bn-hits">
+            {list.map((h, i) => (
+              <RagHit key={`${h.source}-${h.rank || i}`} hit={h} index={i} />
+            ))}
+          </ul>
+        </>
+      )}
+    </>
+  );
+}
+
 function RuleEvidence({ rule, defaultOpen = false, isWinner = false }) {
   const [open, setOpen] = useState(Boolean(defaultOpen));
   useEffect(() => {
@@ -642,10 +739,6 @@ function NodeDetail({
               </code>
             </li>
           </ul>
-          <p className="bn-rules-hint">
-            Prior turns only. Contextual retrieval rewrite (if any) is the{" "}
-            <strong>Query rewrite</strong> node on the RAG arm.
-          </p>
           <StageIO
             request={`session ${trace.session_id || "—"}`}
             payload={priorPreview || "(no prior turns)"}
@@ -657,25 +750,23 @@ function NodeDetail({
     case "rewrite": {
       const qr = rag?.query_rewrite || null;
       const grade = rag?.retrieval_grade || null;
+      const weakHits = rag?.pass1_hits || [];
       const ran = Boolean(
         hits.length || enrichMode || path === "rag" || qr || grade
       );
       if (!ran) {
-        return <Skipped>Retrieve did not run — rewrite not evaluated.</Skipped>;
+        return <Skipped>Pass-1 retrieve did not run — nothing to grade.</Skipped>;
       }
       return (
         <>
           <p className="bn-rules-hint">
-            {qr?.rule ||
-              "CRAG-lite (Yan et al., 2024) + Self-RAG-style retry: retrieve → grade Correct/Ambiguous/Incorrect → only if not Correct and prior chat exists, cheap-rewrite once and re-retrieve (max 1)."}
+            Grade pass-1 chunks (Correct / Ambiguous / Incorrect). Only if not
+            Correct and prior chat exists: cheap-rewrite once, then optional
+            pass-2 retrieve. CRAG-lite · max 1 retry.
           </p>
           <ul className="bn-fact-list">
             <li>
-              <span>Protocol</span>
-              <code>{qr?.protocol || "CRAG-lite"}</code>
-            </li>
-            <li>
-              <span>Pass-1 grade</span>
+              <span>Grade</span>
               <code>
                 {grade?.grade || qr?.grade || "—"}
                 {grade?.why || qr?.grade_why
@@ -684,45 +775,59 @@ function NodeDetail({
               </code>
             </li>
             <li>
-              <span>Retry</span>
+              <span>Rewrite</span>
               <code>
-                {qr?.retried
-                  ? `yes · kept ${qr?.kept || "pass2"}`
-                  : qr?.reason || "no"}
+                {qr?.rewritten
+                  ? "yes"
+                  : qr?.called
+                    ? qr?.reason || "called"
+                    : qr?.reason || "no"}
               </code>
             </li>
             <li>
-              <span>Rewritten</span>
-              <code>{qr?.rewritten ? "yes" : "no"}</code>
-            </li>
-            <li>
-              <span>Called LLM</span>
-              <code>{qr?.called ? "yes" : "no"}</code>
+              <span>Pass-2</span>
+              <code>
+                {qr?.retried
+                  ? `fired · kept ${qr?.kept || "—"}`
+                  : "not fired"}
+              </code>
             </li>
           </ul>
           <StageIO
             request={{
-              parent: inbound,
+              pass1_query: rag?.pass1_query || inbound,
               prior: priorPreview || "(no prior turns)",
-              pass1_query: qr?.original || inbound,
             }}
             payload={{
               grade: grade || { grade: qr?.grade, why: qr?.grade_why },
-              retrieval_query: rag?.retrieval_query || inbound,
-              query_rewrite: qr || null,
+              rewrite: qr
+                ? {
+                    rewritten: qr.rewritten,
+                    query: qr.query,
+                    reason: qr.reason,
+                    retried: qr.retried,
+                    kept: qr.kept,
+                  }
+                : null,
             }}
           />
           {qr?.rewritten ? (
             <ul className="bn-fact-list">
               <li>
-                <span>Pass 1</span>
-                <code>{qr.original || inbound}</code>
-              </li>
-              <li>
-                <span>Pass 2</span>
+                <span>Rewritten query</span>
                 <code>{qr.pass2_query || qr.query}</code>
               </li>
             </ul>
+          ) : null}
+          {(grade?.grade || qr?.grade) &&
+          (grade?.grade || qr?.grade) !== "correct" &&
+          weakHits.length > 0 ? (
+            <ChromaHitsPanel
+              title="Pass-1 chunks graded not enough (inspect):"
+              query={rag?.pass1_query || inbound}
+              hits={weakHits}
+              rag={rag}
+            />
           ) : null}
           {llmCalls
             .filter((c) => c.role === "query_rewrite")
@@ -1129,77 +1234,73 @@ function NodeDetail({
         </>
       );
 
-    case "chroma":
-      if (!(hits.length || enrichMode || path === "rag")) {
-        return <Skipped>KB retrieve did not run.</Skipped>;
-      }
-      if (!hits.length) {
-        return <Skipped>Retrieve ran but no chunks returned.</Skipped>;
+    case "chroma": {
+      const pass1 = rag?.pass1_hits || hits;
+      if (!(pass1.length || enrichMode || path === "rag")) {
+        return <Skipped>Pass-1 KB retrieve did not run.</Skipped>;
       }
       return (
         <>
           <p className="bn-rules-hint">
-            {rag?.keep_rule ||
-              `Ask Chroma for pool_k=${rag?.pool_k ?? "—"}, keep up to top_k=${
-                rag?.top_k ?? "—"
-              }. Fewer than top_k means the language filter / index had fewer matches — not a random subset.`}
-          </p>
-          <p className="bn-rules-hint">
+            Always runs first with the <strong>raw parent message</strong>.{" "}
             {rag?.order_rule ||
-              "Order is lexical then vector score (age → keyword path → folder → token overlap → similarity). Highest score is not always #1."}
+              "Order: age → keyword path → folder → token overlap → vector score."}
           </p>
-          <div className="bn-rag-strip">
-            <span>index {rag?.index_size ?? "—"}</span>
-            <span>
-              pool {rag?.pool_returned ?? "—"}/{rag?.pool_k ?? "—"}
-            </span>
-            <span>
-              keep {rag?.hit_count ?? hits.length}/{rag?.top_k ?? "—"}
-            </span>
-            <span>
-              #1 {scoreLabel(rag?.rank1_score ?? rag?.top_score ?? hits[0]?.score) ?? "—"}
-            </span>
-            <span>max {scoreLabel(rag?.max_score) ?? "—"}</span>
-            <span>{rag?.embedding_mode || "—"}</span>
-            {enrichMode ? <span>enrich</span> : null}
-          </div>
-          {rag?.retrieval_query &&
-          rag.retrieval_query !== inbound ? (
-            <ul className="bn-fact-list">
-              <li>
-                <span>Parent said</span>
-                <code>{inbound}</code>
-              </li>
-              <li>
-                <span>Retrieved with</span>
-                <code>{rag.retrieval_query}</code>
-              </li>
-            </ul>
-          ) : null}
-          <StageIO
-            request={{
-              parent: inbound,
-              retrieval_query: rag?.retrieval_query || inbound,
-              language: trace.language,
-              mode: enrichMode ? "grounded_enrich" : "retrieve",
-              pool_k: rag?.pool_k ?? null,
-              top_k: rag?.top_k ?? null,
-            }}
-            payload={hits.map((h) => ({
-              rank: h.rank,
-              source: h.source,
-              score: h.score,
-              title: h.title,
-              order: h.rerank?.why || null,
-            }))}
+          <ChromaHitsPanel
+            title={
+              enrichMode
+                ? "Pass 1 · grounded enrich retrieve"
+                : "Pass 1 · raw-query retrieve"
+            }
+            query={rag?.pass1_query || inbound}
+            hits={pass1}
+            rag={rag}
+            stripExtra={
+              <>
+                <span>
+                  pool {rag?.pool_returned ?? "—"}/{rag?.pool_k ?? "—"}
+                </span>
+                <span>top_k {rag?.top_k ?? "—"}</span>
+                <span>index {rag?.index_size ?? "—"}</span>
+              </>
+            }
+            emptyHint="Pass 1 returned no chunks."
           />
-          <ul className="bn-hits">
-            {hits.map((h, i) => (
-              <RagHit key={`${h.source}-${h.rank || i}`} hit={h} index={i} />
-            ))}
-          </ul>
         </>
       );
+    }
+
+    case "chroma2": {
+      const retried = Boolean(rag?.query_rewrite?.retried);
+      const pass2 = rag?.pass2_hits || [];
+      if (!(path === "rag" || enrichMode || hits.length)) {
+        return <Skipped>RAG path not taken.</Skipped>;
+      }
+      if (!retried) {
+        return (
+          <Skipped>
+            Pass 2 not fired — pass-1 grade was enough (or no rewrite).
+          </Skipped>
+        );
+      }
+      return (
+        <>
+          <p className="bn-rules-hint">
+            Optional second retrieve with the <strong>rewritten</strong> query
+            after pass-1 was graded not Correct. Final answer uses the better of
+            pass 1 / pass 2 (kept: {rag?.final_pass || rag?.query_rewrite?.kept || "—"}
+            ).
+          </p>
+          <ChromaHitsPanel
+            title="Pass 2 · rewritten-query retrieve"
+            query={rag?.pass2_query || rag?.query_rewrite?.query}
+            hits={pass2}
+            rag={rag}
+            emptyHint="Pass 2 fired but returned no chunks."
+          />
+        </>
+      );
+    }
 
     case "llm": {
       const genCalls = llmCalls.filter(
@@ -1211,8 +1312,7 @@ function NodeDetail({
       return (
         <>
           <p className="bn-rules-hint">
-            Main LLM calls via DashScope (Qwen). Corrective query rewrite lives
-            on the Query rewrite node; arbiter / final-check on theirs.
+            Main LLM calls via DashScope (Qwen).
           </p>
           {genCalls.length === 0 ? (
             <Skipped>No LLM call (template / deterministic reply).</Skipped>
@@ -1504,31 +1604,44 @@ export default function TurnPipeline({
         status: !hasTrace ? "idle" : liveOn ? "done" : "skipped",
       },
       {
+        id: "chroma",
+        label: "KB · pass 1",
+        kind: "store",
+        shape: "cylinder",
+        status: !hasTrace
+          ? "idle"
+          : (rag?.pass1_hits || hits).length || rag?.pass1_hit_count
+            ? "done"
+            : path === "rag" || enrichMode
+              ? "empty"
+              : "skipped",
+      },
+      {
         id: "rewrite",
-        label: "Query rewrite",
+        label: "Grade · rewrite",
         kind: "llm",
         shape: "process",
         status: !hasTrace
           ? "idle"
           : !(path === "rag" || enrichMode || hits.length)
             ? "skipped"
-            : rag?.query_rewrite?.rewritten || rag?.query_rewrite?.retried
+            : rag?.retrieval_grade || rag?.query_rewrite
               ? "done"
-              : rag?.retrieval_grade || rag?.query_rewrite
-                ? "done"
-                : "skipped",
+              : "skipped",
       },
       {
-        id: "chroma",
-        label: "Chroma KB",
+        id: "chroma2",
+        label: "KB · pass 2",
         kind: "store",
         shape: "cylinder",
         status: !hasTrace
           ? "idle"
-          : hits.length || rag?.hit_count
-            ? "done"
-            : path === "rag" || enrichMode
-              ? "empty"
+          : !(path === "rag" || enrichMode || hits.length)
+            ? "skipped"
+            : rag?.query_rewrite?.retried
+              ? (rag?.pass2_hits || []).length
+                ? "done"
+                : "empty"
               : "skipped",
       },
       {
@@ -1603,8 +1716,9 @@ export default function TurnPipeline({
       lit.add("fsm");
       if (liveOn) lit.add("live");
       if (hits.length || enrichMode) {
-        lit.add("rewrite");
         lit.add("chroma");
+        lit.add("rewrite");
+        if (rag?.query_rewrite?.retried) lit.add("chroma2");
       }
       if (
         adminTodo ||
@@ -1616,8 +1730,9 @@ export default function TurnPipeline({
       }
     } else if (path === "rag") {
       lit.add("rag");
-      lit.add("rewrite");
       lit.add("chroma");
+      lit.add("rewrite");
+      if (rag?.query_rewrite?.retried) lit.add("chroma2");
       if (liveOn) lit.add("live");
       if (adminTodo) lit.add("sheets");
     }
@@ -1634,6 +1749,7 @@ export default function TurnPipeline({
     llmCalls,
     adminTodo,
     staffMessage,
+    rag?.query_rewrite?.retried,
   ]);
 
   const litEdgeIds = useMemo(() => {
@@ -1663,19 +1779,32 @@ export default function TurnPipeline({
     if (on("fsm") && on("live")) link("fsm", "live", "e-fsm-live");
     if (on("fsm") && on("llm")) link("fsm", "llm", "e-fsm-llm");
     if (on("fsm") && on("sheets")) link("fsm", "sheets", "e-fsm-sheets");
-    if (on("rag") && on("rewrite")) link("rag", "rewrite", "e-rag-rewrite");
-    if (on("rewrite") && on("chroma")) {
-      link("rewrite", "chroma", "e-rewrite-chroma");
+    if (on("rag") && on("chroma")) link("rag", "chroma", "e-rag-chroma");
+    if (on("chroma") && on("rewrite")) {
+      link("chroma", "rewrite", "e-chroma-rewrite");
     }
-    if (on("chroma") && on("llm")) link("chroma", "llm", "e-chroma-llm");
+    if (on("rewrite") && on("chroma2") && rag?.query_rewrite?.retried) {
+      link("rewrite", "chroma2", "e-rewrite-chroma2");
+      if (on("chroma2") && on("llm")) link("chroma2", "llm", "e-chroma2-llm");
+    } else if (on("rewrite") && on("llm")) {
+      link("rewrite", "llm", "e-rewrite-llm");
+    }
     if (on("live") && on("llm")) link("live", "llm", "e-live-llm");
-    if (on("live") && on("rewrite") && enrichMode) {
-      link("live", "rewrite", "e-live-rewrite");
+    if (on("live") && on("chroma") && enrichMode) {
+      link("live", "chroma", "e-live-chroma");
     }
     if (on("llm")) link("llm", "answer", "e-llm-answer");
     if (on("sheets")) link("sheets", "answer", "e-sheets-answer");
     return lit;
-  }, [trace, activePath, statusById, arbiter, path, enrichMode]);
+  }, [
+    trace,
+    activePath,
+    statusById,
+    arbiter,
+    path,
+    enrichMode,
+    rag?.query_rewrite?.retried,
+  ]);
 
   const edgeLabels = useMemo(() => {
     // Only scores / decisions — not narrative labels on every hop.
@@ -1696,22 +1825,25 @@ export default function TurnPipeline({
               : ""
           }`
         : "";
+    const pass1 = rag?.pass1_hits || hits;
     const labels = {
       "e-rules-router": pick ? `→ ${pick}` : "",
       "e-arb-path": arbiter?.called ? arbiter.action || "keep" : "",
       "e-path-fsm": path === "fsm" ? "FSM" : "",
       "e-path-rag": path === "rag" ? "RAG" : "",
-      "e-rag-rewrite": rag?.retrieval_grade?.grade
-        ? String(rag.retrieval_grade.grade)
-        : "",
-      "e-rewrite-chroma": rag?.query_rewrite?.retried
-        ? "retry ×1"
-        : rag?.query_rewrite?.reason === "retrieval_ok"
-          ? "pass-1 ok"
-          : "",
-      "e-chroma-llm":
-        hits.length && scoreLabel(hits[0]?.score)
-          ? `sim ${scoreLabel(hits[0]?.score)}`
+      "e-rag-chroma": "raw query",
+      "e-chroma-rewrite":
+        (rag?.retrieval_grade?.grade
+          ? String(rag.retrieval_grade.grade)
+          : "grade") +
+        (pass1[0]?.score != null && scoreLabel(pass1[0].score)
+          ? ` · ${scoreLabel(pass1[0].score)}`
+          : ""),
+      "e-rewrite-chroma2": rag?.query_rewrite?.retried ? "retry ×1" : "",
+      "e-rewrite-llm": rag?.query_rewrite?.retried ? "" : "no retry",
+      "e-chroma2-llm":
+        rag?.query_rewrite?.retried && scoreLabel(rag?.pass2_hits?.[0]?.score)
+          ? `sim ${scoreLabel(rag.pass2_hits[0].score)}`
           : "",
     };
     return labels;
@@ -1724,19 +1856,24 @@ export default function TurnPipeline({
     if (el.offsetParent === null && el.getClientRects().length === 0) return false;
     const { width, height } = el.getBoundingClientRect();
     if (width < 120 || height < 120) return false;
-    const gw = WORLD.maxX - WORLD.minX;
-    const gh = WORLD.maxY - WORLD.minY;
-    const pad = 36;
+    const gw = FIT_FOCUS.maxX - FIT_FOCUS.minX;
+    const gh = FIT_FOCUS.maxY - FIT_FOCUS.minY;
+    const pad = 28;
     const nextZoom = Math.min(
       MAX_ZOOM,
-      Math.max(MIN_ZOOM, Math.min((width - pad) / gw, (height - pad) / gh) * 0.98)
+      Math.max(
+        MIN_ZOOM,
+        Math.min((width - pad) / gw, (height - pad) / gh) * 1.08
+      )
     );
-    const cx = (WORLD.minX + WORLD.maxX) / 2;
-    const cy = (WORLD.minY + WORLD.maxY) / 2;
-    const nextPan = {
+    const cx = (FIT_FOCUS.minX + FIT_FOCUS.maxX) / 2;
+    // Bias upward so parent/lang sit near the top of the viewport
+    const cy = FIT_FOCUS.minY + (FIT_FOCUS.maxY - FIT_FOCUS.minY) * 0.38;
+    const rawPan = {
       x: width / 2 - cx * nextZoom,
-      y: height / 2 - cy * nextZoom,
+      y: height * 0.28 - cy * nextZoom,
     };
+    const nextPan = clampPan(rawPan, nextZoom, width, height);
     zoomRef.current = nextZoom;
     panRef.current = nextPan;
     setZoom(nextZoom);
@@ -1814,7 +1951,12 @@ export default function TurnPipeline({
       const next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * factor));
       const wx = (mx - p.x) / z;
       const wy = (my - p.y) / z;
-      const nextPan = { x: mx - wx * next, y: my - wy * next };
+      const nextPan = clampPan(
+        { x: mx - wx * next, y: my - wy * next },
+        next,
+        rect.width,
+        rect.height
+      );
       zoomRef.current = next;
       panRef.current = nextPan;
       setZoom(next);
@@ -1846,7 +1988,17 @@ export default function TurnPipeline({
     const dy = e.clientY - d.y;
     if (Math.abs(dx) + Math.abs(dy) > 4) d.moved = true;
     if (!d.moved) return;
-    const next = { x: d.panX + dx, y: d.panY + dy };
+    const el = viewportRef.current;
+    const { width, height } = el?.getBoundingClientRect?.() || {
+      width: 0,
+      height: 0,
+    };
+    const next = clampPan(
+      { x: d.panX + dx, y: d.panY + dy },
+      zoomRef.current,
+      width || 1,
+      height || 1
+    );
     panRef.current = next;
     setPan(next);
   };
@@ -1882,10 +2034,23 @@ export default function TurnPipeline({
           <button
             type="button"
             onClick={() => {
+              const el = viewportRef.current;
+              const { width, height } = el?.getBoundingClientRect?.() || {
+                width: 0,
+                height: 0,
+              };
               const z = zoomRef.current;
               const next = Math.min(MAX_ZOOM, z * 1.12);
+              const nextPan = clampPan(
+                panRef.current,
+                next,
+                width || 1,
+                height || 1
+              );
               zoomRef.current = next;
+              panRef.current = nextPan;
               setZoom(next);
+              setPan(nextPan);
             }}
             title="Zoom in"
             aria-label="Zoom in"
@@ -1895,10 +2060,23 @@ export default function TurnPipeline({
           <button
             type="button"
             onClick={() => {
+              const el = viewportRef.current;
+              const { width, height } = el?.getBoundingClientRect?.() || {
+                width: 0,
+                height: 0,
+              };
               const z = zoomRef.current;
               const next = Math.max(MIN_ZOOM, z / 1.12);
+              const nextPan = clampPan(
+                panRef.current,
+                next,
+                width || 1,
+                height || 1
+              );
               zoomRef.current = next;
+              panRef.current = nextPan;
               setZoom(next);
+              setPan(nextPan);
             }}
             title="Zoom out"
             aria-label="Zoom out"
