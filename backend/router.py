@@ -370,6 +370,32 @@ def chat(req: ChatRequest) -> ChatResponse:
                 detail,
             )
         )
+    policy = (decision.debug or {}).get("action_policy") or {}
+    if policy:
+        override = (decision.debug or {}).get("action_policy_override")
+        if not policy.get("called"):
+            pol_status = "skipped"
+        elif str(policy.get("reason") or "").startswith("error"):
+            pol_status = "error"
+        else:
+            pol_status = "done"
+        if override:
+            pol_detail = (
+                f"{override.get('from')} → {override.get('to')} · "
+                f"{policy.get('act')} {policy.get('confidence')}"
+            )
+        else:
+            pol_detail = (
+                f"{policy.get('act') or 'answer'} · {policy.get('reason') or 'n/a'}"
+            )
+        steps.append(
+            _step(
+                "action_policy",
+                "Action policy · tool or answer",
+                pol_status,
+                pol_detail,
+            )
+        )
 
     trace: Dict[str, Any] = {
         "language": lang,
@@ -1242,28 +1268,36 @@ def chat(req: ChatRequest) -> ChatResponse:
             f"{rag_debug.get('hit_count', 0)} hits · {result.get('provider')}",
         )
     )
-    # Never let RAG invent a completed booking — hand off to the trial/class FSM
-    if re.search(
-        r"\b(we(?:'ve| have) booked|i(?:'ve| have) booked|booked .{0,60} for|"
-        r"is on the register|booking ref)\b",
-        answer or "",
-        re.I,
-    ):
+    # Commit firewall: a draft may not claim a booking/cancel the tools did not write.
+    from services import action_policy
+
+    audit = action_policy.audit_draft(answer)
+    trace["commit_audit"] = audit
+    fake = action_policy.draft_is_fake_commit(audit)
+    steps.append(
+        _step(
+            "commit_audit",
+            "Commit audit · draft vs tools",
+            "skipped" if not audit.get("called") else "done",
+            f"{audit.get('commit') or 'none'} · {audit.get('reason') or 'n/a'}",
+        )
+    )
+    if fake == "booked":
         todo_parent, todo_child = _family_names()
-        st = dialogue_svc.get_state(session_id) or {
-            "stage": "start",
-            "phone": phone or "",
-            "parent_name": todo_parent or parent_name or "",
-            "child_name": todo_child or child_name or "",
-            "course_key": "trial",
-            "hide_register": True,
-            "when": {},
-            "child_schedule": [],
-        }
-        if not st.get("course_key"):
-            st["course_key"] = "trial"
-            st["hide_register"] = True
-        dialogue_svc.save_state(session_id, st)
+        if not dialogue_svc.get_state(session_id):
+            dialogue_svc.save_state(
+                session_id,
+                {
+                    "stage": "start",
+                    "phone": phone or "",
+                    "parent_name": todo_parent or parent_name or "",
+                    "child_name": todo_child or child_name or "",
+                    "course_key": None,
+                    "when": {},
+                    "child_schedule": [],
+                    "hide_register": False,
+                },
+            )
         rescued = dialogue_svc.handle_turn(
             session_id=session_id,
             message=message,
@@ -1275,14 +1309,6 @@ def chat(req: ChatRequest) -> ChatResponse:
         if rescued.get("answer") and not rescued.get("yield_to_rag"):
             tb = rescued.get("trace_booking") or {}
             trace["booking"] = tb
-            steps.append(
-                _step(
-                    "booking_dialogue",
-                    "Rescue fake RAG booking",
-                    "done",
-                    tb.get("stage") or "trial",
-                )
-            )
             return _fact_response(
                 route_name="booking_dialogue",
                 answer=rescued["answer"],
@@ -1290,22 +1316,53 @@ def chat(req: ChatRequest) -> ChatResponse:
                     {"source": "services/timetable", "title": "Centre class register"},
                 ],
                 provider="booking_dialogue",
+                extra_step=_step(
+                    "booking_dialogue",
+                    "Commit firewall → booking",
+                    "done",
+                    tb.get("stage") or "turn",
+                ),
                 slots=rescued.get("slots"),
-                debug={"dialogue": tb, "rescued_fake_booking": True},
+                debug={"dialogue": tb, "commit_firewall": "booked"},
                 adapt=False,
             )
         answer = (
-            "I can book that on the live register — I just need to confirm the seat first.\n\n"
-            "Share the class (Phonics / Trial / …) and a preferred day or time, "
-            "and I'll show open seats to lock in."
+            "I can book that on the live register — I need to lock a real seat first.\n\n"
+            "Tell me the class and a day or time, and I'll show what's open."
         )
-        steps.append(
-            _step(
-                "booking_dialogue",
-                "Rescue fake RAG booking",
-                "done",
-                "rewrote_claim",
+    elif fake == "cancelled":
+        rescued_c = cancel_svc.handle_turn(
+            session_id=session_id,
+            message=message,
+            phone=phone,
+            parent_name=parent_name,
+            child_name_hint=child_name,
+            lang=lang,
+        )
+        if isinstance(rescued_c, dict) and rescued_c.get("answer") and not rescued_c.get(
+            "yield_to_rag"
+        ):
+            tc = rescued_c.get("trace_cancel") or rescued_c.get("trace") or {}
+            trace["cancel"] = tc
+            return _fact_response(
+                route_name="cancel_dialogue",
+                answer=rescued_c["answer"],
+                citations=[
+                    {"source": "services/cancellations", "title": "Cancellations sheet"},
+                ],
+                provider="cancel_dialogue",
+                extra_step=_step(
+                    "cancel_dialogue",
+                    "Commit firewall → cancel",
+                    "done",
+                    (tc or {}).get("stage") or "turn",
+                ),
+                debug={"cancel": tc, "commit_firewall": "cancelled"},
+                adapt=False,
             )
+        answer = (
+            "I haven't cancelled anything yet. Tell me the child and which class "
+            "to drop, and I'll take it off the register."
         )
     # Still surface hours parse when the query looked date-like but lost to RAG
     try:

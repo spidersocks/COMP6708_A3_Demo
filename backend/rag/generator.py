@@ -514,6 +514,8 @@ def _dashscope_generation_http(
     system = (
         "BrightNest centre admin. Use only provided excerpts/cards. "
         "No invented fees or seats. No Hello/Hi/你好 on follow-ups. "
+        "Never say a class, trial, or assessment is already booked, reserved, or cancelled — "
+        "offer to arrange it and ask for the missing detail. "
         "Never mention ADMIN_GAP tags, tools, or spreadsheets to the parent."
     )
     if multimodal:

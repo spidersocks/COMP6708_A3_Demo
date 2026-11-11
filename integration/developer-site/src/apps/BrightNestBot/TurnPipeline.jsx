@@ -9,6 +9,8 @@ import { createPortal } from "react-dom";
 
 const LLM_ROLE_LABELS = {
   intent_arbiter: "Intent arbiter (cheap)",
+  action_policy: "Action policy (cheap)",
+  commit_audit: "Commit audit (cheap)",
   grounded_compose: "Grounded compose (main)",
   fact_adapt: "Fact rewrite (main)",
   rag_generate: "RAG generate (main)",
@@ -1213,6 +1215,20 @@ function NodeDetail({
               <span>Why</span>
               <code>{whyShort}</code>
             </li>
+            {routing?.debug?.action_policy?.called ? (
+              <li>
+                <span>Action policy</span>
+                <code>
+                  {routing.debug.action_policy.act || "answer"} ·{" "}
+                  {routing.debug.action_policy_override
+                    ? `${routing.debug.action_policy_override.from} → ${routing.debug.action_policy_override.to}`
+                    : "kept RAG"}
+                  {routing.debug.action_policy.confidence != null
+                    ? ` · ${Number(routing.debug.action_policy.confidence).toFixed(2)}`
+                    : ""}
+                </code>
+              </li>
+            ) : null}
             {routing?.hours_followup_promoted ? (
               <li>
                 <span>Hours follow-up</span>

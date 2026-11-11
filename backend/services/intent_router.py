@@ -901,6 +901,43 @@ def decide_intent(
     except Exception as e:
         debug["arbiter"] = {"action": "keep", "route": route, "reason": f"error:{e}"}
 
+    # Detectors missed (RAG default). Cheap action policy may promote into a tool.
+    # It cannot demote a detector hit — that stays with the keep|rag arbiter above.
+    if route == "rag":
+        try:
+            from services import action_policy
+
+            hist_preview = ""
+            if history:
+                bits = []
+                for turn in history[-4:]:
+                    role = turn.get("role") or turn.get("speaker") or ""
+                    content = turn.get("content") or turn.get("message") or ""
+                    if content:
+                        bits.append(f"{role}: {content}")
+                hist_preview = "\n".join(bits)
+            verdict = action_policy.classify_turn(message, history_preview=hist_preview)
+            debug["action_policy"] = verdict
+            if action_policy.should_promote(verdict):
+                new_route = str(verdict.get("route") or "rag")
+                if new_route in _PRIORITY and new_route != route:
+                    debug["action_policy_override"] = {
+                        "from": route,
+                        "to": new_route,
+                        "act": verdict.get("act"),
+                        "confidence": verdict.get("confidence"),
+                    }
+                    cleaned = dict(cleaned)
+                    cleaned[new_route] = max(float(cleaned.get(new_route) or 0), 0.99)
+                    route = new_route
+        except Exception as e:
+            debug["action_policy"] = {
+                "called": False,
+                "act": "answer",
+                "route": "rag",
+                "reason": f"error:{e}",
+            }
+
     debug["rules_evaluated"] = _build_rules_evaluated(
         message, lang=lang, session_id=session_id, scores=cleaned, debug=debug
     )
