@@ -1833,7 +1833,10 @@ function NodeDetail({
         <>
           <p className="bn-rules-hint">
             Live feed (HKO, hours engine, register seats, weather card). Privileged
-            over KB when present.
+            over KB when present
+            {enrichMode
+              ? " — KB enrich continues via Pack · 3+2 (not the Dense/Sparse RAG arm)."
+              : "."}
           </p>
           {facts ? (
             <ul className="bn-fact-list">
@@ -2529,15 +2532,14 @@ export default function TurnPipeline({
         label: "Dense · Chroma",
         kind: "store",
         shape: "cylinder",
+        // Dual-channel cylinders only on the pure RAG arm (not FSM enrich).
         status: !hasTrace
           ? "idle"
-          : !(path === "rag" || enrichMode || hits.length || rag?.hybrid)
+          : path !== "rag"
             ? "skipped"
             : rag?.hybrid?.dense_count > 0 || (rag?.hybrid?.dense_top || []).length
               ? "done"
-              : path === "rag" || enrichMode
-                ? "empty"
-                : "skipped",
+              : "empty",
       },
       {
         id: "sparse",
@@ -2546,15 +2548,13 @@ export default function TurnPipeline({
         shape: "cylinder",
         status: !hasTrace
           ? "idle"
-          : !(path === "rag" || enrichMode || hits.length || rag?.hybrid)
+          : path !== "rag"
             ? "skipped"
             : rag?.hybrid?.sparse_count > 0 ||
                 (rag?.hybrid?.sparse_top || []).length
               ? "done"
-              : path === "rag" || enrichMode
-                ? isChannelPack(rag?.hybrid, rag)
-                  ? "empty"
-                  : "skipped"
+              : isChannelPack(rag?.hybrid, rag)
+                ? "empty"
                 : "skipped",
       },
       {
@@ -2683,9 +2683,18 @@ export default function TurnPipeline({
     ]);
     if (history?.enabled === false) lit.delete("memory");
     if (arbiter?.called) lit.add("arbiter");
-    const lightHybrid = () => {
+    // Pure RAG: dual-channel retrieve from the RAG node.
+    const lightRagHybrid = () => {
       lit.add("dense");
       lit.add("sparse");
+      lit.add("fuse");
+      lit.add("chroma");
+      lit.add("rewrite");
+      if (rag?.query_rewrite?.retried) lit.add("chroma2");
+    };
+    // FSM grounded-enrich (hours / weather / seats): live facts are primary;
+    // KB pack enters via live → fuse. Do NOT light dense/sparse (no edges in).
+    const lightEnrichSide = () => {
       lit.add("fuse");
       lit.add("chroma");
       lit.add("rewrite");
@@ -2706,7 +2715,7 @@ export default function TurnPipeline({
         lit.add("staffmail");
       }
       if (liveOn) lit.add("live");
-      if (hits.length || enrichMode) lightHybrid();
+      if (hits.length || enrichMode) lightEnrichSide();
       if (
         adminTodo ||
         staffMessage ||
@@ -2717,7 +2726,7 @@ export default function TurnPipeline({
       }
     } else if (path === "rag") {
       lit.add("rag");
-      lightHybrid();
+      lightRagHybrid();
       if (liveOn) lit.add("live");
       if (adminTodo) lit.add("sheets");
     }
@@ -2795,9 +2804,11 @@ export default function TurnPipeline({
     } else if (on("rewrite") && on("llm")) {
       link("rewrite", "llm", "e-rewrite-llm");
     }
-    if (on("live") && on("llm")) link("live", "llm", "e-live-llm");
+    // Hours/weather enrich: live → pack → ranked → grade → LLM (not a dangling dual-channel).
     if (on("live") && on("fuse") && enrichMode) {
       link("live", "fuse", "e-live-fuse");
+    } else if (on("live") && on("llm")) {
+      link("live", "llm", "e-live-llm");
     }
     if (on("llm")) link("llm", "answer", "e-llm-answer");
     if (on("sheets")) link("sheets", "answer", "e-sheets-answer");
@@ -2874,7 +2885,10 @@ export default function TurnPipeline({
         rag?.query_rewrite?.retried && rankedPassLabel(rag?.pass2_hits?.[0])
           ? rankedPassLabel(rag.pass2_hits[0])
           : "",
-      "e-live-fuse": enrichMode ? "enrich" : "",
+      "e-live-fuse":
+        enrichMode || (path === "fsm" && (hits.length || rag?.hybrid))
+          ? "KB enrich"
+          : "",
     };
     return labels;
   }, [
