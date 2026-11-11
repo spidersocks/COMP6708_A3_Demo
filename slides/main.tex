@@ -163,6 +163,59 @@
   \end{columns}
 \end{frame}
 
+\begin{frame}{Knowledge base structure}{\thesection}
+  \vspace{-0.35em}
+  \centering
+  \begin{tikzpicture}[
+    font=\scriptsize\sffamily,
+    box/.style={
+      draw=maincolor, line width=0.6pt, rounded corners=2pt,
+      align=center, inner xsep=3.5pt, inner ysep=2.5pt, fill=white
+    },
+    soft/.style={box, fill=maincolor!10},
+    meta/.style={box, fill=airforceblue!12, draw=airforceblue},
+    arr/.style={-{Latex[length=1.8mm]}, thick, darkgray!65}
+  ]
+    \node[soft, text width=2.35cm] (root) at (0,2.05)
+      {\textbf{\texttt{content/}}\\318 md · 3 langs};
+    \node[box, text width=1.5cm] (en) at (-3.05,0.8) {\textbf{en}\\106};
+    \node[box, text width=1.5cm] (hk) at (0,0.8) {\textbf{zh-HK}\\106};
+    \node[box, text width=1.5cm] (cn) at (3.05,0.8) {\textbf{zh-CN}\\106};
+    \draw[arr] (root) -- (en);
+    \draw[arr] (root) -- (hk);
+    \draw[arr] (root) -- (cn);
+
+    \node[soft, text width=9.2cm, align=left] (cats) at (0,-0.4) {%
+      \textbf{Per language (mirrored):}\;
+      faq 73 · courses 15 · policies 8 · institution 6 ·
+      marketing 2 · guides 1 · complaint 1\;
+      {\footnotesize(+ age bands $\times$10 in faq)}
+    };
+    \draw[arr] (en.south) -- ++(0,-0.2) -| (cats.north);
+    \draw[arr] (hk.south) -- (cats.north);
+    \draw[arr] (cn.south) -- ++(0,-0.2) -| (cats.north);
+
+    \node[meta, text width=4.4cm, align=left] (idx) at (-2.5,-1.7) {%
+      \textbf{Chroma index}\\
+      434 chunks · 900 / overlap 120\\
+      en 194 · zh-HK 121 · zh-CN 119
+    };
+    \node[meta, text width=4.4cm, align=left] (md) at (2.5,-1.7) {%
+      \textbf{Chunk metadata}\\
+      \texttt{source language canonical}\\
+      \texttt{type folder title chunk\_index}\\
+      YAML: \texttt{aliases} (retrieve-time)
+    };
+    \draw[arr] (cats.south) ++(-2.1,0) -- (idx.north);
+    \draw[arr] (cats.south) ++(2.1,0) -- (md.north);
+  \end{tikzpicture}
+
+  \vspace{0.25em}
+  {\raggedright\scriptsize
+  Tool facts (typhoon signals) sit in \texttt{backend/facts/severe\_weather.json};
+  grounded compose may still enrich from KB.}
+\end{frame}
+
 \begin{frame}{Three answer tiers}{\thesection}
   \renewcommand{\arraystretch}{1.32}
   {\small

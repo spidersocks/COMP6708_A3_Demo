@@ -44,21 +44,14 @@ def draft_boss_email(
         return out
 
     prompt = (
-        "Rewrite the staff hand-off email below so it reads like a clear, "
-        "professional internal email from BrightNest's chatbot to the centre desk.\n"
-        "Rules:\n"
-        "- Keep every fact (names, phone, child, priority, parent wording, bot reply).\n"
-        "- Warm, concise, action-oriented. Short paragraphs.\n"
-        "- Do not invent fees, medical details, or promises.\n"
-        "- Do not use markdown headings. Plain email prose is fine; bullets OK.\n"
-        "- Start with a greeting (Hi team,). End with a short sign-off.\n"
-        "- Output ONLY the email body (no Subject: line).\n\n"
-        f"Subject line (for context only): {subject}\n\n"
-        f"Draft:\n---\n{template}\n---\n"
+        "Polish this staff hand-off email: keep all facts, short prose, "
+        "Hi team + sign-off, no invented details, body only (no Subject).\n"
+        f"Subject (context): {subject}\n"
+        f"Draft:\n{template}\n"
     )
     polished = cheap_llm.complete_text(
         prompt,
-        system="You write internal centre-desk emails. Body only. No JSON.",
+        system="Internal centre-desk email body only.",
         max_tokens=320,
         temperature=0.35,
         role="staff_email",

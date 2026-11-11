@@ -104,25 +104,21 @@ def review_intent(
     )
 
     prompt = (
-        "BrightNest routing referee (COMP6708 demo).\n"
-        "Detectors proposed a route but the pick looks ambiguous. "
-        "KEEP if the tool can answer; RAG if the keyword match is incidental "
-        "or the ask needs KB narrative.\n"
-        "Do NOT invent other routes — only keep the proposed route or send to rag.\n"
-        "Reply with ONE JSON object only, no markdown:\n"
-        '{"action":"keep"|"rag","route":"<route_id>","reason":"<short>"}\n\n'
-        f"Proposed route: {proposed_route} — {_ROUTE_BLURBS.get(proposed_route, '')}\n"
-        f"Matcher notes: {hints}\n"
-        f"Top scores:\n{score_block}\n"
-        f"Allowed routes: {', '.join(allowed)}\n"
+        "Ambiguous route pick. KEEP if the tool fits; RAG if the match is incidental "
+        "or needs KB narrative. Only keep|rag — no other routes.\n"
+        'JSON: {"action":"keep"|"rag","route":"<id>","reason":"<short>"}\n\n'
+        f"Proposed: {proposed_route} — {_ROUTE_BLURBS.get(proposed_route, '')}\n"
+        f"Notes: {hints}\n"
+        f"Scores:\n{score_block}\n"
+        f"Allowed: {', '.join(allowed)}\n"
         f"{hist_block}"
-        f"Parent message: {message}\n"
+        f"Parent: {message}\n"
     )
 
     try:
         parsed = cheap_llm.complete_json(
             prompt,
-            system="Return only compact JSON for intent routing. No prose.",
+            system="JSON route keep|rag only.",
             max_tokens=80,
             role="intent_arbiter",
         )

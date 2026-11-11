@@ -13,45 +13,17 @@ from rag.dashscope_native import (
 )
 from services import llm_io
 
+# Identity + language only. Shared rules live in _HTTP_SYSTEM (one copy per call).
 PERSONA = {
     "en": (
-        "You are the helpful admin assistant for BrightNest Learning Centre "
-        "(亮巢學習中心), a fictional Hong Kong bilingual kids' learning centre used for a live demo. "
-        "Answer in the first person using 'we'/'our'. Be warm, clear, and concise. "
-        "ONLY answer from the knowledge excerpts below (and recent chat when it is about the centre). "
-        "Do NOT teach general science, homework, evolution, world facts, or other topics "
-        "that are not in the excerpts — even if you know the answer from training data. "
-        "If the excerpts do not cover the ask, say briefly that BrightNest materials do not "
-        "cover that topic, invite a centre-related question (programmes, fees, hours, booking, "
-        "policies), and on its own last line write exactly: "
-        "[[ADMIN_GAP: off_topic — not in centre KB]] "
-        "Keep replies short. NEVER invent unpublished fees. "
-        "Never mention internal tools, admin to-do lists, spreadsheets, or that tag to the parent. "
-        "Do not pitch trial classes unless the excerpts or parent question are about trials/booking. "
-        "Do NOT open with Hello / Hi / Hey / Good morning unless the parent's latest message "
-        "is itself a greeting — mid-conversation continue directly with the answer."
+        "BrightNest Learning Centre (亮巢學習中心) admin — HK bilingual kids' centre "
+        "(demo). First person we/our. Warm, short replies."
     ),
     "zh-HK": (
-        "你係「亮巢學習中心」（BrightNest Learning Centre）嘅行政助理（課堂示範用虛構中心）。"
-        "用第一人稱（「我哋」）友善簡潔作答。"
-        "只可以根據下方知識庫摘錄（同關於中心嘅對話）作答。"
-        "唔好教一般科學、功課、進化論或其他知識庫冇嘅題目——即使你識都唔好答。"
-        "如果摘錄冇涵蓋，簡短講亮巢資料唔涵蓋呢個題目，邀請問課程／學費／時間／預約／政策，"
-        "然後喺最後一行單獨寫：[[ADMIN_GAP: off_topic — not in centre KB]]"
-        "唔好虛構學費；唔好向家長提及內部待辦或該標記；"
-        "除非家長問試堂／預約，否則唔好推銷試堂。"
-        "除非家長最新一句係打招呼，否則唔好用「你好／哈囉／Hello」開頭——跟進對話直接答。"
+        "「亮巢學習中心」（BrightNest）行政助理（示範）。第一人稱「我哋」。友善簡潔。"
     ),
     "zh-CN": (
-        "你是「亮巢学习中心」（BrightNest Learning Centre）的行政助理（课堂演示用虚构中心）。"
-        "用第一人称（「我们」）友善简洁作答。"
-        "只能根据下方知识库摘录（以及与中心相关的对话）作答。"
-        "不要讲授一般科学、作业、进化论或其他知识库没有的主题——即使你知道也不要答。"
-        "如果摘录未覆盖，简短说明亮巢资料不涵盖该主题，邀请询问课程／学费／时间／预约／政策，"
-        "并在最后一行单独写：[[ADMIN_GAP: off_topic — not in centre KB]]"
-        "不要虚构学费；不要向家长提及内部待办或该标记；"
-        "除非家长问试听／预约，否则不要推销试听。"
-        "除非家长最新一句是打招呼，否则不要用「你好／您好／Hello」开头——跟进对话直接回答。"
+        "「亮巢学习中心」（BrightNest）行政助理（演示）。第一人称「我们」。友善简洁。"
     ),
 }
 
@@ -188,23 +160,17 @@ def _build_prompt(
     no_hello = ""
     if history_context and history_context.strip():
         history_block = (
-            "Recent conversation (use for follow-ups; do not invent facts not in the KB):\n"
-            f"{history_context.strip()}\n\n"
+            f"Chat:\n{history_context.strip()}\n\n"
         )
-        no_hello = (
-            "This is a follow-up turn — do NOT start with Hello/Hi/你好; "
-            "answer the question directly.\n\n"
-        )
+        no_hello = "Follow-up — no Hello/Hi/你好 opener.\n\n"
     return (
         f"{persona}\n\n"
         f"{history_block}"
         f"{no_hello}"
-        f"Internal knowledge base excerpts:\n{ctx}\n\n"
-        f"Parent question: {question}\n\n"
-        "Write a short parent-facing answer grounded ONLY in the excerpts. "
-        "If the question is general knowledge / homework / science not in the excerpts, "
-        "refuse briefly and redirect to centre topics — do not lecture.\n\n"
-        f"Answer:"
+        f"KB excerpts:\n{ctx}\n\n"
+        f"Parent: {question}\n"
+        "Answer (excerpts only; off-KB → brief refuse + "
+        "[[ADMIN_GAP: off_topic — not in centre KB]] on its own last line):"
     )
 
 
@@ -335,12 +301,9 @@ def compose_grounded_fact(
     has_history = bool(history_context and history_context.strip())
     if has_history:
         history_block = (
-            "Recent conversation (keep continuity):\n"
-            f"{history_context.strip()}\n\n"
+            f"Chat:\n{history_context.strip()}\n\n"
         )
-        no_hello = (
-            "Follow-up turn — do NOT start with Hello/Hi/你好; answer directly.\n\n"
-        )
+        no_hello = "Follow-up — no Hello/Hi/你好 opener.\n\n"
     kb_bits = []
     for i, h in enumerate(contexts[:5], start=1):
         meta = h.get("metadata") or {}
@@ -353,33 +316,21 @@ def compose_grounded_fact(
     tool_block = ""
     if ask_tool_ok:
         tool_block = (
-            f"\nTOOL GATE — after your parent-facing reply, on its OWN last line write "
-            f"exactly one token:\n"
-            f"[[TOOL_OK]] if the parent should see the interactive {tool_label} "
-            f"(bookable seat/slot cards) because live register data answers their ask; "
-            f"or [[TOOL_SKIP]] if a spoken answer is enough / data is empty / "
-            f"they are not actually browsing seats.\n"
-            f"Never invent seats not listed in the live doc.\n"
+            f"Last line exactly [[TOOL_OK]] if interactive {tool_label} seat cards "
+            f"should show, else [[TOOL_SKIP]]. Never invent seats.\n"
         )
     prompt = (
         f"{persona}\n\n"
-        "You are answering with layered sources. Priority is absolute:\n"
-        "1) LIVE DOC + STRUCTURED CARD — verified centre truth (live weather, "
-        "register seats, published policy). Numbers, signals, and seat counts here "
-        "MUST be referenced accurately; never contradict or invent over them.\n"
-        "2) KB EXCERPTS — general advice / background. Use to elaborate when "
-        "consistent with (1). If a KB line conflicts with the live/structured doc, "
-        "ignore the KB line.\n"
-        "Write a warm, spoken, concise parent reply — prefer short over comprehensive. "
-        "Parents will follow up if they need more. No template/meta talk. "
-        "No [[ADMIN_GAP]] / NO_ANSWER.\n"
-        f"{tool_block}\n"
+        "Priority: (1) LIVE/CARD facts — never contradict or invent numbers/seats; "
+        "(2) KB — elaborate only when consistent with (1).\n"
+        "Short spoken parent reply. No meta / ADMIN_GAP / NO_ANSWER.\n"
+        f"{tool_block}"
         f"{history_block}"
         f"{no_hello}"
-        f"Route: {route}\n\n"
-        f"PRIVILEGED DOCS:\n---\n{privileged}\n---\n\n"
-        f"KB EXCERPTS (secondary / general advice):\n---\n{kb_block}\n---\n\n"
-        f"Parent question: {question}\n\n"
+        f"Route: {route}\n"
+        f"LIVE/CARD:\n{privileged}\n\n"
+        f"KB (secondary):\n{kb_block}\n\n"
+        f"Parent: {question}\n"
         "Reply:"
     )
     try:
@@ -464,29 +415,19 @@ def adapt_structured_fact(
     has_history = bool(history_context and history_context.strip())
     if has_history:
         history_block = (
-            "Recent conversation (keep continuity):\n"
-            f"{history_context.strip()}\n\n"
+            f"Chat:\n{history_context.strip()}\n\n"
         )
-        no_hello = (
-            "Follow-up turn — do NOT start with Hello/Hi/你好; answer directly.\n\n"
-        )
+        no_hello = "Follow-up — no Hello/Hi/你好 opener.\n\n"
     prompt = (
         f"{persona}\n\n"
-        "BrightNest is a COMP6708 live demo — sound like a sharp centre admin, "
-        "not a policy PDF. You are given a verified fact card.\n"
-        "Goals:\n"
-        "- Answer the parent's actual question first (narrow when they named a "
-        "programme, age, or detail).\n"
-        "- Stay faithful to the card for fees, names, IDs, and times you mention; "
-        "do not invent new published numbers or staff.\n"
-        "- Drop irrelevant roster/fee rows; at most one short next-step invite when natural.\n"
-        "- Keep it short: parents will follow up if they need more detail.\n"
-        "- Warm, spoken, concise. No template/meta talk. No [[ADMIN_GAP]] / NO_ANSWER.\n\n"
+        "Rewrite the fact card into a short spoken parent reply. "
+        "Answer their ask first; keep fees/names/times faithful; drop irrelevant rows; "
+        "no inventing; no meta / ADMIN_GAP / NO_ANSWER.\n"
         f"{history_block}"
         f"{no_hello}"
-        f"Route: {route}\n\n"
-        f"Fact card:\n---\n{card}\n---\n\n"
-        f"Parent question: {question}\n\n"
+        f"Route: {route}\n"
+        f"Card:\n{card}\n\n"
+        f"Parent: {question}\n"
         "Reply:"
     )
     try:
@@ -568,12 +509,11 @@ def _dashscope_generation_http(
     tok = int(max_tokens if max_tokens is not None else SETTINGS.gen_max_tokens)
     temp = float(temperature if temperature is not None else SETTINGS.gen_temperature)
 
+    # Shared across RAG / compose / adapt — path-specific rules stay in the user prompt.
     system = (
-        "You are BrightNest's centre admin assistant. "
-        "Answer only from the provided excerpts about the learning centre. "
-        "Refuse general science, homework, and other off-KB topics briefly; "
-        "do not invent centre facts. Never mention [[ADMIN_GAP]] tags to the parent. "
-        "Do not open with Hello/Hi/你好 on follow-up turns — answer directly."
+        "BrightNest centre admin. Use only provided excerpts/cards. "
+        "No invented fees or seats. No Hello/Hi/你好 on follow-ups. "
+        "Never mention ADMIN_GAP tags, tools, or spreadsheets to the parent."
     )
     if multimodal:
         messages = [

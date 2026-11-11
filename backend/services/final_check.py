@@ -14,16 +14,16 @@ from services import cheap_llm
 
 _KINDS = {
     "escalate": (
-        "Commit: open a staff inbox item (and draft email) for human follow-up.",
-        "PROCEED if a human hand-off is appropriate (safety, anger, refund fight, ask-for-staff). "
-        "CLARIFY if the message is mild FAQ that a policy card could answer. "
-        "ABORT only if this is clearly not a hand-off (pure fee/hours chit-chat).",
+        "Open staff inbox for human follow-up.",
+        "PROCEED: safety/anger/refund fight/ask-staff. "
+        "CLARIFY: mild FAQ a card could answer. "
+        "ABORT: not a hand-off.",
     ),
     "refuse": (
-        "Commit: politely refuse as out-of-scope for a learning-centre assistant.",
-        "PROCEED if the ask is truly off-domain (other city weather, coding homework, politics). "
-        "CLARIFY if it might be about BrightNest programmes/fees/hours/booking. "
-        "ABORT (prefer centre help) if it is clearly on-domain and should not be refused.",
+        "Refuse as out-of-scope for a learning-centre assistant.",
+        "PROCEED: truly off-domain. "
+        "CLARIFY: might be programmes/fees/hours/booking. "
+        "ABORT: clearly on-domain.",
     ),
 }
 
@@ -104,24 +104,19 @@ def review_commit(
 
     out["called"] = True
     prompt = (
-        "BrightNest COMP6708 — final commit referee for a parent WhatsApp assistant.\n"
-        "Regex/FSM already proposed a commit. You only decide whether to execute it.\n"
-        f"Commit kind: {kind_key}\n"
-        f"What we are about to do: {blurb}\n"
-        f"Guidance: {guidance}\n"
-        "Reply with ONE JSON object only:\n"
-        '{"action":"proceed"|"clarify"|"abort","reason":"<short>",'
-        '"clarify_prompt":"<one parent-facing question or empty>"}\n'
-        "clarify_prompt is required when action=clarify; otherwise empty string.\n"
-        "Do not invent fees, seats, or policies.\n\n"
-        f"Proposed commit:\n{proposed_summary}\n\n"
-        f"Context:\n{ctx_block}\n\n"
-        f"Parent message: {message}\n"
+        f"Commit gate ({kind_key}): {blurb}\n"
+        f"{guidance}\n"
+        'JSON only: {"action":"proceed"|"clarify"|"abort","reason":"<short>",'
+        '"clarify_prompt":"<question or empty>"}\n'
+        "clarify_prompt only when action=clarify. No invented fees/seats.\n\n"
+        f"Proposed: {proposed_summary}\n"
+        f"Context:\n{ctx_block}\n"
+        f"Parent: {message}\n"
     )
     try:
         parsed = cheap_llm.complete_json(
             prompt,
-            system="Return only compact JSON for a commit gate. No markdown.",
+            system="JSON commit gate only.",
             max_tokens=100,
             role=f"final_check:{kind_key}",
         )

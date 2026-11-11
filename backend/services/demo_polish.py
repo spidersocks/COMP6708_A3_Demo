@@ -40,24 +40,17 @@ def polish_gap_reply(
         return out
     out["called"] = True
     prompt = (
-        "BrightNest COMP6708 live demo — rewrite the draft parent reply so it sounds "
-        "like a sharp centre admin, not a broken bot.\n"
-        "Rules:\n"
-        "- Keep any concrete centre facts already in the draft.\n"
-        "- Do not invent fees, schedules, or teachers.\n"
-        "- If the draft is an empty soft-refuse, briefly say we don't have that yet "
-        "and invite them to ask for a staff callback — warm, short.\n"
-        "- Do not mention admin to-dos, spreadsheets, RAG, or internal tools.\n"
-        "- No [[ADMIN_GAP]] tags.\n\n"
-        f"Language hint: {lang}\n"
-        f"Gap reason: {gap_reason}\n"
-        f"Parent question: {question}\n"
-        f"Draft reply:\n---\n{draft}\n---\n"
-        "Polished reply:"
+        "Polish the draft parent reply: warm, short, keep existing facts, "
+        "no invented fees/teachers, no internal tools/ADMIN_GAP. "
+        "Empty refuse → brief 'we don't have that yet' + staff callback invite.\n"
+        f"Lang: {lang} · gap: {gap_reason}\n"
+        f"Parent: {question}\n"
+        f"Draft:\n{draft}\n"
+        "Reply:"
     )
     text = cheap_llm.complete_text(
         prompt,
-        system="Parent-facing BrightNest reply only. No JSON.",
+        system="Parent-facing BrightNest reply only.",
         max_tokens=180,
         temperature=0.3,
         role="gap_polish",
@@ -96,11 +89,10 @@ def pick_cancel_candidate(
             f"{i}. {c.get('slot_display')} — {c.get('course_label')} · {c.get('teacher_name')}"
         )
     prompt = (
-        "Parent is cancelling a BrightNest class. Options were listed numbered.\n"
-        "Pick which option they mean, or none/ambiguous.\n"
-        'JSON only: {"action":"pick"|"none"|"ambiguous","index":1-based-or-null,"reason":"short"}\n\n'
-        f"Options:\n" + "\n".join(lines) + "\n\n"
-        f"Parent message: {message}\n"
+        "Cancel pick from numbered options.\n"
+        'JSON: {"action":"pick"|"none"|"ambiguous","index":1-based-or-null,"reason":"short"}\n'
+        f"Options:\n" + "\n".join(lines) + "\n"
+        f"Parent: {message}\n"
     )
     parsed = cheap_llm.complete_json(prompt, max_tokens=60, role="cancel_pick")
     if not parsed:
@@ -134,13 +126,12 @@ def parse_booking_hints(message: str) -> Dict[str, Any]:
     if not SETTINGS.arbiter_booking_parse or not cheap_llm.enabled():
         return empty
     prompt = (
-        "Extract booking constraints for BrightNest kids centre.\n"
-        "Courses: phonics, mandarin, writing, playgroup, math, trial (or null).\n"
-        "weekday: 0=Mon .. 6=Sun or null.\n"
-        "window: tomorrow|this_week|next_week|null.\n"
-        "teacher_hint: short name token or null.\n"
-        'JSON only: {"course_key":..,"weekday":..,"window":..,"teacher_hint":..,"confidence":0-1}\n\n'
-        f"Parent message: {message}\n"
+        "Extract booking hints.\n"
+        "course_key: phonics|mandarin|writing|playgroup|math|trial|null; "
+        "weekday 0=Mon..6=Sun|null; window tomorrow|this_week|next_week|null; "
+        "teacher_hint short|null.\n"
+        'JSON: {"course_key":..,"weekday":..,"window":..,"teacher_hint":..,"confidence":0-1}\n'
+        f"Parent: {message}\n"
     )
     parsed = cheap_llm.complete_json(prompt, max_tokens=80, role="booking_parse")
     if not parsed:
