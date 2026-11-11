@@ -6,26 +6,29 @@ Built for COMP6708 Advanced Big Data Computing — Mini Demo (live system, RAG-f
 
 > This repo is isolated from the production Little Scholars tutoring deployment. Do not point this code at live WhatsApp/YCloud/AWS production resources.
 
-**New to the repo?** Read **[docs/TEAM.md](docs/TEAM.md)** end-to-end — it is the full system document (router rules, RAG, tools, inspector contract, deploy, demo gotchas), not a roster page.
+**New to the repo?** Read **[docs/TEAM.md](docs/TEAM.md)** end-to-end — full system document (router, RAG channel pack, tools, inspector, deploy, demo).
+
+**Live demo:** https://seanfontaine.dev/COMP6708_A3_Demo · API on Alibaba SAE (`brightnest-api:v68+`)
 
 ## What's in the box
 
 | Path | Role |
 |------|------|
-| `frontend/` | Vite + React chat UI (citations, availability, booking, Admin) |
-| `backend/` | FastAPI: self-built RAG + tools + staff escalation |
-| `content/` | Markdown knowledge base (en / zh-HK / zh-CN) |
-| `deploy/` | Alibaba Cloud Docker + SAE redeploy |
-| `docs/` | Team guide, demo script, architecture, slides outline |
+| `backend/` | FastAPI: hybrid router + RAG + booking/cancel FSM + staff desk |
+| `content/` | Markdown KB (en / zh-HK / zh-CN) — programmes, fees, age_bands, policies, … |
+| `integration/developer-site/` | Drop-ins for the live UI on seanfontaine.dev |
+| `deploy/` | Alibaba Docker + SAE redeploy |
+| `docs/` | TEAM guide, demo script, architecture |
 | `slides/` | Beamer / Overleaf slide source |
-| `integration/developer-site/` | Drop-ins for hosting the UI on seanfontaine.dev |
+| `frontend/` | Optional standalone Vite chat (prefer developer-site host for the graded demo) |
 
-### Techniques demonstrated
+## Techniques demonstrated (show these live)
 
-1. **Retrieval-Augmented Generation (RAG)** — own chunk → embed → Chroma retrieve → generate pipeline
-2. **DashScope / Qwen** (Alibaba) for embeddings + chat when `DASHSCOPE_API_KEY` is set
-3. **Tool-style booking** — availability + SQLite bookings surfaced in the UI
-4. **Staff escalation** — human hand-off path (angry / ask for person / safety) → Admin Messages inbox
+1. **Training-free RAG** — chunk Markdown → DashScope embeddings → Chroma ∥ in-process BM25 → **channel pack (3 dense + 2 BM25)** → Qwen + citations
+2. **Hybrid intent router** — detector awards (not retrieval sim), grouped in the inspector as **Tool / dialogue**, **Live info**, **RAG default**
+3. **Live info paths** — opening hours calendar / typhoon+HKO with privileged live docs + KB enrich
+4. **Tool FSMs** — sticky book/cancel with cheap **DST JSON**, **final check** before commits, assessment → SheetPro
+5. **Staff escalation** — Final check → Staff email draft → MailBox (safety fail-open)
 
 Offline fallback: deterministic hash embeddings + extractive answers (no cloud key required).
 
@@ -42,30 +45,25 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-First request (or startup) builds the Chroma index from `../content`.
+First request (or startup) builds the Chroma + BM25 indexes from `../content`.
 
-### Frontend
+### Graded UI (developer-site)
 
 ```powershell
-cd frontend
+cd ..\developer-site\frontend\tailwindcss4
 npm install
-copy .env.example .env
 npm run dev
 ```
 
-Open http://localhost:5173 — API defaults to same-origin `/brightnest-api` (Vite proxy → local uvicorn or SAE). See `frontend/.env.example`.
+Open the BrightNest demo route — API defaults to same-origin `/brightnest-api` (Vite proxy → local uvicorn or SAE).
 
-## API surface
+## API surface (high-signal)
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/chat` | RAG / hours / availability / escalation |
-| `GET` | `/courses` | Course catalogue |
-| `GET` | `/availability` | Open seats |
-| `POST` | `/bookings` | Create provisional booking |
+| `POST` | `/chat` | Router → FSM / live / RAG (+ inspector `trace`) |
+| `POST` | `/admin/reindex` | Rebuild dense + sparse indexes |
 | `GET` | `/admin/messages` | Staff escalation inbox |
-| `POST` | `/admin/messages/{id}/ack` | Acknowledge a staff message |
-| `POST` | `/admin/reindex` | Rebuild vector index |
 | `GET` | `/healthz` | Health |
 
 ## Alibaba Cloud
@@ -76,12 +74,11 @@ Redeploy: [deploy/REDEPLOY.md](deploy/REDEPLOY.md) (`.\deploy\redeploy.ps1 -Tag 
 
 ## Demo day
 
-See [docs/demo-script.md](docs/demo-script.md) and [docs/slides-outline.md](docs/slides-outline.md).
+Talk track: [docs/demo-script.md](demo-script.md) · System truth: [docs/TEAM.md](docs/TEAM.md) · Slides: [slides/](slides/).
 
 ## Host UI on seanfontaine.dev
 
-Frontend is intended to live at **`/COMP6708_A3_Demo`** on the developer site (not OSS). Browser uses `/brightnest-api` (Vercel rewrite → SAE) to avoid mixed-content blocks.
+Frontend lives at **`/COMP6708_A3_Demo`**. Browser uses `/brightnest-api` (Vercel rewrite → SAE) to avoid mixed-content blocks.
 
 - Team / handoff: [docs/TEAM.md](docs/TEAM.md), [AGENT_HANDOFF.md](AGENT_HANDOFF.md)
-- Full steps: [docs/DEVELOPER_SITE_INTEGRATION.md](docs/DEVELOPER_SITE_INTEGRATION.md)
 - Drop-in files: [integration/developer-site/](integration/developer-site/)

@@ -250,6 +250,45 @@ function formatRouteScore(route, value, origin) {
   return Number(value).toFixed(2);
 }
 
+/** Detector score groups for the Rules · scores inspector panel. */
+const SCORE_GROUPS = [
+  {
+    id: "tools",
+    title: "Tool / dialogue",
+    blurb: "Booking, cancel, escalate — sticky FSM or seat tools",
+    routes: [
+      "staff_escalation",
+      "cancel_dialogue",
+      "booking_dialogue",
+      "booking_tool",
+    ],
+  },
+  {
+    id: "live",
+    title: "Live info",
+    blurb: "Hours calendar, typhoon / HKO — structured facts, not FAQ prose",
+    routes: [
+      "severe_weather",
+      "opening_hours",
+      "deterministic_opening_hours",
+    ],
+  },
+  {
+    id: "rag",
+    title: "RAG default",
+    blurb: "No tool owns the turn — retrieve centre Markdown",
+    routes: ["rag", "off_domain"],
+  },
+];
+
+function scoreGroupForRoute(routeId) {
+  const id = String(routeId || "");
+  for (const g of SCORE_GROUPS) {
+    if (g.routes.includes(id)) return g.id;
+  }
+  return "other";
+}
+
 function StageIO({ request, payload, defaultOpen = true }) {
   if (!request && !payload) return null;
   const asText = (v) =>
@@ -1392,38 +1431,75 @@ function NodeDetail({
       const scoreRows = Object.entries(routing?.scores || {}).sort(
         (a, b) => Number(b[1]) - Number(a[1])
       );
+      const topRoute = scoreRows[0]?.[0] || null;
       const rulesByScore = [...rulesEvaluated].sort((a, b) => {
         const sa = Number(routing?.scores?.[a.id] ?? a.score ?? -Infinity);
         const sb = Number(routing?.scores?.[b.id] ?? b.score ?? -Infinity);
         return sb - sa;
       });
+      const groupedScores = SCORE_GROUPS.map((g) => ({
+        ...g,
+        rows: scoreRows.filter(([k]) => g.routes.includes(k)),
+      })).filter((g) => g.rows.length > 0);
+      const otherScores = scoreRows.filter(
+        ([k]) => scoreGroupForRoute(k) === "other"
+      );
+      if (otherScores.length) {
+        groupedScores.push({
+          id: "other",
+          title: "Other",
+          blurb: "Extra detector keys",
+          rows: otherScores,
+        });
+      }
+      const groupedRules = [
+        ...SCORE_GROUPS.map((g) => ({
+          ...g,
+          rules: rulesByScore.filter((r) => g.routes.includes(r.id)),
+        })),
+        {
+          id: "other",
+          title: "Other",
+          blurb: "",
+          rules: rulesByScore.filter((r) => scoreGroupForRoute(r.id) === "other"),
+        },
+      ].filter((g) => (g.rules || []).length > 0);
       return (
         <>
           <p className="bn-rules-hint">
-            Detector awards for each rule (not RAG similarity). Highest on top;
-            winner feeds the router.
+            Detector awards (not RAG similarity), split by what they unlock:
+            sticky tools vs live centre facts vs RAG default. Highest in each
+            group; overall winner feeds the router.
           </p>
-          {scoreRows.length > 0 ? (
-            <ul className="bn-fact-list">
-              {scoreRows.map(([k, v]) => {
-                const origin =
-                  routing.score_origins?.[k] ||
-                  scoreLedger.filter((e) => e.route === k).slice(-1)[0];
-                const isTop = k === scoreRows[0][0];
-                return (
-                  <li key={k}>
-                    <span>
-                      {isTop ? "★ " : ""}
-                      {k}
-                      {origin?.source ? (
-                        <em className="bn-score-src"> · {origin.source}</em>
-                      ) : null}
-                    </span>
-                    <code>{formatRouteScore(k, v, origin)}</code>
-                  </li>
-                );
-              })}
-            </ul>
+          {groupedScores.length > 0 ? (
+            groupedScores.map((g) => (
+              <div key={`score-g-${g.id}`} className="bn-score-group">
+                <p className="bn-rules-hint">
+                  <strong>{g.title}</strong>
+                  {g.blurb ? ` — ${g.blurb}` : ""}
+                </p>
+                <ul className="bn-fact-list">
+                  {g.rows.map(([k, v]) => {
+                    const origin =
+                      routing.score_origins?.[k] ||
+                      scoreLedger.filter((e) => e.route === k).slice(-1)[0];
+                    const isTop = k === topRoute;
+                    return (
+                      <li key={k}>
+                        <span>
+                          {isTop ? "★ " : ""}
+                          {k}
+                          {origin?.source ? (
+                            <em className="bn-score-src"> · {origin.source}</em>
+                          ) : null}
+                        </span>
+                        <code>{formatRouteScore(k, v, origin)}</code>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ))
           ) : (
             <Skipped>No detector scores this turn.</Skipped>
           )}
@@ -1450,16 +1526,23 @@ function NodeDetail({
               </ol>
             </details>
           ) : null}
-          {rulesByScore.length > 0 ? (
-            <ul className="bn-rule-list">
-              {rulesByScore.map((r) => (
-                <RuleEvidence
-                  key={r.id}
-                  rule={r}
-                  isWinner={r.id === winningRuleId && Boolean(r.matched)}
-                />
-              ))}
-            </ul>
+          {groupedRules.length > 0 ? (
+            groupedRules.map((g) => (
+              <div key={`rule-g-${g.id}`} className="bn-score-group">
+                <p className="bn-rules-hint">
+                  <strong>{g.title}</strong> · match evidence
+                </p>
+                <ul className="bn-rule-list">
+                  {g.rules.map((r) => (
+                    <RuleEvidence
+                      key={r.id}
+                      rule={r}
+                      isWinner={r.id === winningRuleId && Boolean(r.matched)}
+                    />
+                  ))}
+                </ul>
+              </div>
+            ))
           ) : (
             <Skipped>No rule trace on this turn.</Skipped>
           )}

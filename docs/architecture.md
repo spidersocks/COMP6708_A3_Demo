@@ -14,14 +14,13 @@ Browser (HTTPS)
        ▼
      FastAPI on Alibaba SAE (cn-hongkong) · Docker brightnest-api:vN
        │
-       ├─ hybrid intent router (+ optional route arbiter)
+       ├─ hybrid intent router (tool / live / RAG scores + optional arbiters)
        ├─ centre facts / opening hours / CSV register
-       ├─ booking FSM · cancel FSM · escalation · refuse
-       ├─ final check (cheap LLM commit gate)
-       ├─ grounded compose / adapt / pure RAG
+       ├─ booking FSM · cancel FSM · escalation (+ DST · final check · staff email)
+       ├─ grounded compose (live doc + channel-pack enrich) / adapt / pure RAG
        ├─ SheetPro (admin_todos) · MailBox (staff_messages)
-       └─ Chroma KB ← content/{en,zh-HK,zh-CN}/**/*.md
-            DashScope: embeddings + Qwen (+ cheap arbiter model)
+       └─ Chroma ∥ BM25 ← content/{en,zh-HK,zh-CN}/**  (pack keep: 3 dense + 2 BM25)
+            DashScope: embeddings + Qwen (+ cheap arbiter / DST / final check)
 ```
 
 | Tier | Host | Notes |
@@ -58,20 +57,19 @@ flowchart TB
   API --> R
   R -->|low confidence| ARB
   ARB --> R
-  R -->|fees typhoon hours seats …| Soft
+  R -->|typhoon hours seats| Soft
   Soft --> COMP
   COMP --> CH
   COMP --> DS
   Soft -.->|fallback| ADAPT
   ADAPT --> DS
-  R -->|book cancel escalate refuse| Hard
+  R -->|book cancel escalate| Hard
   Hard -->|before commit| FC
   FC -->|proceed book/gap| SHEETS
   FC -->|proceed escalate| MAIL
   FC -->|proceed cancel| CX
   FC -->|clarify / abort| UI
-  FC --> DS
-  R -->|narrative / multi-topic| RAG
+  R -->|fees programmes policies| RAG
   RAG --> CH
   RAG --> DS
   RAG -.->|soft gap| SHEETS
@@ -119,7 +117,13 @@ flowchart TB
 
 ## Intent scores (not retrieval sim)
 
-Scores are mostly **fixed detector awards** (`hard_regex`, `sticky_state`, …), conflict clears, and optional prototype blends. See TEAM §3 for the ledger, priority order, and worked examples.
+Scores are **fixed detector awards** (`hard_regex`, `sticky_state`, …), conflict clears, and optional prototype blends — **not** Chroma/BM25 similarities. The inspector **Rules · scores** panel groups them for the demo:
+
+| Group | Examples | Unlocks |
+|-------|----------|---------|
+| **Tool / dialogue** | book, cancel, escalate, seats | Sticky FSM · DST · final check · MailBox |
+| **Live info** | typhoon, opening hours | Privileged live doc + channel-pack enrich |
+| **RAG default** | fees, programmes, policies | Dense∥BM25 pack → generate |
 
 - High-confidence structured routes usually **skip** the route arbiter (`top ≥ 0.9`).
 - Sticky book/cancel mid-flight are not yanked by the arbiter.
@@ -132,7 +136,7 @@ Scores are mostly **fixed detector awards** (`hard_regex`, `sticky_state`, …),
 ```text
 chunk Markdown → embed (DashScope) → Chroma ∥ BM25
   → channel pack (3 dense + 2 BM25) → Qwen generate → citations
-  (rank, score, full text in the inspector)
+  (inspector: Pack · 3+2, labeled dense/BM25 scores, age overlay)
 ```
 
 Training-free: edit `content/**` → `/admin/reindex`. No fine-tune loop.
@@ -142,7 +146,7 @@ Training-free: edit `content/**` → `/admin/reindex`. No fine-tune loop.
 ## Demo UI contract (short)
 
 - **Left:** parent chat only (WhatsApp-shaped).
-- **Right / System:** probes, router decision, score ledger, grounding, final check step, RAG/enrich expand, class register, session memory.
+- **Right / System:** probes · router decision · **Rules · scores** (Tool / dialogue · Live info · RAG default) · lit path (DST · Final check · Staff email · Live · Pack 3+2) · grounding · RAG hits · class register.
 - **Right / Staff desk:** SheetPro follow-ups · MailBox urgent mail.
 
 Talk track: [demo-script.md](demo-script.md).

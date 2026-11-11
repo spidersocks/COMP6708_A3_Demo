@@ -151,13 +151,13 @@
       \textbf{Hybrid router}
       \begin{itemize}\setlength\itemsep{0.16em}
         \item Scores = \textbf{detector awards}, not RAG sim
-        \item Soft FAQ: grounded compose (card $>$ KB)
-        \item Hard paths \textbf{bypass retrieve}
-        \item Route arbiter if low confidence
-        \item \textbf{Final check} before book / escalate / refuse
+        \item UI groups: \textbf{Tool / dialogue} · \textbf{Live info} · \textbf{RAG default}
+        \item Live paths: grounded compose (card $>$ KB)
+        \item Hard FSM \textbf{bypass retrieve} + \textbf{final check}
+        \item Fees / programmes = pure RAG (no fee tool)
       \end{itemize}
       \vspace{0.35em}
-      \pill{card privileged}\quad\pill{KB may enrich}\\[0.25em]
+      \pill{tool · live · RAG}\quad\pill{KB may enrich}\\[0.25em]
       \pill{proceed / clarify / abort}
     \end{column}
   \end{columns}
@@ -177,7 +177,7 @@
     arr/.style={-{Latex[length=1.8mm]}, thick, darkgray!65}
   ]
     \node[soft, text width=2.35cm] (root) at (0,2.05)
-      {\textbf{\texttt{content/}}\\318 md · 3 langs};
+      {\textbf{\texttt{content/}}\\$\sim$106 docs $\times$ 3 langs};
     \node[box, text width=1.5cm] (en) at (-3.05,0.8) {\textbf{en}\\106};
     \node[box, text width=1.5cm] (hk) at (0,0.8) {\textbf{zh-HK}\\106};
     \node[box, text width=1.5cm] (cn) at (3.05,0.8) {\textbf{zh-CN}\\106};
@@ -186,19 +186,19 @@
     \draw[arr] (root) -- (cn);
 
     \node[soft, text width=9.2cm, align=left] (cats) at (0,-0.4) {%
-      \textbf{Per language (mirrored):}\;
-      faq 73 · courses 15 · policies 8 · institution 6 ·
-      marketing 2 · guides 1 · complaint 1\;
-      {\footnotesize(+ age bands $\times$10 in faq)}
+      \textbf{Per language (intent folders):}\;
+      programmes · age\_bands · fees · admissions · attendance ·
+      policies · classroom · centre · assistant · marketing
     };
     \draw[arr] (en.south) -- ++(0,-0.2) -| (cats.north);
     \draw[arr] (hk.south) -- (cats.north);
     \draw[arr] (cn.south) -- ++(0,-0.2) -| (cats.north);
 
     \node[meta, text width=4.4cm, align=left] (idx) at (-2.5,-1.7) {%
-      \textbf{Chroma index}\\
-      434 chunks · 900 / overlap 120\\
-      en 194 · zh-HK 121 · zh-CN 119
+      \textbf{Hybrid retrieve}\\
+      Chroma dense $\parallel$ BM25\\
+      Channel pack: 3 dense + 2 BM25\\
+      Age overlay when digits present
     };
     \node[meta, text width=4.4cm, align=left] (md) at (2.5,-1.7) {%
       \textbf{Chunk metadata}\\
@@ -223,14 +223,14 @@
     \toprule
     \textbf{Tier} & \textbf{Examples} & \textbf{LLM / RAG} \\
     \midrule
-    Hard FSM + final check & Book / cancel, escalate, refuse & Bypass retrieve · cheap go-ahead \\
-    Grounded compose & Typhoon+HKO, seats, fees, allergy & Live doc + KB enrich \\
-    Pure RAG & Private 1:1, multi-topic narrative & Full retrieve $\rightarrow$ generate \\
+    Hard FSM + final check & Book / cancel, escalate & Bypass · DST · cheap go-ahead \\
+    Live info + enrich & Typhoon+HKO, open now?, seats & Live doc + channel-pack enrich \\
+    Pure RAG & Fees, programmes, policies & Dense$\parallel$BM25 pack $\rightarrow$ generate \\
     \bottomrule
   \end{tabular}}
   \vspace{0.55em}
   {\raggedright\small
-  Intent score e.g.\ \texttt{fees=0.90} = fee detector fired.\\
+  Detector awards (tools / live / RAG default) $\neq$ dense or BM25 chunk scores.\\
   Final check returns \texttt{proceed} / \texttt{clarify} / \texttt{abort} (safety fail-opens).}
 \end{frame}
 
@@ -257,7 +257,7 @@
     \node[box] (rag) at (6.6,1.0) {\textbf{Pure RAG}\\retrieve $\rightarrow$ gen};
 
     \node[cloud] (adapt) at (1.4,-0.65) {Final check\\proceed · clarify · abort};
-    \node[cloud] (ds) at (4.0,-0.65) {Qwen compose\\T8 · seats · fees};
+    \node[cloud] (ds) at (4.0,-0.65) {Qwen compose\\T8 · hours · seats};
     \node[cloud] (gen) at (6.6,-0.65) {Chroma + Qwen\\citations};
 
     \draw[arr] (ui) -- (api);
@@ -325,12 +325,11 @@
     \toprule
     Beat & \textbf{Show} & \textbf{Point at} \\
     \midrule
-    1 & Typhoon & Score 1.0 · live/policy privileged \\
-    2a & Phonics fee & fees=0.90 · grounded compose \\
-    2b & RAG · Private 1:1 & Retrieve $\rightarrow$ expand chunk \\
-    3 & Seats $\rightarrow$ book Jason & Register · \textbf{final check} · SheetPro \\
+    1 & Typhoon / open now? & Live info scores · Live$\rightarrow$Pack enrich \\
+    2 & Phonics fee & RAG default · Pack 3+2 · fee chunk \\
+    3 & Seats $\rightarrow$ book Jason & DST · \textbf{Final check} · SheetPro \\
     4 & Scuba (unknown) & Honest gap · \textbf{SheetPro} row \\
-    5 & Safety allergy call & \textbf{MailBox} · safety fail-open \\
+    5 & Safety allergy call & Final check $\rightarrow$ Staff email $\rightarrow$ MailBox \\
     \bottomrule
   \end{tabular}}
 
@@ -348,14 +347,14 @@
       \textbf{Impact}
       \begin{itemize}\setlength\itemsep{0.22em}
         \item 24/7 triage without inventing policy
-        \item Tools for hours / fees / seats
-        \item RAG for programme narrative
+        \item Live tools for hours / typhoon / seats
+        \item RAG for fees + programme narrative
         \item Humans only when stakes demand it
       \end{itemize}
       \vspace{0.4em}
       \textbf{Creativity}
       \begin{itemize}\setlength\itemsep{0.22em}
-        \item Hybrid router + commit final check
+        \item Channel pack + commit final check + DST
         \item Staff desk = Sheets + Gmail clones
       \end{itemize}
     \end{column}

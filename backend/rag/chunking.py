@@ -82,15 +82,18 @@ def load_corpus(content_dir: Path) -> List[Tuple[Path, Dict[str, Any], str]]:
     docs: List[Tuple[Path, Dict[str, Any], str]] = []
     if not content_dir.exists():
         return docs
-    for path in sorted(content_dir.rglob("*.md")):
-        meta, body = parse_markdown(path)
-        if not body:
-            continue
-        rel = str(path.relative_to(content_dir)).replace("\\", "/")
-        meta = dict(meta)
-        meta.setdefault("source", rel)
-        meta.setdefault("language", path.parts[-3] if len(path.parts) >= 3 else "en")
-        docs.append((path, meta, body))
+    # Only language trees (en / zh-HK / zh-CN / …); skip docs at content root.
+    lang_dirs = [p for p in content_dir.iterdir() if p.is_dir() and not p.name.startswith(".")]
+    for lang_dir in sorted(lang_dirs):
+        for path in sorted(lang_dir.rglob("*.md")):
+            meta, body = parse_markdown(path)
+            if not body:
+                continue
+            rel = str(path.relative_to(content_dir)).replace("\\", "/")
+            meta = dict(meta)
+            meta.setdefault("source", rel)
+            meta.setdefault("language", lang_dir.name)
+            docs.append((path, meta, body))
     return docs
 
 

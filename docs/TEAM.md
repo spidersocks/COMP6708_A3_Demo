@@ -20,21 +20,21 @@ Fictional brand **BrightNest / 亮巢**. This document explains **what the syste
 BrightNest is a WhatsApp-shaped parent assistant for a fictional HK learning centre.
 
 1. The parent types a message (demo phone UI — chat only, no booking form).
-2. A **hybrid intent router** scores detectors and picks a specialist (fee table, typhoon policy, live seats, booking/cancel FSM, staff escalation, refuse, or pure RAG).
+2. A **hybrid intent router** scores detectors in two buckets — **tool / dialogue** (book, cancel, escalate, seats) and **live info** (hours, typhoon) — then falls through to **pure RAG** for static FAQs (fees, programmes, policies).
 3. That specialist answers from structured truth (JSON / CSV / calendar) and/or retrieved Markdown.
-4. Soft FAQ routes **grounded-compose** (privileged card/live doc + KB enrich). Hard FSM paths **bypass retrieve**, then a **cheap LLM final check** may `proceed` / `clarify` / `abort` before irreversible writes.
+4. Live-info routes **grounded-compose** (privileged live doc + KB enrich via channel pack). Hard FSM paths **bypass retrieve**, then a **cheap LLM final check** may `proceed` / `clarify` / `abort` before irreversible writes.
 5. Soft answers may get a main-LLM **tone rewrite** (`adapt`) — it must not invent policy.
-6. The inspector shows the decision: route, cue, score ledger, final check, grounding, RAG chunks, SheetPro / MailBox.
+6. The inspector shows the decision: grouped scores, lit path (FSM · DST · Final check · Staff email · Live · Pack 3+2 · LLM), RAG chunks, SheetPro / MailBox.
 
 ```text
 Parent message
     │
     ▼
-Intent router (+ optional route arbiter)
+Intent router (+ optional action policy / route arbiter)
     │
-    ├─ soft FAQ ──► grounded compose (card/live doc privileged + KB) ──► optional adapt
-    ├─ hard FSM ──► book / cancel / escalate / refuse ──► final check ──► write or clarify
-    └─ pure RAG ──► Chroma → Qwen + citations (+ gap polish / SheetPro if needed)
+    ├─ live info ──► hours / typhoon (+ HKO) ──► grounded compose (live doc + KB pack)
+    ├─ tool FSM  ──► book / cancel / escalate / seats ──► DST · final check · staff email
+    └─ pure RAG  ──► dense∥BM25 → channel pack (3+2) → Qwen + citations
     │
     ▼
 answer + trace (inspector)
@@ -129,7 +129,13 @@ Inspector: `trace.grounding.{mode,why,composed,live_doc,ask_tool_ok,invoke_tool,
 
 ### 3.2 Where intent scores come from
 
-**Intent scores are not RAG similarity.** They are **fixed awards** from tool detectors only.
+**Intent scores are not RAG similarity.** They are **fixed awards** from detectors. The inspector **Rules · scores** panel groups them as:
+
+| Group | Routes | What they unlock |
+|-------|--------|------------------|
+| **Tool / dialogue** | `staff_escalation`, `cancel_dialogue`, `booking_dialogue`, `booking_tool` | Sticky FSM, seats tool, MailBox |
+| **Live info** | `severe_weather`, `opening_hours` | Calendar / HKO / policy cards (+ enrich) |
+| **RAG default** | `rag` (+ rare `off_domain`) | Retrieve centre Markdown |
 
 | Source id | What it means | Example |
 |-----------|---------------|---------|
@@ -228,23 +234,22 @@ These are the stories the demo is built to tell. Each row is what you should see
 | **Why not pure RAG** | Ops answer is owned by `facts/severe_weather.json` (+ live HKO doc when available). KB may **enrich**; the card/live doc stay privileged. |
 | **UI** | Match card highlights the weather cue; **Answer grounding** shows grounded compose; enrich hits may appear under RAG enrichment |
 
-#### B. Monthly fee in Cantonese — fee table
+#### B. Monthly fee in Cantonese — pure RAG
 
 | | |
 |--|--|
-| **Parent says** | `月費幾多？` |
-| **Exact cue** | `月費` (fee regex also covers `學費`, `費用`, `班費`, `幾錢`, …) |
-| **Route** | `fees` |
-| **Why this wording mattered** | Earlier builds only caught `學費` / `幾多錢`, so bare `月費幾多？` fell through to RAG. That gap is closed. |
-| **Not fees** | `小朋友幾多歲…` — bare `幾多` alone is deliberately **not** a fee cue |
+| **Parent says** | `月費幾多？` / “How much is phonics?” |
+| **Route** | `rag` (**RAG default** — there is no `fees` tool) |
+| **Why** | Tuition lives in KB Markdown (`content/**/fees/`). Detector awards for tools/live stay low; retrieve + channel pack own the answer. |
+| **UI** | Rules · **RAG default** wins · Pack · 3+2 · fee chunk with labeled dense/BM25 score |
 
-#### C. Seats vs waitlist (same language family, different route)
+#### C. Seats vs waitlist (same language family, different path)
 
 | Parent says | Cue | Route |
 |-------------|-----|-------|
 | `仲有冇位？` | `有冇位` / `冇位` as **seat browse** | `booking_tool` → live CSV seats **in chat text** |
-| `冇位，可以候補嗎` | waitlist language (`候補` / full-class) | `waiting` → waitlist policy fact |
-| `有冇位同月費幾多？` | strong availability **wins over** fees | `booking_tool` (`availability>fees`) |
+| `冇位，可以候補嗎` | waitlist language (`候補` / full-class) | `rag` → waitlist policy from KB |
+| `有冇位同月費幾多？` | strong availability **wins** | `booking_tool` (seats first; fees stay RAG if asked alone) |
 | “Book Jason” → named programme → “Yes” | sticky FSM + affirm | `booking_dialogue` → **final check** → SheetPro `assessment_request` |
 
 #### D. Private 1:1 — pure RAG
@@ -273,18 +278,19 @@ These are the stories the demo is built to tell. Each row is what you should see
 
 ### 3.7 Rule → downstream map
 
-| Rule id | Detector | Typical score | Downstream |
-|---------|----------|---------------|------------|
-| `staff_escalation` | ordered: safety → angry → hard_conflict → ask_human | 1.0 | final check → MailBox + email draft |
-| `off_domain` | politics / foreign-city weather / crypto / malware | 0.98 | final check → refuse (or RAG on abort) |
-| `severe_weather` | `_WEATHER_POLICY_RE` (T8, black rain, 風球…) | 1.0 | weather fact + live HKO + grounded compose |
-| `fees` | `_FEE_RE` minus `_FEE_DURATION_RE` | 0.9 | `facts/fees.json` + grounded compose |
-| `booking_tool` | `_AVAIL_STRONG_RE` / seat browse | 0.85–0.95 | CSV seats in **chat text** (+ tool gate) |
-| `booking_dialogue` | book verbs + sticky / named programmes | ~0.85 | book FSM; assessment Yes → final check → SheetPro |
-| `cancel_dialogue` | cancel verbs + sticky | 0.95 | cancel FSM; Yes → final check → cancellations sheet |
-| `opening_hours` | `detect_opening_hours_intent` | 0.8 | calendar engine + optional HKO enrich |
-| `unknown_programme` | catalogue miss | 0.95 | honest refuse + SheetPro (no final check) |
-| `rag` | default / multi-topic | 0.5–0.65 | Chroma → Qwen (+ gap polish / SheetPro) |
+| Rule id | Group | Detector | Typical score | Downstream |
+|---------|-------|----------|---------------|------------|
+| `staff_escalation` | Tool / dialogue | safety → angry → hard_conflict → ask_human | 1.0 | final check → MailBox + staff email |
+| `off_domain` | RAG default* | politics / foreign-city weather / crypto / malware | 0.98 | final check → refuse (or RAG on abort) |
+| `severe_weather` | Live info | T8, black rain, 風球… | 1.0 | weather fact + live HKO + grounded compose |
+| `opening_hours` | Live info | hours / open now / holiday calendar | 0.8 | calendar engine + optional enrich |
+| `booking_tool` | Tool / dialogue | seat browse (`有冇位`, seats left) | 0.85–0.95 | CSV seats in **chat text** (+ tool gate) |
+| `booking_dialogue` | Tool / dialogue | book verbs + sticky / named programmes | ~0.85 | DST · FSM; Yes → final check → SheetPro |
+| `cancel_dialogue` | Tool / dialogue | cancel verbs + sticky | 0.95 | cancel FSM; Yes → final check → sheet |
+| `unknown_programme` | (gap) | catalogue miss | 0.95 | honest refuse + SheetPro (no final check) |
+| `rag` | RAG default | no tool owns the turn (fees, programmes, …) | 0.5–0.65 | dense∥BM25 pack → Qwen (+ gap / SheetPro) |
+
+\*Shown under **RAG default** in the inspector score groups (refuse / fall-through, not a live-info pull).
 
 ### 3.8 Inspector evidence (what “open a rule” shows)
 
@@ -306,7 +312,7 @@ The router does not only say *which* rule won. For every rule it emits an eviden
 
 **Winning glance card** — `trace.routing.match_summary`:
 
-- `headline` — one sentence (“Matched because the message contains «月費» → route `fees`.”)
+- `headline` — one sentence (“Matched because … → route `rag` / `opening_hours` / ….”)
 - `cue` — exact substring
 - `segments` — full query split into highlighted / non-highlighted pieces
 - `explanation` / `downstream` — why that cue matters and what runs next
@@ -316,11 +322,11 @@ In the UI: **Router decision** opens with that card; the winning rule auto-expan
 ### 3.9 Routing invariants (stress-tested)
 
 - Typhoon / T8 / black rain → `severe_weather` (**grounded compose**; privileged policy/live doc; not pure RAG).
-- “How much is phonics?” / `月費幾多？` / `幾錢一個月` → `fees` (card privileged; enrich OK).
+- “How much is phonics?” / `月費幾多？` / `幾錢一個月` → `rag` (KB fees folder; **no fee tool**).
 - “Do you offer private 1:1?” → `rag`.
-- “How much time does phonics take?” → not fees (`_FEE_DURATION_RE`) → RAG / other.
+- “How much time does phonics take?” → `rag` (duration prose, not a seats/booking tool).
 - Strong seat browse (`seats left`, `有冇位`, `仲有冇位`) → `booking_tool`, even if fee words co-occur.
-- Bare waitlist (`候補`, `滿班`, `waiting list`) → `waiting`; bare `冇位` alone no longer implies waitlist.
+- Waitlist prose (`候補`, `滿班`, `waiting list`) → `rag`; bare `冇位` alone is seat browse, not waitlist.
 - Safety “allergy + reaction” → `staff_escalation` before non-urgent `allergy` FAQ; final check fail-opens.
 - Off-domain city weather → refuse path (+ final check); no fake SheetPro todo.
 - Cancel confirm `no` / `do not cancel` → keep booked.
@@ -405,9 +411,9 @@ Generation: DashScope chat with numbered excerpts; `enable_thinking: false`.
 
 ### 5.3 Debug payload (`trace.rag`)
 
-`index_size`, `top_k`, `hit_count`, `top_score`, `embedding_mode`, `language_fallback`, `gap_reason`, `mode` (`pure_rag` | `grounded_enrich`), `hits[]` (full `text`).
+`index_size`, `top_k`, `hit_count`, `top_score`, `embedding_mode`, `language_fallback`, `gap_reason`, `mode` (`rag` | `grounded_enrich`), `hybrid.mode=channel_pack`, `hits[]` (full `text`).
 
-Inspector shows hits when **pure RAG** owns the turn **or** when grounded enrich ran (`trace.grounding` / enrich mode). Structured tool citations alone must not look like KB chunks.
+Inspector shows hits when **pure RAG** owns the turn **or** when grounded enrich ran (`trace.grounding` / enrich mode). On FSM enrich (hours / weather / seats), the lit path is **Live → Pack · 3+2 → Ranked → Grade → LLM** — Dense/Sparse cylinders stay off so the diagram does not orphan the RAG arm.
 
 ### 5.4 Soft gaps, off-KB refuse & guards
 
@@ -458,28 +464,28 @@ Used by: RAG prompt, fact adapt, hours follow-up (“tomorrow?”), arbiter hist
 ## 8. Demo UI contract
 
 **Left:** WhatsApp-shaped **parent chat only** (messages + composer). No Book buttons, no seat cards, no booking form.  
-**Right — System inspector:**
+**Right — System inspector (flowchart + detail):**
 
-1. Route pill + pipeline step rail (includes `final_check` when a commit ran)
+1. Lit path: Router · FSM|RAG → (tools) DST / Final check / Staff email / Live → (RAG) Dense∥BM25 → Pack 3+2 → Ranked → Grade → LLM → Answer
 2. One-tap **demo probes**
-3. **Router decision** — match summary (highlighted cue) → path → expandable rule map + score ledger
+3. **Rules · scores** — detector awards grouped into **Tool / dialogue**, **Live info**, **RAG default** (not RAG similarity)
 4. **Answer grounding** — bypass / grounded compose / pure RAG
 5. Hours / holiday / weather panel when relevant
-6. RAG / enrich hits (rank, score, full chunk) when retrieve ran
+6. Channel-pack hits (labeled dense / BM25 scores) when retrieve or enrich ran
 7. Class register + session memory
 
-**Right — Staff desk:** SheetPro follow-ups (formula bar shows full cell text) | MailBox Gmail-style inbox (`**bold`** rendered).
+**Right — Staff desk:** SheetPro follow-ups | MailBox Gmail-style inbox.
 
 Canonical probes:
 
 | Probe | Expected route | What to point at |
 |-------|----------------|------------------|
-| Typhoon | `severe_weather` | Match cue + grounded compose (privileged live/policy) |
-| Phonics fee / `月費幾多？` | `rag` | Fee FAQ chunk rank / score / text (no fact card) |
-| Address / FPS / teachers | `rag` | KB retrieve — static FAQs are RAG |
-| Phonics seats / `仲有冇位？` | `booking_tool` | Chat seat counts + Class register |
-| Book Jason | `booking_dialogue` | FSM → final check → SheetPro |
-| Safety call | `staff_escalation` | final check (fail-open) + MailBox draft |
+| Typhoon | `severe_weather` | Live info scores · Live → Pack enrich · MailBox only if escalate |
+| Open right now | `opening_hours` | Live hours facts · enrich via Pack (Dense/Sparse stay dark) |
+| Phonics fee / `月費幾多？` | `rag` | RAG default · Pack 3+2 · fee chunk |
+| Phonics seats / `仲有冇位？` | `booking_tool` | Tool scores · chat seat counts + Class register |
+| Book Jason | `booking_dialogue` | DST JSON · Final check · SheetPro (not DashScope LLM node) |
+| Safety call | `staff_escalation` | Final check → Staff email → MailBox |
 
 ---
 
@@ -508,7 +514,9 @@ Stress: `python scripts/stress_intent_router.py`
 
 | Term | Meaning |
 |------|---------|
-| **Route** | Named specialist chosen for this turn (`fees`, `rag`, …) |
+| **Route** | Named specialist chosen for this turn (`opening_hours`, `booking_dialogue`, `rag`, …) |
+| **Channel pack** | Keep policy: dense ranks 1–3 + up to 2 BM25 supplements (skip duplicates) |
+| **DST** | Cheap JSON dialogue-state tracking for book/cancel slots (own inspector node) |
 | **Cue / matched span** | Exact substring in the parent message that fired a detector |
 | **Grounded compose** | Soft FAQ path: privileged structured/live doc + KB enrich → compose |
 | **Adapt** | Main-LLM tone rewrite of a structured fact; must not invent policy |

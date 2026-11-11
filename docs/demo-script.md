@@ -44,36 +44,36 @@
 ### 0:40–1:20 · Technique (Technique / Architecture ≤20s, then live)
 
 **Narrator:**
-> This is a **training-free** system on purpose — centre docs change weekly, so fine-tuning is the wrong loop. We built our own **RAG** pipeline: markdown KB → DashScope embeddings → Chroma ∥ BM25 → channel pack (3 dense + 2 BM25) → Qwen with citations. Above that sits a **hybrid intent router**. The scores you see are **not** retrieval similarities — hard detectors award fixed confidence (typhoon 1.0, fees 0.90). Soft FAQ routes **grounded-compose**: the fact card stays privileged; KB may enrich. Hard paths — book, cancel, escalate, refuse — **bypass retrieve** so live seats and safety copy cannot be diluted. Before those commits, a **cheap LLM final check** must go ahead, clarify, or abort. Parent chat stays WhatsApp-shaped: conversation only.
+> This is a **training-free** system on purpose — centre docs change weekly, so fine-tuning is the wrong loop. We built our own **RAG** pipeline: markdown KB → DashScope embeddings → Chroma ∥ BM25 → **channel pack — three dense hits plus two BM25 supplements** → Qwen with citations. Above that sits a **hybrid intent router**. The scores you see are **not** retrieval similarities — they are detector awards, grouped into **tool / dialogue**, **live info**, and **RAG default**. Live hours and typhoon use privileged facts plus KB enrich. Hard paths — book, cancel, escalate — **bypass retrieve**, then a **cheap final check** may proceed, clarify, or abort. Parent chat stays WhatsApp-shaped: conversation only.
 
 **Pilot:** Flash Architecture; return to live UI.
 
 ---
 
-### 1:20–1:55 · Beat 1 — Typhoon (structured + enrich)
+### 1:20–1:55 · Beat 1 — Typhoon / hours (live info + enrich)
 
-**Show:** Probe **Typhoon**.
+**Show:** Probe **Typhoon** (or “Are you open right now?”).
 
 **Say:**
-> Router decision: severe-weather at score **1.0** from `hard_regex`. Answer grounding shows **grounded compose** — live HKO / policy doc privileged; KB may add general advice. The model elaborates; it must not invent a different signal.
+> **Live info** detectors own this turn — severe-weather or opening-hours at a fixed award, not a Chroma score. Path: FSM → **Live** → **Pack · 3+2** enrich → LLM. Dense and Sparse stay dark so the line stays honest. Live HKO / hours facts stay privileged.
 
-**Point:** Match cue · grounding · enrich panel · score ledger.
+**Point:** Rules · Live info group · lit Live→Pack path · grounding.
 
 **Backup:** Christmas → opening-hours / public holiday.
 
 ---
 
-### 1:55–2:35 · Beat 2 — Fees tool, then pure RAG
+### 1:55–2:35 · Beat 2 — Pure RAG (fees + narrative)
 
 **Show A:** **Phonics fee**.
 
 **Say:**
-> Fee-guide route. Intent scores: `fees=0.90` from the detector ledger — not from Chroma. Grounding: card privileged, KB enrich allowed.
+> Static fees live in the KB — route is **RAG default**, not a fee tool. Point at **Rules · scores**: Tool / Live stay low; RAG wins. Then **Pack · 3+2** and the fee chunk with a labeled dense or BM25 score.
 
-**Show B:** **RAG · Private 1:1**.
+**Show B:** **RAG · Private 1:1** (or teachers).
 
 **Say:**
-> Now expand **RAG retrieval** — index size, top-k, rank, retrieval score, full chunk. Contrast with fees: there the card wins; here retrieve→generate owns the answer.
+> Same arm — Dense ∥ BM25 → channel pack → generate. Expand a hit so they see the full chunk and citation.
 
 **Backup:** Teachers / Location if RAG is slow.
 
@@ -89,7 +89,7 @@
 **Show B (if time):** **Book Jason**.
 
 **Say:**
-> Sticky booking dialogue from the messaging number. For a named programme we ask for a diagnostic assessment; when the parent says **yes**, watch the inspector — **LLM final check · book** → then a quiet **SheetPro** row. No fake booking form.
+> Sticky booking dialogue. Watch **DST · cheap JSON** for slots, then on **yes** the **Final check** node — not the DashScope LLM box — then SheetPro. Parent reply stays a template.
 
 **Backup:** Cancel class (decline with **no** → Kept as booked).
 
@@ -109,7 +109,7 @@
 **Show:** **Safety call**. Staff desk → **MailBox**.
 
 **Say:**
-> Suspected allergy reaction — escalate. Parent gets safety-aware copy; staff get a Gmail-style draft with call-now CTA. Final check still runs, but **safety fail-opens** so the inbox is never blocked on the model.
+> Escalate path: **FSM → Final check → Staff email → Staff desk**. Two cheap LLM cards have their own nodes — they are not stuffed into FSM tools. Safety **fail-opens** so MailBox is never blocked on the model.
 
 **Optional (5s):** Tokyo weather — refuse path; final check can clarify or send to RAG instead of a brittle hard refuse.
 
@@ -125,8 +125,8 @@
 ## Lines worth memorising
 
 1. “Parents ask after hours; staff cannot live on WhatsApp — wrong fees kill trust.”
-2. “Training-free RAG + hybrid router — scores are detector awards, not retrieval sim.”
-3. “Hard paths bypass retrieve; a cheap LLM still gives the final go-ahead before commit.”
+2. “Scores are detector awards in three groups — tools, live info, RAG — not Chroma similarity.”
+3. “We keep three dense hits and two BM25 supplements; hard paths still get a cheap final check before commit.”
 4. “Typhoon: score 1.0 — live policy privileged — KB may enrich.”
 5. “Expand the chunk — that is retrieve then generate.”
 6. “Seats from the register; book in chat; Yes → final check → SheetPro.”

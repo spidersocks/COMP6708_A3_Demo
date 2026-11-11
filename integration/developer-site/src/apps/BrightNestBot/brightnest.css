@@ -1624,6 +1624,18 @@ code,
   line-height: 1.35;
 }
 
+.bn-score-group {
+  margin: 10px 0 4px;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--muted) 28%, transparent);
+}
+
+.bn-score-group:first-of-type {
+  border-top: none;
+  padding-top: 0;
+  margin-top: 4px;
+}
+
 .bn-match-summary,
 .bn-grounding-card {
   margin: 0 0 10px;

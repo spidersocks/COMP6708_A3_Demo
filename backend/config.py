@@ -52,14 +52,15 @@ class Settings:
     rag_chunk_size: int = int(os.environ.get("RAG_CHUNK_SIZE", "900"))
     rag_chunk_overlap: int = int(os.environ.get("RAG_CHUNK_OVERLAP", "120"))
     collection_name: str = os.environ.get("CHROMA_COLLECTION", "brightnest_kb")
-    # Hybrid retrieve: dense (Chroma) + sparse (in-process BM25) fused with RRF
+    # Hybrid retrieve: dense (Chroma) ∥ BM25 → channel pack (3 dense + BM25 supplements).
+    # rag_rrf_k kept for env compatibility; keep policy no longer uses RRF fusion.
     rag_hybrid_enabled: bool = os.environ.get("RAG_HYBRID_ENABLED", "true").lower() in (
         "1",
         "true",
         "yes",
     )
     rag_rrf_k: int = int(os.environ.get("RAG_RRF_K", "60"))
-    # Keep the hybrid pool small — KB is ~hundreds of chunks per language
+    # Sparse candidate pool before channel pack (KB is ~hundreds of chunks per language)
     rag_sparse_pool_k: int = int(os.environ.get("RAG_SPARSE_POOL_K", "5"))
 
     # Generation

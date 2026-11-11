@@ -1,4 +1,4 @@
-"""Comprehensive live battery after tools-only router cut."""
+"""Live battery: tools / live-info / RAG-default (fees+FAQs → route=rag)."""
 from __future__ import annotations
 
 import json

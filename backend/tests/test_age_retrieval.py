@@ -1,4 +1,4 @@
-"""Age-band questions must ground on faq/age docs, not citation-gate."""
+"""Age-band questions must ground on age_bands docs, not citation-gate."""
 from __future__ import annotations
 
 import sys
