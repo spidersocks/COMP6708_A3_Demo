@@ -140,6 +140,7 @@ def review_intent(
             prompt,
             system="Return only compact JSON for intent routing. No prose.",
             max_tokens=80,
+            role="intent_arbiter",
         )
         if not parsed:
             out["reason"] = "llm_empty"

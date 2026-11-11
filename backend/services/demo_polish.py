@@ -60,6 +60,7 @@ def polish_gap_reply(
         system="Parent-facing BrightNest reply only. No JSON.",
         max_tokens=180,
         temperature=0.3,
+        role="gap_polish",
     )
     if not text or len(text.strip()) < 20:
         out["reason"] = "empty"
@@ -101,7 +102,7 @@ def pick_cancel_candidate(
         f"Options:\n" + "\n".join(lines) + "\n\n"
         f"Parent message: {message}\n"
     )
-    parsed = cheap_llm.complete_json(prompt, max_tokens=60)
+    parsed = cheap_llm.complete_json(prompt, max_tokens=60, role="cancel_pick")
     if not parsed:
         out["reason"] = "parse_fail"
         return out
@@ -141,7 +142,7 @@ def parse_booking_hints(message: str) -> Dict[str, Any]:
         'JSON only: {"course_key":..,"weekday":..,"window":..,"teacher_hint":..,"confidence":0-1}\n\n'
         f"Parent message: {message}\n"
     )
-    parsed = cheap_llm.complete_json(prompt, max_tokens=80)
+    parsed = cheap_llm.complete_json(prompt, max_tokens=80, role="booking_parse")
     if not parsed:
         return {**empty, "called": True, "reason": "parse_fail"}
     allowed_courses = {"phonics", "mandarin", "writing", "playgroup", "math", "trial"}

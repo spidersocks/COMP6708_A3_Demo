@@ -107,6 +107,7 @@ def review_commit(
             prompt,
             system="Return only compact JSON for a commit gate. No markdown.",
             max_tokens=100,
+            role=f"final_check:{kind_key}",
         )
         if not parsed:
             out["reason"] = "llm_empty_fail_open" if fail_open else "llm_empty"

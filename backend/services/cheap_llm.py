@@ -13,6 +13,7 @@ from rag.dashscope_native import (
     http_client,
     native_api_base,
 )
+from services import llm_io
 
 _JSON_RE = re.compile(r"\{[^{}]*\}", re.S)
 
@@ -46,6 +47,7 @@ def complete_text(
     system: str = "Be brief and follow instructions exactly.",
     max_tokens: int = 120,
     temperature: float = 0.2,
+    role: str = "cheap_llm",
 ) -> Optional[str]:
     if not enabled():
         return None
@@ -103,6 +105,20 @@ def complete_text(
             f"tokens≤{max_tokens} {ms}ms",
             flush=True,
         )
+        llm_io.record(
+            role=role,
+            model=model,
+            system=system,
+            user=prompt,
+            response=text or "",
+            provider="dashscope_cheap",
+            meta={
+                "latency_ms": ms,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "multimodal": multimodal,
+            },
+        )
         return text
     except Exception as e:
         print(f"[CHEAP_LLM] failed: {e}", flush=True)
@@ -114,8 +130,15 @@ def complete_json(
     *,
     system: str = "Return only one compact JSON object. No markdown.",
     max_tokens: int = 100,
+    role: str = "cheap_json",
 ) -> Optional[Dict[str, Any]]:
-    text = complete_text(prompt, system=system, max_tokens=max_tokens, temperature=0.0)
+    text = complete_text(
+        prompt,
+        system=system,
+        max_tokens=max_tokens,
+        temperature=0.0,
+        role=role,
+    )
     if not text:
         return None
     return parse_json_object(text)

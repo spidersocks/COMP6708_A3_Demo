@@ -210,13 +210,14 @@ code,
 }
 
 .bn-phone {
+  position: relative;
   background: var(--panel);
   border-radius: 28px;
   border: 1px solid rgba(255, 255, 255, 0.8);
   box-shadow: var(--shadow);
   overflow: hidden;
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   min-height: 520px;
   height: min(74dvh, 760px);
   max-height: min(74dvh, 760px);
@@ -1782,7 +1783,8 @@ code,
 .bn-browser-page {
   min-height: 0;
   background: #fff;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border-radius: 0 0 13px 13px;
 }
@@ -2715,6 +2717,141 @@ code,
   }
 }
 
+/* —— Parent pick gate (empty / after Reset) —— */
+.bn-phone--gated .bn-messages,
+.bn-phone--gated .bn-inputbar {
+  filter: grayscale(0.55);
+  opacity: 0.38;
+  pointer-events: none;
+  user-select: none;
+}
+.bn-parent-gate {
+  padding: 16px 14px 14px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, #f4fbfc 0%, #eef6f7 100%);
+}
+.bn-parent-gate-kicker {
+  margin: 0 0 4px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--teal-deep);
+}
+.bn-parent-gate h2 {
+  margin: 0 0 6px;
+  font-size: 1.05rem;
+  font-weight: 650;
+  color: var(--ink);
+  letter-spacing: -0.02em;
+}
+.bn-parent-gate-copy {
+  margin: 0 0 12px;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.bn-parent-gate-actions {
+  display: grid;
+  gap: 8px;
+}
+.bn-parent-gate-card {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  text-align: left;
+  font: inherit;
+  padding: 12px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(10, 79, 90, 0.16);
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease;
+}
+.bn-parent-gate-card:hover {
+  border-color: var(--teal-deep);
+  box-shadow: 0 0 0 2px rgba(10, 79, 90, 0.12);
+  transform: translateY(-1px);
+}
+
+/* —— LLM inspector —— */
+.bn-llm-calls {
+  display: grid;
+  gap: 8px;
+}
+.bn-llm-call {
+  border: 1px solid rgba(10, 79, 90, 0.12);
+  border-radius: 12px;
+  background: #fbfefe;
+  overflow: hidden;
+}
+.bn-llm-call > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 12px;
+  padding: 10px 12px;
+  user-select: none;
+}
+.bn-llm-call > summary::-webkit-details-marker {
+  display: none;
+}
+.bn-llm-call > summary strong {
+  font-size: 0.82rem;
+  color: var(--teal-ink);
+}
+.bn-llm-call > summary span {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.bn-llm-call-body {
+  padding: 0 10px 10px;
+  display: grid;
+  gap: 6px;
+}
+.bn-llm-part {
+  border: 1px solid rgba(10, 79, 90, 0.08);
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+.bn-llm-part > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--ink);
+  user-select: none;
+}
+.bn-llm-part > summary::-webkit-details-marker {
+  display: none;
+}
+.bn-llm-part > summary em {
+  font-style: normal;
+  font-weight: 500;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+.bn-llm-part .bn-pre {
+  margin: 0;
+  border-radius: 0;
+  border: 0;
+  border-top: 1px solid rgba(10, 79, 90, 0.08);
+  max-height: 280px;
+}
+.bn-llm-context {
+  margin-bottom: 10px;
+}
+
 /* —— Parent profile switcher —— */
 .bn-profile-switch {
   display: grid;
@@ -2804,11 +2941,13 @@ code,
 .bn-cal--staff {
   display: flex;
   flex-direction: column;
-  min-height: 520px;
+  min-height: 0;
+  flex: 1 1 auto;
   height: 100%;
   border: 0;
   border-radius: 0;
   background: #fff;
+  overflow: hidden;
 }
 .bn-cal-chrome {
   display: flex;
@@ -2901,14 +3040,26 @@ code,
 }
 .bn-cal-main {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 280px;
+  grid-template-columns: minmax(0, 1fr);
   min-height: 0;
-  flex: 1;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+.bn-cal-main.has-detail {
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 300px);
 }
 .bn-cal-board {
   overflow: auto;
-  max-height: min(62dvh, 640px);
+  max-height: none;
+  height: 100%;
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+.bn-cal-main.has-detail .bn-cal-board {
   border-right: 1px solid #e8eaed;
+}
+.bn-cal-empty {
+  padding: 24px 16px;
 }
 .bn-cal-head,
 .bn-cal-body {
@@ -2980,9 +3131,10 @@ code,
   position: absolute;
   left: 2px;
   right: 2px;
+  box-sizing: border-box;
   border: 0;
   border-radius: 4px;
-  padding: 2px 6px;
+  padding: 2px 5px;
   overflow: hidden;
   font: inherit;
   font-size: 0.68rem;
@@ -2995,6 +3147,13 @@ code,
   align-content: start;
   gap: 0;
   z-index: 1;
+}
+.bn-cal-event.is-split {
+  font-size: 0.62rem;
+  padding: 2px 4px;
+}
+.bn-cal-event.is-split strong {
+  font-size: 0.64rem;
 }
 .bn-cal-event:hover {
   filter: brightness(1.05);
@@ -3031,23 +3190,11 @@ code,
 .bn-cal-detail {
   padding: 14px 16px;
   overflow: auto;
-  max-height: min(62dvh, 640px);
+  max-height: none;
+  height: 100%;
+  min-height: 0;
   background: #fff;
-}
-.bn-cal-detail-empty {
-  display: grid;
-  place-items: center;
-  gap: 10px;
-  text-align: center;
-  min-height: 220px;
-  color: #70757a;
-  font-size: 0.82rem;
-  padding: 24px 12px;
-}
-.bn-cal-detail-empty img {
-  width: 40px;
-  height: 40px;
-  opacity: 0.85;
+  overscroll-behavior: contain;
 }
 .bn-cal-detail-head {
   display: grid;
@@ -3146,15 +3293,17 @@ code,
   color: #70757a;
 }
 @media (max-width: 980px) {
-  .bn-cal-main {
+  .bn-cal-main,
+  .bn-cal-main.has-detail {
     grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) auto;
   }
-  .bn-cal-board {
+  .bn-cal-main.has-detail .bn-cal-board {
     border-right: 0;
     border-bottom: 1px solid #e8eaed;
   }
   .bn-cal-detail {
-    max-height: none;
+    max-height: 42vh;
   }
 }
 

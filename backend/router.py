@@ -37,6 +37,7 @@ from services import demo_polish
 from services import escalation as escalation_svc
 from services import families
 from services import intent_router
+from services import llm_io
 from services import staff_messages
 
 # Extra canned providers that get a main-LLM fact rewrite (centre_facts always does).
@@ -254,6 +255,7 @@ def _llm_trace_summary(
 @router.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
     t0 = time.perf_counter()
+    llm_io.begin()
     message = (req.message or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
@@ -677,6 +679,7 @@ def chat(req: ChatRequest) -> ChatResponse:
             trace["cancel"] = dbg["cancel"]
         if dbg.get("dialogue") and "booking" not in trace:
             trace["booking"] = dbg["dialogue"]
+        llm_io.attach(trace)
         resp = ChatResponse(
             answer=final,
             citations=out_citations,
@@ -1268,6 +1271,7 @@ def chat(req: ChatRequest) -> ChatResponse:
         trace["answer_provider"] = "assessment_followup"
         trace["llm"] = _llm_trace_summary(decision.debug or {}, steps, "assessment_followup")
         trace["latency_ms"] = int((time.perf_counter() - t0) * 1000)
+        llm_io.attach(trace)
         resp = ChatResponse(
             answer=answer,
             citations=[],
@@ -1497,6 +1501,7 @@ def chat(req: ChatRequest) -> ChatResponse:
     trace["answer_provider"] = rag_provider
     trace["llm"] = _llm_trace_summary(decision.debug or {}, steps, rag_provider)
     trace["latency_ms"] = int((time.perf_counter() - t0) * 1000)
+    llm_io.attach(trace)
     resp = ChatResponse(
         answer=answer,
         citations=result.get("citations") or [],

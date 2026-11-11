@@ -24,6 +24,12 @@ function eventHeight(durationMin) {
   return Math.max(20, h - 3);
 }
 
+function eventEndMs(iso, durationMin) {
+  const d = parseSlot(iso);
+  if (!d) return 0;
+  return d.getTime() + (Number(durationMin) || 60) * 60000;
+}
+
 function formatClock(iso) {
   const d = parseSlot(iso);
   if (!d) return "—";
@@ -59,6 +65,62 @@ function dayParts(label, dateIso) {
   }
   const bits = String(label || "").split(/\s+/);
   return { weekday: bits[0] || "", dayNum: bits[1] || "", isToday: false };
+}
+
+/**
+ * Pack overlapping sessions into side-by-side columns (Google Calendar style).
+ * Returns sessions with { _col, _cols, _startMs, _endMs }.
+ */
+function layoutOverlaps(sessions) {
+  const items = (sessions || [])
+    .map((s) => {
+      const start = parseSlot(s.slot_start);
+      if (!start) return null;
+      return {
+        ...s,
+        _startMs: start.getTime(),
+        _endMs: eventEndMs(s.slot_start, s.duration_min),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a._startMs - b._startMs || a._endMs - b._endMs);
+
+  // Cluster into overlap groups, then assign columns within each group.
+  const groups = [];
+  let cur = [];
+  let curEnd = 0;
+  for (const item of items) {
+    if (!cur.length || item._startMs < curEnd) {
+      cur.push(item);
+      curEnd = Math.max(curEnd, item._endMs);
+    } else {
+      groups.push(cur);
+      cur = [item];
+      curEnd = item._endMs;
+    }
+  }
+  if (cur.length) groups.push(cur);
+
+  const laid = [];
+  for (const group of groups) {
+    const colEnds = [];
+    for (const item of group) {
+      let col = colEnds.findIndex((end) => end <= item._startMs);
+      if (col === -1) {
+        col = colEnds.length;
+        colEnds.push(item._endMs);
+      } else {
+        colEnds[col] = item._endMs;
+      }
+      item._col = col;
+    }
+    const cols = Math.max(1, colEnds.length);
+    for (const item of group) {
+      item._cols = cols;
+      laid.push(item);
+    }
+  }
+  return laid;
 }
 
 /**
@@ -98,14 +160,16 @@ export default function MyCalendar({
   const filteredDays = useMemo(() => {
     return weekDays.map((day) => ({
       ...day,
-      sessions: (day.sessions || []).filter((s) => {
-        if (teacherId !== "all" && s.teacher_id !== teacherId) return false;
-        if (studentName !== "all") {
-          const kids = (s.enrolled || []).map((e) => e.child);
-          if (!kids.includes(studentName)) return false;
-        }
-        return true;
-      }),
+      sessions: layoutOverlaps(
+        (day.sessions || []).filter((s) => {
+          if (teacherId !== "all" && s.teacher_id !== teacherId) return false;
+          if (studentName !== "all") {
+            const kids = (s.enrolled || []).map((e) => e.child);
+            if (!kids.includes(studentName)) return false;
+          }
+          return true;
+        })
+      ),
     }));
   }, [weekDays, teacherId, studentName]);
 
@@ -197,11 +261,11 @@ export default function MyCalendar({
       </div>
 
       {!schedule ? (
-        <p className="bn-empty">Schedule API offline — restart backend to load.</p>
+        <p className="bn-empty bn-cal-empty">Schedule API offline — restart backend to load.</p>
       ) : filteredDays.length === 0 ? (
-        <p className="bn-empty">No sessions in this window.</p>
+        <p className="bn-empty bn-cal-empty">No sessions in this window.</p>
       ) : (
-        <div className="bn-cal-main">
+        <div className={`bn-cal-main ${selected ? "has-detail" : ""}`}>
           <div className="bn-cal-board">
             <div
               className="bn-cal-head"
@@ -251,16 +315,23 @@ export default function MyCalendar({
                       selected &&
                       selected.session_id === s.session_id &&
                       selected.slot_start === s.slot_start;
+                    const cols = Math.max(1, s._cols || 1);
+                    const col = s._col || 0;
+                    const widthPct = 100 / cols;
+                    const leftPct = col * widthPct;
                     return (
                       <button
                         key={selKey}
                         type="button"
                         className={`bn-cal-event tone-${courseTone(s.course_key)} ${
                           s.status === "full" ? "is-full" : ""
-                        } ${active ? "is-selected" : ""}`}
+                        } ${active ? "is-selected" : ""} ${cols > 1 ? "is-split" : ""}`}
                         style={{
                           top: eventTop(s.slot_start),
                           height: eventHeight(s.duration_min),
+                          left: `calc(${leftPct}% + 1px)`,
+                          width: `calc(${widthPct}% - 2px)`,
+                          right: "auto",
                         }}
                         onClick={() =>
                           setSelected({
@@ -283,75 +354,68 @@ export default function MyCalendar({
             </div>
           </div>
 
-          <aside className={`bn-cal-detail ${selected ? "open" : ""}`}>
-            {!selected ? (
-              <div className="bn-cal-detail-empty">
-                <img src={MYCALENDAR_ICON} alt="" />
-                <p>Select a class to see staff, room, seats, and enrolled students.</p>
-              </div>
-            ) : (
-              <>
-                <div className="bn-cal-detail-head">
-                  <span className={`bn-cal-dot tone-${courseTone(selected.course_key)}`} />
-                  <div>
-                    <h3>{selected.course_label}</h3>
-                    <p>
-                      {selected.dayLabel} · {formatClock(selected.slot_start)}–
-                      {endClock(selected.slot_start, selected.duration_min)}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    className="bn-cal-detail-close"
-                    onClick={() => setSelected(null)}
-                    aria-label="Close details"
-                  >
-                    ×
-                  </button>
-                </div>
-                <dl className="bn-cal-detail-grid">
-                  <div>
-                    <dt>Staff</dt>
-                    <dd>{selected.teacher_name || "—"}</dd>
-                  </div>
-                  <div>
-                    <dt>Room</dt>
-                    <dd>{selected.room || "—"}</dd>
-                  </div>
-                  <div>
-                    <dt>Seats</dt>
-                    <dd>
-                      {selected.seats_left}/{selected.capacity} left
-                      {selected.status === "full" ? " · full" : ""}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Type</dt>
-                    <dd>{selected.kind === "trial" ? "Trial assessment" : "Regular class"}</dd>
-                  </div>
-                </dl>
-                <h4>Enrolled ({selected.enrolled_count || 0})</h4>
-                {(selected.enrolled || []).length === 0 ? (
-                  <p className="bn-empty">No students on the register for this slot.</p>
-                ) : (
-                  <ul className="bn-cal-roster">
-                    {(selected.enrolled || []).map((e, i) => (
-                      <li key={`${e.child}-${i}`}>
-                        <strong>{e.child}</strong>
-                        <span>{e.parent || "—"}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {selected.chat_bookings ? (
-                  <p className="bn-cal-chat-note">
-                    +{selected.chat_bookings} chat booking
-                    {selected.chat_bookings === 1 ? "" : "s"} counted in seats
+          {selected ? (
+            <aside className="bn-cal-detail open">
+              <div className="bn-cal-detail-head">
+                <span className={`bn-cal-dot tone-${courseTone(selected.course_key)}`} />
+                <div>
+                  <h3>{selected.course_label}</h3>
+                  <p>
+                    {selected.dayLabel} · {formatClock(selected.slot_start)}–
+                    {endClock(selected.slot_start, selected.duration_min)}
                   </p>
-                ) : null}
-              </>
-            )}
-          </aside>
+                </div>
+                <button
+                  type="button"
+                  className="bn-cal-detail-close"
+                  onClick={() => setSelected(null)}
+                  aria-label="Close details"
+                >
+                  ×
+                </button>
+              </div>
+              <dl className="bn-cal-detail-grid">
+                <div>
+                  <dt>Staff</dt>
+                  <dd>{selected.teacher_name || "—"}</dd>
+                </div>
+                <div>
+                  <dt>Room</dt>
+                  <dd>{selected.room || "—"}</dd>
+                </div>
+                <div>
+                  <dt>Seats</dt>
+                  <dd>
+                    {selected.seats_left}/{selected.capacity} left
+                    {selected.status === "full" ? " · full" : ""}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Type</dt>
+                  <dd>{selected.kind === "trial" ? "Trial assessment" : "Regular class"}</dd>
+                </div>
+              </dl>
+              <h4>Enrolled ({selected.enrolled_count || 0})</h4>
+              {(selected.enrolled || []).length === 0 ? (
+                <p className="bn-empty">No students on the register for this slot.</p>
+              ) : (
+                <ul className="bn-cal-roster">
+                  {(selected.enrolled || []).map((e, i) => (
+                    <li key={`${e.child}-${i}`}>
+                      <strong>{e.child}</strong>
+                      <span>{e.parent || "—"}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {selected.chat_bookings ? (
+                <p className="bn-cal-chat-note">
+                  +{selected.chat_bookings} chat booking
+                  {selected.chat_bookings === 1 ? "" : "s"} counted in seats
+                </p>
+              ) : null}
+            </aside>
+          ) : null}
         </div>
       )}
     </div>

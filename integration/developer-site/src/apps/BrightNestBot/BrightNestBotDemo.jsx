@@ -43,6 +43,22 @@ const PARENT_PROFILES = [
   },
 ];
 
+/** Survives site reload; cleared on Reset so the gate returns only then. */
+const PARENT_PICK_KEY = "bn_parent_picked";
+
+function readPickedProfileId() {
+  try {
+    const v = localStorage.getItem(PARENT_PICK_KEY);
+    return v === "jason" || v === "new" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function profileById(id) {
+  return PARENT_PROFILES.find((p) => p.id === id) || PARENT_PROFILES[0];
+}
+
 const DEMO_PROBES = [
   { label: "Hours", text: "What are your opening hours?" },
   { label: "Christmas", text: "Are you open on Christmas Day?" },
@@ -735,15 +751,84 @@ function Reveal({ title, summary, defaultOpen = false, children }) {
   );
 }
 
+const LLM_ROLE_LABELS = {
+  intent_arbiter: "Intent arbiter (cheap)",
+  grounded_compose: "Grounded compose (main)",
+  fact_adapt: "Fact rewrite (main)",
+  rag_generate: "RAG generate (main)",
+  gap_polish: "Gap polish (cheap)",
+  cancel_pick: "Cancel pick (cheap)",
+  booking_parse: "Booking parse (cheap)",
+  staff_email: "Staff email draft (cheap)",
+  main_generate: "Main generate",
+  cheap_llm: "Cheap LLM",
+  cheap_json: "Cheap JSON",
+};
+
+function llmRoleLabel(role) {
+  const raw = String(role || "");
+  if (LLM_ROLE_LABELS[raw]) return LLM_ROLE_LABELS[raw];
+  if (raw.startsWith("final_check:")) {
+    return `Final check · ${raw.slice("final_check:".length)}`;
+  }
+  return raw || "LLM call";
+}
+
+function LlmCallCard({ call, defaultOpen = false }) {
+  const ms = call?.meta?.latency_ms;
+  return (
+    <details className="bn-llm-call" defaultOpen={defaultOpen}>
+      <summary>
+        <strong>{llmRoleLabel(call.role)}</strong>
+        <span>
+          {call.model || "—"}
+          {ms != null ? ` · ${ms} ms` : ""}
+          {call.response_chars != null ? ` · ${call.response_chars} out` : ""}
+        </span>
+      </summary>
+      <div className="bn-llm-call-body">
+        <details className="bn-llm-part">
+          <summary>
+            System prompt
+            <em>{call.system_chars ?? (call.system || "").length} chars</em>
+          </summary>
+          <pre className="bn-pre bn-pre-tall">{call.system || "(empty)"}</pre>
+        </details>
+        <details className="bn-llm-part" open>
+          <summary>
+            User / context fed to the model
+            <em>{call.user_chars ?? (call.user || "").length} chars</em>
+          </summary>
+          <pre className="bn-pre bn-pre-tall">{call.user || "(empty)"}</pre>
+        </details>
+        <details className="bn-llm-part" open>
+          <summary>
+            Model output
+            <em>{call.response_chars ?? (call.response || "").length} chars</em>
+          </summary>
+          <pre className="bn-pre bn-pre-tall">{call.response || "(empty)"}</pre>
+        </details>
+      </div>
+    </details>
+  );
+}
+
 export default function BrightNestBotDemo() {
   const [inputMessage, setInputMessage] = useState("");
   const [chatHistory, setChatHistory] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [profileId, setProfileId] = useState("jason");
-  const [parentName, setParentName] = useState("Demo Parent");
-  const [childName, setChildName] = useState("Jason Chan");
-  const [phone, setPhone] = useState("+852 9000 0000");
+  const [parentGateOpen, setParentGateOpen] = useState(() => !readPickedProfileId());
+  const [profileId, setProfileId] = useState(() => readPickedProfileId() || "jason");
+  const [parentName, setParentName] = useState(
+    () => profileById(readPickedProfileId() || "jason").parentName
+  );
+  const [childName, setChildName] = useState(
+    () => profileById(readPickedProfileId() || "jason").childName
+  );
+  const [phone, setPhone] = useState(
+    () => profileById(readPickedProfileId() || "jason").phone
+  );
   const [sessionLabel, setSessionLabel] = useState(() => shortSessionLabel());
   const [trace, setTrace] = useState(null);
   const [apiOnline, setApiOnline] = useState(null);
@@ -813,14 +898,20 @@ export default function BrightNestBotDemo() {
       .catch(() => setFamiliesRoster([]));
   }
 
-  function switchParentProfile(nextId) {
+  function switchParentProfile(nextId, { fromGate = false } = {}) {
     const profile = PARENT_PROFILES.find((p) => p.id === nextId) || PARENT_PROFILES[0];
     const sid = localStorage.getItem("bn_bot_session_id");
     const apply = () => {
+      try {
+        localStorage.setItem(PARENT_PICK_KEY, profile.id);
+      } catch {
+        /* ignore */
+      }
       setProfileId(profile.id);
       setParentName(profile.parentName);
       setChildName(profile.childName);
       setPhone(profile.phone);
+      setParentGateOpen(false);
       setChatHistory([]);
       setError(null);
       setTrace(null);
@@ -829,6 +920,11 @@ export default function BrightNestBotDemo() {
       refreshFamilies();
       refreshSchedule();
     };
+    // First pick with no session: just unlock chat — no need to DELETE.
+    if (!sid && fromGate) {
+      apply();
+      return;
+    }
     if (sid) {
       fetch(`${API_BASE}/chat/history/${encodeURIComponent(sid)}`, { method: "DELETE" })
         .catch(() => {})
@@ -903,6 +999,12 @@ export default function BrightNestBotDemo() {
       setStaffTab("calendar");
       setSelectedFamilyPhone(null);
       localStorage.removeItem("bn_bot_session_id");
+      try {
+        localStorage.removeItem(PARENT_PICK_KEY);
+      } catch {
+        /* ignore */
+      }
+      setParentGateOpen(true);
       setSessionLabel(shortSessionLabel());
       refreshAdminTodos();
       refreshStaffMessages();
@@ -926,6 +1028,7 @@ export default function BrightNestBotDemo() {
   }
 
   async function sendMessage(raw) {
+    if (parentGateOpen) return;
     const trimmed = (raw ?? inputMessage).trim();
     if (!trimmed || isLoading) return;
 
@@ -1019,8 +1122,18 @@ export default function BrightNestBotDemo() {
     }
   }
 
-  const isDisabled = isLoading || !inputMessage.trim();
+  const isDisabled = parentGateOpen || isLoading || !inputMessage.trim();
   const showEmpty = chatHistory.length === 0 && !isLoading;
+  const llmCalls = Array.isArray(trace?.llm_calls) ? trace.llm_calls : [];
+  const llmSummary = useMemo(() => {
+    if (!trace) return "Idle until a turn";
+    const calls = Array.isArray(trace.llm_calls) ? trace.llm_calls : [];
+    if (!calls.length) {
+      return "No LLM call this turn (tool / template only)";
+    }
+    const roles = calls.map((c) => c.role).filter(Boolean);
+    return `${calls.length} call${calls.length === 1 ? "" : "s"} · ${roles.slice(0, 3).join(" · ")}`;
+  }, [trace]);
   const route = trace?.route;
   const meta = routeMeta(route);
   const steps = trace?.pipeline_steps || [];
@@ -1153,7 +1266,7 @@ export default function BrightNestBotDemo() {
         {/* Phone */}
         <aside className="bn-phone-wrap">
           <p className="bn-col-label">Parent chat</p>
-          <div className="bn-phone">
+          <div className={`bn-phone ${parentGateOpen ? "bn-phone--gated" : ""}`}>
             <div className="bn-phone-bar">
               <img src={LOGO_SRC} alt="BrightNest" />
               <div>
@@ -1162,32 +1275,65 @@ export default function BrightNestBotDemo() {
               </div>
             </div>
 
-            <div className="bn-profile-switch" role="group" aria-label="Demo parent profile">
-              {PARENT_PROFILES.map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  className={`bn-profile-card ${profileId === p.id ? "active" : ""}`}
-                  onClick={() => switchParentProfile(p.id)}
-                  disabled={isLoading}
-                >
-                  <span className="bn-profile-avatar" aria-hidden="true">
-                    {p.initials}
-                  </span>
-                  <span className="bn-profile-copy">
-                    <strong>{p.label}</strong>
-                    <small>{p.blurb}</small>
-                  </span>
-                </button>
-              ))}
-              <div className="bn-profile-active">
-                <span>{childName || "No child on file"}</span>
-                <code>{phone}</code>
+            {parentGateOpen ? (
+              <div className="bn-parent-gate" role="dialog" aria-label="Choose parent identity">
+                <p className="bn-parent-gate-kicker">Start a WhatsApp thread</p>
+                <h2>Who are you messaging as?</h2>
+                <p className="bn-parent-gate-copy">
+                  Pick a known demo family or a blank new parent. Chat stays locked until you choose.
+                  Reloading the page keeps your last choice; Reset brings this picker back.
+                </p>
+                <div className="bn-parent-gate-actions">
+                  {PARENT_PROFILES.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      className="bn-parent-gate-card"
+                      onClick={() => switchParentProfile(p.id, { fromGate: true })}
+                    >
+                      <span className="bn-profile-avatar" aria-hidden="true">
+                        {p.initials}
+                      </span>
+                      <span className="bn-profile-copy">
+                        <strong>{p.label}</strong>
+                        <small>{p.blurb}</small>
+                      </span>
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="bn-profile-switch" role="group" aria-label="Demo parent profile">
+                {PARENT_PROFILES.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className={`bn-profile-card ${profileId === p.id ? "active" : ""}`}
+                    onClick={() => switchParentProfile(p.id)}
+                    disabled={isLoading}
+                  >
+                    <span className="bn-profile-avatar" aria-hidden="true">
+                      {p.initials}
+                    </span>
+                    <span className="bn-profile-copy">
+                      <strong>{p.label}</strong>
+                      <small>{p.blurb}</small>
+                    </span>
+                  </button>
+                ))}
+                <div className="bn-profile-active">
+                  <span>{childName || "No child on file"}</span>
+                  <code>{phone}</code>
+                </div>
+              </div>
+            )}
 
-            <div className="bn-messages" ref={chatWindowRef}>
-              {showEmpty && (
+            <div
+              className="bn-messages"
+              ref={chatWindowRef}
+              aria-hidden={parentGateOpen}
+            >
+              {showEmpty && !parentGateOpen && (
                 <div className="bn-row bn-row-bot">
                   <div className="bn-bubble bn-bubble-bot">
                     <WaMarkdown>Hi! Ask about courses, fees, hours, or trial booking.</WaMarkdown>
@@ -1242,8 +1388,10 @@ export default function BrightNestBotDemo() {
                 className="bn-textarea"
                 value={inputMessage}
                 onChange={(e) => setInputMessage(e.target.value)}
-                placeholder="Message as a parent…"
-                disabled={isLoading}
+                placeholder={
+                  parentGateOpen ? "Choose a parent above to unlock chat…" : "Message as a parent…"
+                }
+                disabled={parentGateOpen || isLoading}
                 rows={1}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey && !isDisabled) {
@@ -1899,6 +2047,80 @@ export default function BrightNestBotDemo() {
           </div>
 
           <Reveal
+            key={`llm-${turnKey}`}
+            title="LLM this turn"
+            summary={llmSummary}
+            defaultOpen={Boolean(trace)}
+          >
+            {!trace ? (
+              <p className="bn-empty">Send a probe to capture every prompt and completion.</p>
+            ) : (
+              <>
+                <p className="bn-rules-hint">
+                  Exact system + user text each model call received, plus the raw completion.
+                  Expand a call to inspect the system prompt and full context package.
+                </p>
+                {trace?.history?.preview ? (
+                  <details className="bn-llm-part bn-llm-context" open>
+                    <summary>
+                      Conversation context string
+                      <em>{String(trace.history.preview).length} chars</em>
+                    </summary>
+                    <pre className="bn-pre bn-pre-tall">{trace.history.preview}</pre>
+                  </details>
+                ) : (
+                  <p className="bn-note">No prior turns in session memory for this call.</p>
+                )}
+                {llmCalls.length === 0 ? (
+                  <p className="bn-empty">
+                    This turn did not call an LLM (deterministic tool / template reply).
+                  </p>
+                ) : (
+                  <div className="bn-llm-calls">
+                    {llmCalls.map((call, i) => (
+                      <LlmCallCard
+                        key={`${call.id || i}-${call.role}`}
+                        call={call}
+                        defaultOpen={i === llmCalls.length - 1}
+                      />
+                    ))}
+                  </div>
+                )}
+                {trace?.adapt ? (
+                  <details className="bn-rules">
+                    <summary>
+                      Adapt / compose meta · {trace.adapt.mode || "—"} ·{" "}
+                      {trace.adapt.ran ? "ran" : "skipped"}
+                    </summary>
+                    <pre className="bn-pre">{JSON.stringify(trace.adapt, null, 2)}</pre>
+                  </details>
+                ) : null}
+                {trace?.final_check || trace?.debug?.final_check ? (
+                  <details className="bn-rules">
+                    <summary>
+                      Final check ·{" "}
+                      {(trace.final_check || trace.debug?.final_check)?.action || "—"}
+                    </summary>
+                    <pre className="bn-pre">
+                      {JSON.stringify(
+                        trace.final_check || trace.debug?.final_check,
+                        null,
+                        2
+                      )}
+                    </pre>
+                  </details>
+                ) : null}
+                {trace?.llm ? (
+                  <details className="bn-rules">
+                    <summary>Model roster</summary>
+                    <pre className="bn-pre">{JSON.stringify(trace.llm, null, 2)}</pre>
+                  </details>
+                ) : null}
+              </>
+            )}
+          </Reveal>
+
+          <Reveal
             key={`router-${turnKey}`}
             title="Route path"
             summary={routerSummary}
@@ -2200,7 +2422,7 @@ export default function BrightNestBotDemo() {
                   key={p.text}
                   type="button"
                   className="bn-probe"
-                  disabled={isLoading}
+                  disabled={parentGateOpen || isLoading}
                   onClick={() => sendMessage(p.text)}
                 >
                   {p.label}

@@ -11,6 +11,7 @@ from rag.dashscope_native import (
     http_client,
     native_api_base,
 )
+from services import llm_io
 
 PERSONA = {
     "en": (
@@ -347,6 +348,7 @@ def compose_grounded_fact(
             prompt,
             max_tokens=min(360, max(SETTINGS.gen_max_tokens, 300)),
             temperature=0.25,
+            role="grounded_compose",
         )
         meta = sanitize_answer_meta(raw, lang)
         composed = (meta.get("answer") or "").strip()
@@ -447,6 +449,7 @@ def adapt_structured_fact(
             prompt,
             max_tokens=min(220, SETTINGS.gen_max_tokens),
             temperature=0.25,
+            role="fact_adapt",
         )
         meta = sanitize_answer_meta(raw, lang)
         adapted = (meta.get("answer") or "").strip()
@@ -483,7 +486,8 @@ def generate_answer_meta(
     if SETTINGS.has_dashscope and contexts:
         try:
             raw = _dashscope_generation_http(
-                _build_prompt(question, contexts, lang, history_context=history_context)
+                _build_prompt(question, contexts, lang, history_context=history_context),
+                role="rag_generate",
             )
             meta = sanitize_answer_meta(raw, lang)
             meta["provider"] = "dashscope"
@@ -503,6 +507,7 @@ def _dashscope_generation_http(
     *,
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
+    role: str = "main_generate",
 ) -> str:
     import time
 
@@ -563,7 +568,22 @@ def _dashscope_generation_http(
 
     ms = int((time.perf_counter() - t0) * 1000)
     print(f"[GEN] ok {ms}ms", flush=True)
-    return _extract_text(data)
+    text = _extract_text(data)
+    llm_io.record(
+        role=role,
+        model=model,
+        system=system,
+        user=prompt,
+        response=text,
+        provider="dashscope",
+        meta={
+            "latency_ms": ms,
+            "max_tokens": tok,
+            "temperature": temp,
+            "multimodal": multimodal,
+        },
+    )
+    return text
 
 
 def _extract_text(data: Dict[str, Any]) -> str:

@@ -61,6 +61,7 @@ def draft_boss_email(
         system="You write internal centre-desk emails. Body only. No JSON.",
         max_tokens=320,
         temperature=0.35,
+        role="staff_email",
     )
     if polished and len(polished.strip()) >= 80:
         out["body"] = polished.strip()
