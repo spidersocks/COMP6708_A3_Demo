@@ -1,8 +1,7 @@
-"""Cheap DashScope second-look on structured intent picks (demo-oriented).
+"""Cheap DashScope second-look on ambiguous intent picks (demo-oriented).
 
-Regex/prototypes propose a route; a small LLM may KEEP it, send to RAG, or
-reroute to another allowed label when the keyword match looks silly for the
-actual parent question.
+Hard detectors propose a route; only close races / conflicts ask a small LLM
+to KEEP or send to RAG. Clear detector wins skip this module entirely.
 """
 from __future__ import annotations
 
@@ -105,24 +104,18 @@ def review_intent(
     dbg = debug or {}
     if dbg.get("conflicts"):
         rule_hints.append(f"conflicts={dbg.get('conflicts')}")
-    if dbg.get("prototype_top"):
-        rule_hints.append(f"prototypes={dbg.get('prototype_top')[:3]}")
-    if dbg.get("label"):
-        rule_hints.append(f"label={dbg.get('label')}")
-    hints = ("; ".join(rule_hints)) if rule_hints else "regex/prototype scores only"
+    hints = ("; ".join(rule_hints)) if rule_hints else "detector scores"
     soft_note = (
-        "This proposed route is a soft short-circuit. Only KEEP or RAG — never invent other routes.\n"
+        "Only KEEP or RAG — never invent other routes.\n"
         if soft_only
         else ""
     )
 
     prompt = (
-        "You are a routing referee for BrightNest (COMP6708 live demo chatbot).\n"
-        "A cheap keyword/prototype router proposed a route. Decide if that is a good fit "
-        "for the parent's question, or if RAG / another route would sound less awkward.\n"
-        "Prefer KEEP when the proposed route can answer well (including filtered fact cards).\n"
-        "Choose RAG when the question needs narrative KB detail, age×course fit, curriculum, "
-        "or the keyword match is incidental (e.g. 'teachers' in a policy question).\n"
+        "BrightNest routing referee (COMP6708 demo).\n"
+        "Detectors proposed a route but the pick looks ambiguous. "
+        "KEEP if the tool can answer; RAG if the keyword match is incidental "
+        "or the ask needs KB narrative.\n"
         "Do NOT invent other routes — only keep the proposed route or send to rag.\n"
         f"{soft_note}"
         "Reply with ONE JSON object only, no markdown:\n"

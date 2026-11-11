@@ -195,6 +195,11 @@ def is_booking_request(text: str) -> bool:
     t = text or ""
     if is_trial_policy_question(t):
         return False
+    # "cancel my booking" belongs to cancel_dialogue — do not also award book.
+    from services import cancel_dialogue as cancel_svc
+
+    if cancel_svc.is_cancel_request(t):
+        return False
     return bool(_BOOK_REQUEST_RE.search(t))
 
 

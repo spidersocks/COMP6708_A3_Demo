@@ -67,13 +67,6 @@ _PRIORITY: List[str] = [
     "rag",
 ]
 
-_HARD_VETO = {
-    "staff_escalation",
-    "off_domain",
-    "severe_weather",
-}
-
-
 @dataclass
 class IntentDecision:
     route: str
@@ -84,16 +77,9 @@ class IntentDecision:
 def is_availability_browse(message: str) -> bool:
     """Seat/slot browse for the live register tool."""
     m = message or ""
-    strong = bool(_AVAIL_STRONG_RE.search(m))
     if centre_facts.is_severe_weather_intent(m):
         return False
-    if strong:
-        return True
-    if _BOOK_VERB_RE.search(m) and re.search(
-        r"\b(slot|seat|time|availability)\b", m, re.I
-    ):
-        return True
-    return False
+    return bool(_AVAIL_STRONG_RE.search(m))
 
 
 def _pick_route(scores: Dict[str, float]) -> str:
@@ -246,18 +232,12 @@ def score_intents(
         debug["dialogue_active"] = dialogue_active
 
     if is_availability_browse(message):
-        strong = bool(_AVAIL_STRONG_RE.search(message or ""))
-        avail_score = 0.95 if strong else 0.85
         span = _match_span(_AVAIL_STRONG_RE, message or "")
         _award(
             "booking_tool",
-            avail_score,
+            0.9,
             source="hard_regex",
-            why=(
-                "Seat/slot browse · 0.95"
-                if strong
-                else "Seat/slot browse · 0.85"
-            ),
+            why="Seat/slot browse · 0.9",
             cue=(span or {}).get("text") or "",
         )
 
@@ -696,7 +676,7 @@ def _build_rules_evaluated(
             "Live seats / availability browse",
             matched=is_availability_browse(message),
             score=scores.get("booking_tool"),
-            mechanism="Seat/slot browse wording → live register (0.85–0.95).",
+            mechanism="Seat/slot browse wording → live register (0.9).",
             pattern_summary="seats left / availability / 有冇位",
             matched_span=avail_span,
             match_evidence=_match_evidence(
@@ -959,24 +939,40 @@ def decide_intent(
     route = _pick_route(cleaned)
     pre_arbiter_route = route
 
+    # Cheap LLM arbiter only when the pick is actually ambiguous.
+    # Clear detector wins (and plain RAG default) skip the extra model call.
     try:
         from services import intent_arbiter
 
         top_score = max(cleaned.values()) if cleaned else 0.0
         conflicts = list(debug.get("conflicts") or [])
-        if (
-            top_score >= 0.9
+        tool_hits = sorted(
+            ((k, float(v)) for k, v in cleaned.items() if k != "rag"),
+            key=lambda kv: -kv[1],
+        )
+        close_race = (
+            len(tool_hits) >= 2 and (tool_hits[0][1] - tool_hits[1][1]) < 0.15
+        )
+        clear_detector = (
+            route != "rag"
+            and top_score >= 0.8
             and not conflicts
-            and route not in {"off_domain", "rag"}
-        ):
+            and not close_race
+        )
+        if route == "rag" or clear_detector:
             debug["arbiter"] = {
                 "action": "keep",
                 "route": route,
-                "reason": "high_confidence_skip",
+                "reason": "clear_pick_skip",
                 "called": False,
                 "skip_detail": (
-                    f"top_score={top_score:.2f} ≥ 0.9, "
-                    f"no material conflicts, route={route} is a tool"
+                    "rag default"
+                    if route == "rag"
+                    else (
+                        f"top={top_score:.2f} ≥ 0.8, "
+                        f"conflicts={conflicts or 'none'}, "
+                        f"close_race={close_race}"
+                    )
                 ),
             }
         else:
@@ -999,7 +995,6 @@ def decide_intent(
             debug["arbiter"] = verdict
             if verdict.get("action") in {"rag", "reroute"} and verdict.get("route"):
                 new_route = str(verdict["route"])
-                # Arbiter may only pick tool routes or rag — ignore dead fact-card labels
                 if new_route not in _PRIORITY:
                     new_route = "rag"
                 if new_route != route:
