@@ -1534,17 +1534,23 @@ def _persist_turn(
 
 @router.delete("/chat/history/{session_id}")
 def reset_history(session_id: str):
+    from services import schedule_sheets as sheets
+
     clear_history(session_id)
     dialogue_svc.clear_state(session_id)
     cancel_svc.clear_state(session_id)
-    # Demo Reset also clears admin sheets so each run starts clean
+    # Demo Reset also clears admin sheets + chat bookings so each run starts clean
     cleared = admin_todos.clear_todos()
     msgs_cleared = staff_messages.clear_messages()
+    chat_bookings_cleared = sheets.clear_chat_bookings()
+    sqlite_bookings_cleared = booking_svc.clear_sqlite_bookings()
     return {
         "ok": True,
         "session_id": session_id,
         "admin_todos_cleared": cleared,
         "staff_messages_cleared": msgs_cleared,
+        "chat_bookings_cleared": chat_bookings_cleared,
+        "sqlite_bookings_cleared": sqlite_bookings_cleared,
     }
 
 

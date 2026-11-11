@@ -248,6 +248,10 @@ def _is_booking_refine(text: str) -> bool:
         return True
     if is_affirmative(text):
         return True
+    if _has_slot_pick_signal(text):
+        return True
+    if _parse_identity(text):
+        return True
     if re.search(
         r"\b((option\s*)?\d{1,2}|different|another|refine|slot|seats?|earlier|later)\b",
         text or "",
@@ -270,7 +274,9 @@ def should_yield_to_rag(session_id: str, text: str) -> bool:
     if not active:
         return False
     # Affirmative while waiting on assessment / slot confirm stays in booking
-    if st.get("stage") == "confirm_assessment" and is_affirmative(text):
+    if st.get("stage") in {"confirm_assessment", "confirm_slot"} and is_affirmative(text):
+        return False
+    if st.get("stage") in {"need_identity", "need_parent", "need_child"} and _parse_identity(text):
         return False
     if _is_booking_refine(text):
         return False
@@ -282,13 +288,16 @@ def should_yield_to_rag(session_id: str, text: str) -> bool:
         text or "",
         re.I,
     ):
+        # "Can I book Jordan …" is still a booking refine
+        if is_booking_request(text) or _has_slot_pick_signal(text):
+            return False
         return True
     # Short non-refine follow-ups while offering seats / clarifying when
     # (need_course + known programme name is handled by _is_booking_refine above)
-    if st.get("stage") in {"offer_slots", "no_slots", "need_when_asked"}:
+    if st.get("stage") in {"offer_slots", "no_slots", "need_when_asked", "confirm_slot"}:
         if not is_booking_request(text) and not _is_booking_refine(text):
             return True
-    if st.get("stage") == "need_course":
+    if st.get("stage") in {"need_course", "need_identity", "need_parent", "need_child"}:
         # Bare junk at need_course still yields; programme names do not
         if not is_booking_request(text) and not _is_booking_refine(text):
             return True
@@ -322,6 +331,200 @@ def _parse_when(text: str) -> Dict[str, Any]:
     if wd is not None:
         out["weekday"] = wd
     return out
+
+
+def _detect_clock(text: str) -> Optional[Tuple[int, int]]:
+    """Parse '10:00', '10.00', '10am', '10 pm' → (hour, minute) 24h."""
+    t = text or ""
+    m = re.search(r"\b(\d{1,2})[:.](\d{2})\b", t)
+    if m:
+        h, mi = int(m.group(1)), int(m.group(2))
+        if 0 <= h <= 23 and 0 <= mi <= 59:
+            # Bare afternoon centre hours: 1–6 without am/pm → treat as PM
+            if 1 <= h <= 6 and not re.search(r"\b(am|pm)\b", t, re.I):
+                # Keep as-is if already looks like 10:00 style morning; 10 is fine
+                pass
+            return h, mi
+    m = re.search(r"\b(\d{1,2})\s*(am|pm)\b", t, re.I)
+    if m:
+        h = int(m.group(1))
+        ap = m.group(2).lower()
+        if h == 12:
+            h = 0
+        if ap == "pm":
+            h += 12
+        if 0 <= h <= 23:
+            return h, 0
+    m = re.search(r"\b(\d{1,2})\s*o'?clock\b", t, re.I)
+    if m:
+        h = int(m.group(1))
+        if 0 <= h <= 23:
+            return h, 0
+    return None
+
+
+def _detect_day_of_month(text: str) -> Optional[int]:
+    t = text or ""
+    patterns = (
+        r"\b(?:mon|tue|wed|thu|fri|sat|sun)\w*\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b",
+        r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\b",
+        r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+(\d{1,2})(?:st|nd|rd|th)?\b",
+        r"\b(?:on\s+)?(?:the\s+)(\d{1,2})(?:st|nd|rd|th)\b",
+        r"\b(\d{1,2})(?:st|nd|rd|th)\b",
+    )
+    for pat in patterns:
+        m = re.search(pat, t, re.I)
+        if not m:
+            continue
+        day = int(m.group(1))
+        if 1 <= day <= 31:
+            return day
+    return None
+
+
+def _parse_identity(text: str) -> Dict[str, str]:
+    """Pull parent / child names from a new-parent reply."""
+    t = (text or "").strip()
+    out: Dict[str, str] = {}
+    if not t:
+        return out
+
+    patterns = [
+        (
+            r"(?:i'?m|i\s+am|my\s+name\s+is|parent(?:\s*name)?(?:\s+is)?)\s+"
+            r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?).{0,40}?"
+            r"(?:(?:my\s+)?(?:child|kid|son|daughter|girl|boy)(?:\s*name)?(?:\s+is)?|booking\s+for|for)\s+"
+            r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+            "parent",
+            "child",
+        ),
+        (
+            r"(?:child|kid|son|daughter)(?:\s*name)?(?:\s+is)?\s+"
+            r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?).{0,40}?"
+            r"(?:parent(?:\s*name)?(?:\s+is)?|i'?m|i\s+am)\s+"
+            r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+            "child",
+            "parent",
+        ),
+        (
+            r"parent\s*[:\-]\s*([A-Za-z][A-Za-z\s'.]{1,40}?)\s*[,\n;/|]+\s*"
+            r"child\s*[:\-]\s*([A-Za-z][A-Za-z\s'.]{1,40})",
+            "parent",
+            "child",
+        ),
+    ]
+    for pat, a, b in patterns:
+        m = re.search(pat, t, re.I | re.S)
+        if not m:
+            continue
+        va, vb = m.group(1).strip(" .,"), m.group(2).strip(" .,")
+        if families._is_plausible_person_name(va) and families._is_plausible_person_name(vb):  # noqa: SLF001
+            out[a] = va.title() if va.islower() or va.isupper() else va
+            out[b] = vb.title() if vb.islower() or vb.isupper() else vb
+            return out
+
+    # "Jane Lee / Mia Lee" or "Jane Lee, Mia Lee"
+    m = re.match(
+        r"^\s*([A-Za-z][A-Za-z'.]+(?:\s+[A-Za-z][A-Za-z'.]+)?)\s*[/|,]\s*"
+        r"([A-Za-z][A-Za-z'.]+(?:\s+[A-Za-z][A-Za-z'.]+)?)\s*$",
+        t,
+    )
+    if m:
+        p, c = m.group(1).strip(), m.group(2).strip()
+        if families._is_plausible_person_name(p) and families._is_plausible_person_name(c):  # noqa: SLF001
+            out["parent"] = p.title() if p.islower() else p
+            out["child"] = c.title() if c.islower() else c
+            return out
+
+    # Single plausible name when only one field is missing (handled by caller)
+    m = re.match(r"^\s*([A-Za-z][A-Za-z'.]+(?:\s+[A-Za-z][A-Za-z'.]+)?)\s*$", t)
+    if m and families._is_plausible_person_name(m.group(1)):  # noqa: SLF001
+        out["single"] = m.group(1).strip().title() if m.group(1).islower() else m.group(1).strip()
+    return out
+
+
+def _match_offered_slots(
+    slots: List[Dict[str, Any]],
+    text: str,
+    *,
+    teacher_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Narrow offered seats by weekday / clock / day-of-month / teacher in the reply."""
+    out = list(slots or [])
+    if not out:
+        return out
+    wd = _detect_weekday(text)
+    clock = _detect_clock(text)
+    day = _detect_day_of_month(text)
+    tid = teacher_id or _detect_teacher(text)
+
+    if tid:
+        by_t = [s for s in out if s.get("teacher_id") == tid]
+        if by_t:
+            out = by_t
+    if wd is not None:
+        kept = []
+        for s in out:
+            try:
+                st = datetime.fromisoformat(str(s.get("slot_start") or ""))
+                if st.weekday() == wd:
+                    kept.append(s)
+            except Exception:
+                continue
+        if kept:
+            out = kept
+    if day is not None:
+        kept = []
+        for s in out:
+            try:
+                st = datetime.fromisoformat(str(s.get("slot_start") or ""))
+                if st.day == day:
+                    kept.append(s)
+            except Exception:
+                continue
+        if kept:
+            out = kept
+    if clock is not None:
+        hh, mm = clock
+        kept = []
+        for s in out:
+            try:
+                st = datetime.fromisoformat(str(s.get("slot_start") or ""))
+                if st.hour == hh and st.minute == mm:
+                    kept.append(s)
+            except Exception:
+                continue
+        if kept:
+            out = kept
+        else:
+            # Allow "10" / "10am" style soft match on hour only when unique among pool
+            soft = []
+            for s in out:
+                try:
+                    st = datetime.fromisoformat(str(s.get("slot_start") or ""))
+                    if st.hour == hh:
+                        soft.append(s)
+                except Exception:
+                    continue
+            if soft:
+                out = soft
+    return out
+
+
+def _has_slot_pick_signal(text: str) -> bool:
+    if _detect_clock(text) is not None:
+        return True
+    if _detect_day_of_month(text) is not None:
+        return True
+    if _detect_weekday(text) is not None and (
+        _detect_teacher(text) or _detect_clock(text) is not None or _detect_day_of_month(text) is not None
+    ):
+        return True
+    if re.search(r"\b((option\s*)?#?\d{1,2})\b", text or "", re.I):
+        return True
+    if _detect_teacher(text) and (_detect_weekday(text) is not None or _detect_day_of_month(text) is not None):
+        return True
+    return False
 
 
 def _window_bounds(when: Dict[str, Any]) -> Tuple[datetime, datetime]:
@@ -584,31 +787,97 @@ def handle_turn(
     known = [c["child_name"] for c in family.get("children") or []]
     mentioned = families.extract_child_mention(text, known)
     if not mentioned and child_name_hint and not state.get("child_name"):
-        mentioned = child_name_hint
+        # UI hint only for known demo families — never invent a child from a blank new parent
+        if family.get("matched") or families._is_plausible_person_name(child_name_hint):  # noqa: SLF001
+            mentioned = child_name_hint
 
     steps: List[str] = []
+    identity = _parse_identity(text)
+    if identity.get("parent") and not family.get("matched"):
+        state["parent_name"] = identity["parent"]
+    if identity.get("child") and not state.get("child_name"):
+        mentioned = identity["child"]
+    elif identity.get("single"):
+        # Fill whichever identity field is still missing for a new parent
+        if not family.get("matched") and not (state.get("parent_name") or "").strip():
+            state["parent_name"] = identity["single"]
+        elif not state.get("child_name"):
+            mentioned = identity["single"]
 
-    # --- Resolve child ---
+    # --- New parent / unknown WhatsApp: collect parent + child names ---
+    if not family.get("matched"):
+        state["is_new_family"] = True
+        # Prefer UI-provided parent name once the New Parent profile is chosen
+        if parent_name and not (state.get("parent_name") or "").strip():
+            # Blank new-parent profile sends empty string — ignore placeholders
+            if families._is_plausible_person_name(parent_name):  # noqa: SLF001
+                state["parent_name"] = parent_name
+        need_parent = not (state.get("parent_name") or "").strip()
+        need_child = not (state.get("child_name") or "").strip() and not (
+            mentioned and families._is_plausible_person_name(mentioned)  # noqa: SLF001
+        )
+        if need_parent or (need_child and not mentioned):
+            if need_parent and need_child:
+                stage = "need_identity"
+                prompt = (
+                    "Happy to help with a booking. I don't have a family on this WhatsApp yet.\n\n"
+                    "Please reply with **your name** and **your child's name** "
+                    "(e.g. *I'm Alex Wong, child is Mia Wong*)."
+                )
+            elif need_parent:
+                stage = "need_parent"
+                prompt = (
+                    f"Thanks — booking for **{mentioned or state.get('child_name')}**. "
+                    "What's the **parent's name** I should put on the booking?"
+                )
+            else:
+                stage = "need_child"
+                prompt = (
+                    f"Thanks **{state.get('parent_name')}**. "
+                    "What's your **child's name** for the class register?"
+                )
+            save_state(session_id, {**state, "stage": stage})
+            return {
+                "answer": prompt,
+                "slots": None,
+                "provider": "booking_dialogue",
+                "trace_booking": {
+                    "stage": stage,
+                    "phone": state.get("phone"),
+                    "parent_name": state.get("parent_name") or "",
+                    "steps": steps,
+                },
+                "state": state,
+            }
+        if mentioned and families._is_plausible_person_name(mentioned):  # noqa: SLF001
+            state["child_name"] = mentioned
+            state["preferred_courses"] = []
+            state["child_schedule"] = []
+            state["hide_register"] = True
+            steps.append(f"new_family_child={mentioned}")
+
+    # --- Resolve child (known family sheet) ---
     if not state.get("child_name"):
         resolved = families.resolve_child(
             phone=state.get("phone") or "",
             mentioned_name=mentioned,
-            fallback_child=child_name_hint,
+            fallback_child=child_name_hint if family.get("matched") else "",
         )
         steps.append(f"family_match={resolved['family'].get('matched')}")
         if not resolved["ok"]:
-            if resolved.get("reason") == "unknown_number":
-                save_state(session_id, {**state, "stage": "need_phone"})
+            if resolved.get("reason") in {"unknown_number", "need_identity"}:
+                save_state(session_id, {**state, "stage": "need_identity", "is_new_family": True})
                 return {
                     "answer": (
-                        "I can help book that. Which WhatsApp number should I use for the family "
-                        "account? (In this demo, try **+852 9000 0000** — Demo Parent / Jason Chan.)"
+                        "Happy to help with a booking. I don't have a family on this WhatsApp yet.\n\n"
+                        "Please reply with **your name** and **your child's name** "
+                        "(e.g. *I'm Alex Wong, child is Mia Wong*)."
                     ),
                     "slots": None,
                     "provider": "booking_dialogue",
                     "trace_booking": {
-                        "stage": "need_phone",
-                        "reason": "unknown_number",
+                        "stage": "need_identity",
+                        "reason": resolved.get("reason"),
                         "steps": steps,
                     },
                     "state": state,
@@ -654,8 +923,8 @@ def handle_turn(
         steps.append(f"resolved_child={child['child_name']}")
         steps.append(f"child_upcoming={len(state['child_schedule'])}")
 
-    # Re-resolve if user named a different child mid-flow
-    elif mentioned:
+    # Re-resolve if user named a different child mid-flow (known families only)
+    elif mentioned and family.get("matched"):
         resolved = families.resolve_child(
             phone=state.get("phone") or "",
             mentioned_name=mentioned,
@@ -794,6 +1063,130 @@ def handle_turn(
                 "state": state,
             }
 
+    # --- Confirm selected seat ---
+    if state.get("stage") == "confirm_slot" and state.get("selected_slot"):
+        sel = state["selected_slot"]
+        if is_affirmative(text):
+            from services import final_check
+
+            summary = (
+                f"Book {child_name} into {sel.get('course_label') or course_label(state.get('course_key') or '')} "
+                f"on {sel.get('slot_display')} with {sel.get('teacher_name') or 'staff'}."
+            )
+            gate = final_check.review_commit(
+                kind="book",
+                message=text,
+                proposed_summary=summary,
+                context={
+                    "child_name": child_name,
+                    "slot_display": sel.get("slot_display"),
+                    "teacher_name": sel.get("teacher_name"),
+                    "stage": "confirm_slot",
+                },
+            )
+            if gate.get("action") == "clarify":
+                save_state(session_id, state)
+                return {
+                    "answer": gate.get("clarify_prompt")
+                    or (
+                        f"Just to confirm — book **{child_name}** for "
+                        f"**{sel.get('slot_display')}** "
+                        f"({sel.get('teacher_name')} · {sel.get('room')})? Reply **yes**."
+                    ),
+                    "slots": [sel],
+                    "provider": "booking_dialogue",
+                    "trace_booking": {
+                        "stage": "confirm_slot",
+                        "selected": sel,
+                        "final_check": gate,
+                        "steps": steps,
+                    },
+                    "state": state,
+                }
+            if gate.get("action") == "abort":
+                clear_state(session_id)
+                return {
+                    "answer": (
+                        "No problem — I won't book that seat. "
+                        "Tell me another day/time, or ask about programmes and fees."
+                    ),
+                    "slots": None,
+                    "provider": "booking_dialogue",
+                    "trace_booking": {
+                        "stage": "aborted_final_check",
+                        "final_check": gate,
+                        "steps": steps,
+                    },
+                    "state": None,
+                }
+            try:
+                booked = booking_svc.create_booking(
+                    course_key=state.get("course_key") or sel.get("course_key") or "phonics",
+                    slot_start=sel["slot_start"],
+                    parent_name=state.get("parent_name") or "",
+                    child_name=child_name,
+                    phone=state.get("phone") or "",
+                    notes="booked via WhatsApp booking dialogue",
+                )
+            except Exception as e:
+                save_state(session_id, {**state, "stage": "offer_slots"})
+                return {
+                    "answer": (
+                        f"I couldn't lock that seat ({e}). "
+                        "Want me to show the open times again?"
+                    ),
+                    "slots": None,
+                    "provider": "booking_dialogue",
+                    "trace_booking": {
+                        "stage": "book_failed",
+                        "error": str(e)[:160],
+                        "selected": sel,
+                        "final_check": gate,
+                        "steps": steps,
+                    },
+                    "state": state,
+                }
+            clear_state(session_id)
+            return {
+                "answer": (
+                    f"Booked — **{child_name}** is on the register for "
+                    f"**{booked.get('slot_display') or sel.get('slot_display')}** "
+                    f"({booked.get('teacher_name') or sel.get('teacher_name')} · "
+                    f"{booked.get('room') or sel.get('room')}).\n\n"
+                    f"Booking ref **{booked.get('id')}**. "
+                    "See you then — message us if you need to change it."
+                ),
+                "slots": None,
+                "provider": "booking_dialogue",
+                "trace_booking": {
+                    "stage": "booked",
+                    "booking": booked,
+                    "final_check": gate,
+                    "steps": steps,
+                },
+                "state": None,
+            }
+        # Parent named a different time while confirming — fall through to rematch
+        if not _has_slot_pick_signal(text) and not _parse_when(text):
+            save_state(session_id, state)
+            return {
+                "answer": (
+                    f"Just to confirm — book **{child_name}** for "
+                    f"**{sel.get('slot_display')}** "
+                    f"({sel.get('teacher_name')} · {sel.get('room')} · "
+                    f"{sel.get('seats_left')} left)?\n\n"
+                    "Reply **yes** to confirm, or send another day/time."
+                ),
+                "slots": [sel],
+                "provider": "booking_dialogue",
+                "trace_booking": {
+                    "stage": "confirm_slot",
+                    "selected": sel,
+                    "steps": steps,
+                },
+                "state": state,
+            }
+
     # --- Clarify course ---
     if not state.get("course_key"):
         preferred = state.get("preferred_courses") or []
@@ -879,7 +1272,7 @@ def handle_turn(
         merged_when["window"] = "next_14_days"
         state["when"] = merged_when
 
-    # --- Offer slots ---
+    # --- Offer / pick slots ---
     raw_slots = booking_svc.get_availability(
         state["course_key"],
         days_ahead=21,
@@ -900,6 +1293,67 @@ def handle_turn(
         when_label = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][
             when["weekday"]
         ]
+
+    # Rebuild the last offered pool so "Friday 10:00" can commit instead of re-listing
+    prior_starts = list(state.get("offered_slot_starts") or [])
+    prior_pool: List[Dict[str, Any]] = []
+    if prior_starts:
+        by_start = {s["slot_start"]: s for s in filtered}
+        # Also search raw_slots in case weekday filter narrowed too hard
+        for s in raw_slots:
+            by_start.setdefault(s["slot_start"], s)
+        prior_pool = [by_start[s] for s in prior_starts if s in by_start]
+        if not prior_pool:
+            prior_pool = list(filtered)
+
+    pick_pool = prior_pool or list(filtered)
+    if state.get("stage") in {"offer_slots", "confirm_slot", "no_slots"} or (
+        prior_pool and _has_slot_pick_signal(text)
+    ):
+        matched = _match_offered_slots(
+            pick_pool,
+            text,
+            teacher_id=state.get("teacher_id"),
+        )
+        # Option index: "1" / "option 2"
+        idx_m = re.search(r"\b(?:option|number|choice)\s*#?\s*(\d{1,2})\b", text or "", re.I)
+        if not idx_m:
+            idx_m = re.fullmatch(r"\s*#?\s*(\d{1,2})\s*[.)]?\s*", (text or "").strip())
+        if idx_m and pick_pool:
+            i = int(idx_m.group(1)) - 1
+            if 0 <= i < len(pick_pool):
+                matched = [pick_pool[i]]
+        steps.append(f"slot_matches={len(matched)}")
+        if len(matched) == 1 and (
+            _has_slot_pick_signal(text)
+            or state.get("stage") == "confirm_slot"
+            or (state.get("stage") == "offer_slots" and len(pick_pool) == 1)
+        ):
+            sel = matched[0]
+            state["selected_slot"] = sel
+            state["stage"] = "confirm_slot"
+            state["offered_slot_starts"] = prior_starts or [sel["slot_start"]]
+            save_state(session_id, state)
+            return {
+                "answer": (
+                    f"Perfect — **{sel.get('slot_display')}** with "
+                    f"**{sel.get('teacher_name')}** ({sel.get('room')}, "
+                    f"{sel.get('seats_left')} left).\n\n"
+                    f"Shall I book **{child_name}** into that class? Reply **yes** to confirm."
+                ),
+                "slots": [sel],
+                "provider": "booking_dialogue",
+                "trace_booking": {
+                    "stage": "confirm_slot",
+                    "child_name": child_name,
+                    "selected": sel,
+                    "steps": steps,
+                },
+                "state": state,
+            }
+        if matched and len(matched) < len(pick_pool) and _has_slot_pick_signal(text):
+            # Narrow the offer instead of looping the same full list
+            filtered = matched
 
     if not filtered:
         save_state(session_id, {**state, "stage": "no_slots"})
@@ -928,8 +1382,36 @@ def handle_turn(
             "state": state,
         }
 
+    # Single remaining seat after refine → confirm directly
+    if len(filtered) == 1 and (
+        _has_slot_pick_signal(text) or state.get("stage") in {"offer_slots", "confirm_slot"}
+    ):
+        sel = filtered[0]
+        state["selected_slot"] = sel
+        state["stage"] = "confirm_slot"
+        state["offered_slot_starts"] = [sel["slot_start"]]
+        save_state(session_id, state)
+        return {
+            "answer": (
+                f"I have **{sel.get('slot_display')}** with "
+                f"**{sel.get('teacher_name')}** ({sel.get('room')}, "
+                f"{sel.get('seats_left')} left).\n\n"
+                f"Shall I book **{child_name}** into that class? Reply **yes** to confirm."
+            ),
+            "slots": [sel],
+            "provider": "booking_dialogue",
+            "trace_booking": {
+                "stage": "confirm_slot",
+                "child_name": child_name,
+                "selected": sel,
+                "steps": steps,
+            },
+            "state": state,
+        }
+
     offer = filtered[:6]
     state["stage"] = "offer_slots"
+    state["selected_slot"] = None
     state["offered_slot_starts"] = [s["slot_start"] for s in offer]
     save_state(session_id, state)
 
@@ -942,7 +1424,7 @@ def handle_turn(
             f"• {s['slot_display']} — {s.get('teacher_name')} · {s.get('room')} · {s['seats_left']} left"
         )
     lines.append(
-        "\nReply with a time (e.g. **Tuesday 10:00**), or tell me another day/teacher to refine."
+        "\nReply with a time (e.g. **Friday 10:00**), or tell me another day/teacher to refine."
     )
 
     return {

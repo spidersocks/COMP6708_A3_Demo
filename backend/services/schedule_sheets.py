@@ -450,6 +450,30 @@ def count_chat_bookings(course_key: str, slot_start_iso: str) -> int:
     )
 
 
+def clear_chat_bookings() -> int:
+    """Wipe demo chat bookings so Reset starts from a clean register."""
+    root = sheets_dir()
+    seed_sheets_if_needed()
+    path = root / "chat_bookings.csv"
+    fieldnames = [
+        "id",
+        "course_key",
+        "slot_start",
+        "session_id",
+        "teacher_id",
+        "parent_name",
+        "child_name",
+        "phone",
+        "notes",
+        "created_at",
+    ]
+    with _LOCK:
+        existing = _read_csv(path)
+        n = len(existing)
+        _write_csv(path, fieldnames, [])
+    return n
+
+
 def append_chat_booking(row: Dict[str, Any]) -> None:
     root = sheets_dir()
     path = root / "chat_bookings.csv"

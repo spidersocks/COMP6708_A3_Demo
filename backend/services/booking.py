@@ -247,6 +247,16 @@ def create_booking(
     }
 
 
+def clear_sqlite_bookings() -> int:
+    """Clear the SQLite bookings mirror used by older tooling / Reset."""
+    with _conn() as c:
+        row = c.execute("SELECT COUNT(*) AS n FROM bookings").fetchone()
+        n = int(row["n"] if row else 0)
+        c.execute("DELETE FROM bookings")
+        c.commit()
+    return n
+
+
 def get_booking(booking_id: str) -> Optional[Dict[str, Any]]:
     data = sheets.get_chat_booking(booking_id)
     if not data:

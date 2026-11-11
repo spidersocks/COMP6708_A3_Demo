@@ -96,6 +96,43 @@ def list_all_families(*, days_ahead: int = 21) -> Dict[str, Any]:
     }
 
 
+_COURSE_NAME_BLOCKLIST = {
+    "phonics",
+    "mandarin",
+    "putonghua",
+    "writing",
+    "math",
+    "maths",
+    "playgroup",
+    "trial",
+    "assessment",
+    "class",
+    "lesson",
+    "course",
+    "child",
+    "kid",
+    "son",
+    "daughter",
+    "baby",
+    "parent",
+}
+
+
+def _is_plausible_person_name(name: str) -> bool:
+    raw = (name or "").strip()
+    if len(raw) < 2:
+        return False
+    low = raw.lower()
+    if low in _COURSE_NAME_BLOCKLIST:
+        return False
+    if any(tok in _COURSE_NAME_BLOCKLIST for tok in re.split(r"\s+", low)):
+        return False
+    # Reject all-caps course-looking tokens that aren't multi-word names
+    if " " not in raw and not re.search(r"[A-Za-z]", raw):
+        return False
+    return True
+
+
 def resolve_child(
     *,
     phone: str,
@@ -106,9 +143,9 @@ def resolve_child(
     family = list_family_by_phone(phone)
     kids = family.get("children") or []
     if not kids:
-        # Fall back to free-text name if family sheet miss
+        # New / unknown WhatsApp — only accept a real person name, never a course word
         name = (mentioned_name or fallback_child or "").strip()
-        if name:
+        if name and _is_plausible_person_name(name):
             return {
                 "ok": True,
                 "ambiguous": False,
@@ -126,7 +163,7 @@ def resolve_child(
             "child": None,
             "family": family,
             "candidates": [],
-            "reason": "unknown_number",
+            "reason": "need_identity" if not family.get("matched") else "unknown_number",
         }
 
     needle = (mentioned_name or fallback_child or "").strip().lower()
@@ -208,25 +245,13 @@ def extract_child_mention(text: str, known_names: List[str]) -> str:
         r"\b(?:for|about)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b",
         t,
     )
-    if m:
+    if m and _is_plausible_person_name(m.group(1)):
         return m.group(1)
     m = re.search(
         r"\b(?:for|about)\s+([A-Za-z]{2,})\b",
         t,
         re.I,
     )
-    if m and m.group(1).lower() not in {
-        "a",
-        "the",
-        "my",
-        "our",
-        "class",
-        "lesson",
-        "trial",
-        "next",
-        "this",
-        "him",
-        "her",
-    }:
+    if m and _is_plausible_person_name(m.group(1)):
         return m.group(1)
     return ""
