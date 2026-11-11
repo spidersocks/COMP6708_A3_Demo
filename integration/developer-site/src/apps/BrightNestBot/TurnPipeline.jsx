@@ -132,6 +132,39 @@ function scoreLabel(score) {
   return Number(score).toFixed(3);
 }
 
+/** Label the channel score still on a hit after RRF (dense cosine or BM25). */
+function channelScoreKind(hit) {
+  if (!hit) return null;
+  const kind =
+    hit.score_kind ||
+    hit.rerank?.score_kind ||
+    (hit.fusion?.channels === "sparse" || hit.channel === "sparse"
+      ? "BM25"
+      : hit.fusion?.channels || hit.channel
+        ? "dense"
+        : null);
+  return kind;
+}
+
+function labeledChannelScore(hit) {
+  const score = scoreLabel(hit?.score);
+  if (!score) return null;
+  const kind = channelScoreKind(hit) || "score";
+  return `${kind} ${score}`;
+}
+
+/** Edge / summary: RRF when fused, else labeled channel score. */
+function rankedPassLabel(hit) {
+  if (!hit) return null;
+  const parts = [];
+  if (hit.fusion?.rrf != null && !Number.isNaN(Number(hit.fusion.rrf))) {
+    parts.push(`RRF ${Number(hit.fusion.rrf).toFixed(4)}`);
+  }
+  const ch = labeledChannelScore(hit);
+  if (ch) parts.push(ch);
+  return parts.length ? parts.join(" · ") : null;
+}
+
 function clip(text, n = 120) {
   const s = (text || "").trim();
   if (s.length <= n) return s;
@@ -493,10 +526,10 @@ function RagHit({ hit, index }) {
   const [open, setOpen] = useState(false);
   const rank = hit.rank ?? index + 1;
   const body = hit.text || hit.snippet || "";
-  const score = scoreLabel(hit.score);
+  const labeled = labeledChannelScore(hit);
+  const passLabel = rankedPassLabel(hit);
   const why = hit.rerank?.why || null;
   const channel = fusionChannelLabel(hit);
-  const rrf = hit.fusion?.rrf != null ? Number(hit.fusion.rrf).toFixed(4) : null;
   return (
     <li className={`bn-hit ${open ? "is-open" : ""}`}>
       <button
@@ -510,13 +543,16 @@ function RagHit({ hit, index }) {
             <span className="bn-hit-rank">#{rank}</span>{" "}
             {hit.title || hit.canonical || hit.source || `Hit ${rank}`}
           </strong>
-          {score && <code title="vector / BM25 score">{score}</code>}
+          {passLabel && (
+            <code title="RRF fusion score and/or labeled channel score">
+              {passLabel}
+            </code>
+          )}
         </div>
         <span className="bn-hit-src">{hit.source}</span>
         {channel ? (
           <p className="bn-hit-snip bn-hit-why">
             Retrieve: {channel}
-            {rrf != null ? ` · RRF ${rrf}` : ""}
             {hit.fusion?.dense_rank != null
               ? ` · dense #${hit.fusion.dense_rank}`
               : ""}
@@ -529,7 +565,8 @@ function RagHit({ hit, index }) {
         {!open && body ? <p className="bn-hit-snip">{body}</p> : null}
         {hit.char_count != null ? (
           <div className="bn-hit-meta">
-            {hit.char_count} chars · score {score ?? "—"}
+            {hit.char_count} chars
+            {labeled ? ` · ${labeled}` : ""}
           </div>
         ) : null}
         <span className="bn-hit-expand-hint">
@@ -571,7 +608,14 @@ function ChannelHit({ hit, index, highlight = false }) {
   const [open, setOpen] = useState(false);
   const body = hit.text || hit.snippet || "";
   const tokens = hit.matched_tokens || hit.query_tokens || [];
+  const kind =
+    hit.channel === "sparse" || highlight
+      ? "BM25"
+      : hit.channel === "dense"
+        ? "dense"
+        : channelScoreKind(hit) || "score";
   const score = scoreLabel(hit.score);
+  const labeled = score ? `${kind} ${score}` : null;
   return (
     <li className={`bn-hit ${open ? "is-open" : ""}`}>
       <button
@@ -585,10 +629,10 @@ function ChannelHit({ hit, index, highlight = false }) {
             <span className="bn-hit-rank">#{hit.rank ?? index + 1}</span>{" "}
             {hit.title || hit.source || `Row ${index + 1}`}
           </strong>
-          {score ? <code>{score}</code> : null}
+          {labeled ? <code title={`${kind} channel score`}>{labeled}</code> : null}
         </div>
         {hit.source ? <span className="bn-hit-src">{hit.source}</span> : null}
-        {highlight && tokens.length ? (
+            {highlight && tokens.length ? (
           <p className="bn-hit-snip bn-hit-why">
             Matched: {tokens.slice(0, 12).join(" · ")}
             {tokens.length > 12 ? "…" : ""}
@@ -1219,17 +1263,21 @@ function NodeDetail({
               <span>Why</span>
               <code>{whyShort}</code>
             </li>
-            {routing?.debug?.action_policy?.called ? (
+            {routing?.debug?.action_policy ? (
               <li>
                 <span>Action policy</span>
                 <code>
-                  {routing.debug.action_policy.act || "answer"} ·{" "}
-                  {routing.debug.action_policy_override
-                    ? `${routing.debug.action_policy_override.from} → ${routing.debug.action_policy_override.to}`
-                    : "kept RAG"}
-                  {routing.debug.action_policy.confidence != null
-                    ? ` · ${Number(routing.debug.action_policy.confidence).toFixed(2)}`
-                    : ""}
+                  {routing.debug.action_policy.called
+                    ? `${routing.debug.action_policy.act || "answer"} · ${
+                        routing.debug.action_policy_override
+                          ? `${routing.debug.action_policy_override.from} → ${routing.debug.action_policy_override.to}`
+                          : "kept RAG"
+                      }${
+                        routing.debug.action_policy.confidence != null
+                          ? ` · ${Number(routing.debug.action_policy.confidence).toFixed(2)}`
+                          : ""
+                      }`
+                    : `skipped · ${routing.debug.action_policy.gate || routing.debug.action_policy.reason || "n/a"}`}
                 </code>
               </li>
             ) : null}
@@ -1543,13 +1591,20 @@ function NodeDetail({
             <li>
               <span>Rank #1 score</span>
               <code>
-                {scoreLabel(rag?.rank1_score ?? rag?.top_score ?? hits[0]?.score) ??
+                {rankedPassLabel(hits[0]) ||
+                  (rag?.rank1_score != null || rag?.top_score != null
+                    ? `score ${scoreLabel(rag?.rank1_score ?? rag?.top_score)}`
+                    : null) ||
                   "—"}
               </code>
             </li>
             <li>
-              <span>Best score in set</span>
-              <code>{scoreLabel(rag?.max_score) ?? "—"}</code>
+              <span>Best channel score in set</span>
+              <code>
+                {rag?.max_score != null
+                  ? `${channelScoreKind(hits[0]) || "score"} ${scoreLabel(rag.max_score)}`
+                  : "—"}
+              </code>
             </li>
             <li>
               <span>Gap</span>
@@ -1727,30 +1782,34 @@ function NodeDetail({
             ))}
           </ol>
           <p className="bn-rules-hint">
-            <strong>Lexical re-rank</strong> (after RRF) — sort key, highest
-            first. Each flag is 0/1 except overlap (token count) and vector
-            score as tie-break:
+            <strong>Lexical re-rank</strong> (after RRF) — truthful mechanics.
+            The KB is already split on disk (
+            <code>content/…/age_bands/age_*.md</code>, <code>fees/</code>,{" "}
+            <code>programmes/</code>, …). This step only re-orders the fused
+            pool; there is no separate query-type classifier. Sort key, highest
+            first:
           </p>
           <ul className="bn-fact-list">
             <li>
               <span>age</span>
               <code>
-                Query mentions an age (e.g. 4-year-old) and the chunk path is an
-                age band file whose digits match
+                Query has age digits AND chunk source path looks like an age
+                band file (age_bands/ or age_*) with overlapping digits
               </code>
             </li>
             <li>
-              <span>path / keyword</span>
+              <span>path / stem</span>
               <code>
-                Query contains a known stem (phonics, fees, trial, …) that also
-                appears in the chunk filename or body
+                Fixed stem list (phonics, fees, trial, …): stem in the query AND
+                in the chunk path or body
               </code>
             </li>
             <li>
               <span>folder</span>
               <code>
-                Preferred KB folder for this query type (e.g. fees/, programmes/)
-                matches the chunk’s folder
+                First matching folder prior from cue regexes (fees, programmes,
+                age_bands, …) vs metadata.folder or a path segment — heuristic,
+                not a learned “query type”
               </code>
             </li>
             <li>
@@ -1761,10 +1820,10 @@ function NodeDetail({
               </code>
             </li>
             <li>
-              <span>vector</span>
+              <span>tie-break</span>
               <code>
-                Original dense/BM25 score — only breaks ties when the flags above
-                are equal
+                RRF when hybrid fused; otherwise the labeled channel score
+                (dense cosine or BM25)
               </code>
             </li>
           </ul>
@@ -2573,14 +2632,12 @@ export default function TurnPipeline({
         (rag?.retrieval_grade?.grade
           ? String(rag.retrieval_grade.grade)
           : "grade") +
-        (pass1[0]?.score != null && scoreLabel(pass1[0].score)
-          ? ` · ${scoreLabel(pass1[0].score)}`
-          : ""),
+        (rankedPassLabel(pass1[0]) ? ` · ${rankedPassLabel(pass1[0])}` : ""),
       "e-rewrite-chroma2": rag?.query_rewrite?.retried ? "retry ×1" : "",
       "e-rewrite-llm": rag?.query_rewrite?.retried ? "" : "no retry",
       "e-chroma2-llm":
-        rag?.query_rewrite?.retried && scoreLabel(rag?.pass2_hits?.[0]?.score)
-          ? `sim ${scoreLabel(rag.pass2_hits[0].score)}`
+        rag?.query_rewrite?.retried && rankedPassLabel(rag?.pass2_hits?.[0])
+          ? rankedPassLabel(rag.pass2_hits[0])
           : "",
       "e-live-fuse": enrichMode ? "enrich" : "",
     };

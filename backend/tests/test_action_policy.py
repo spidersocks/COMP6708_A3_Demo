@@ -68,14 +68,55 @@ def test_audit_ignores_offer(monkeypatch):
         "services.action_policy.cheap_llm.complete_json",
         return_value={"commit": "none", "confidence": 0.88, "reason": "still asking"},
     ):
+        # "book" alone is not a finished-commit cue; gate skips the LLM
         verdict = ap.audit_draft("Shall I book Terry? Reply yes.")
+    assert verdict["called"] is False
     assert ap.draft_is_fake_commit(verdict) is None
+
+
+def test_classify_skips_info_question(monkeypatch):
+    monkeypatch.setenv("BRIGHTNEST_ACTION_POLICY", "1")
+    monkeypatch.setattr(ap.cheap_llm, "enabled", lambda: True)
+    with patch(
+        "services.action_policy.cheap_llm.complete_json",
+        side_effect=AssertionError("should not call LLM"),
+    ):
+        verdict = ap.classify_turn("What are the phonics fees?")
+    assert verdict["called"] is False
+    assert "info_question" in verdict["reason"]
+
+
+def test_classify_runs_on_book_paraphrase(monkeypatch):
+    monkeypatch.setenv("BRIGHTNEST_ACTION_POLICY", "1")
+    monkeypatch.setattr(ap.cheap_llm, "enabled", lambda: True)
+    monkeypatch.setattr(ap.cheap_llm, "arbiter_model", lambda: "test-model")
+    with patch(
+        "services.action_policy.cheap_llm.complete_json",
+        return_value={"act": "book", "confidence": 0.9, "reason": "start"},
+    ) as mock:
+        verdict = ap.classify_turn("get my kid into the sounds class please")
+    assert mock.called
+    assert verdict["called"] is True
+
+
+def test_audit_skips_plain_faq_draft(monkeypatch):
+    monkeypatch.setenv("BRIGHTNEST_ACTION_POLICY", "1")
+    monkeypatch.setattr(ap.cheap_llm, "enabled", lambda: True)
+    with patch(
+        "services.action_policy.cheap_llm.complete_json",
+        side_effect=AssertionError("should not call LLM"),
+    ):
+        verdict = ap.audit_draft(
+            "Phonics for ages 4–5 runs twice a week. Fees are on our fees page."
+        )
+    assert verdict["called"] is False
+    assert "no_commit_cues" in verdict["reason"]
 
 
 def test_decide_intent_promotes_rag_miss(monkeypatch):
     monkeypatch.setenv("BRIGHTNEST_ACTION_POLICY", "1")
 
-    def _book(message, history_preview=""):
+    def _book(message, history_preview="", scores=None):
         return {
             "called": True,
             "act": "book",

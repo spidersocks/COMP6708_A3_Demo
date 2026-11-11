@@ -916,7 +916,11 @@ def decide_intent(
                     if content:
                         bits.append(f"{role}: {content}")
                 hist_preview = "\n".join(bits)
-            verdict = action_policy.classify_turn(message, history_preview=hist_preview)
+            verdict = action_policy.classify_turn(
+                message,
+                history_preview=hist_preview,
+                scores=cleaned,
+            )
             debug["action_policy"] = verdict
             if action_policy.should_promote(verdict):
                 new_route = str(verdict.get("route") or "rag")

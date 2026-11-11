@@ -362,12 +362,32 @@ def _query_age_digits(question: str) -> set[str]:
     return digits
 
 
+def _channel_score_label(h: Dict[str, Any]) -> tuple[str, float]:
+    """Return (kind, value) for the score still hanging on the hit after fuse."""
+    fusion = h.get("fusion") or {}
+    channels = fusion.get("channels") or h.get("channel") or ""
+    try:
+        score = float(h.get("score") or 0)
+    except (TypeError, ValueError):
+        score = 0.0
+    if channels == "sparse":
+        return "BM25", score
+    if channels == "both":
+        return "dense", score  # fuse keeps the dense body/score when both hit
+    if channels == "dense":
+        return "dense", score
+    # Dense-only retrieve (no hybrid)
+    return "dense", score
+
+
 def _lexical_rerank(question: str, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Prefer path/alias keyword hits, folder prior + token overlap, then vector score.
+    Re-order the fused pool using KB layout signals already on disk.
 
-    Order is NOT pure similarity: age/path/folder/overlap beat score when they fire.
-    Each hit gets a `rerank` annotation for the inspector.
+    Does not invent files. Age bands live under content/*/age_bands/age_*.md;
+    other topics live under fees/, programmes/, policies/, … Folder priors are
+    cue→folder heuristics (not a learned query-type classifier). Path stems are
+    a fixed keyword list matched against query + source/body.
     """
     q = _content_tokens(question)
     if not hits:
@@ -416,20 +436,26 @@ def _lexical_rerank(question: str, hits: List[Dict[str, Any]]) -> List[Dict[str,
         folder_hit = 0
         if prefer and (prefer in source or prefer == folder):
             folder_hit = 1
+        kind, score = _channel_score_label(h)
+        fusion = h.get("fusion") or {}
         try:
-            score = float(h.get("score") or 0)
+            rrf = float(fusion["rrf"]) if fusion.get("rrf") is not None else None
         except (TypeError, ValueError):
-            score = 0.0
+            rrf = None
+        # Tie-break on RRF when hybrid fused; else the channel score
+        tie = float(rrf) if rrf is not None else score
         why_bits = []
         if age_hit:
-            why_bits.append("age filename match")
+            why_bits.append("age path digits")
         if path_hit:
-            why_bits.append(f"keyword “{path_stem}”")
+            why_bits.append(f"stem “{path_stem}” in path/body")
         if folder_hit:
-            why_bits.append(f"folder “{prefer}”")
+            why_bits.append(f"folder prior “{prefer}”")
         if overlap:
             why_bits.append(f"{overlap} token overlap")
-        why_bits.append(f"vector {score:.3f}")
+        if rrf is not None:
+            why_bits.append(f"RRF {rrf:.4f}")
+        why_bits.append(f"{kind} {score:.3f}")
         row = dict(h)
         row["rerank"] = {
             "age_hit": age_hit,
@@ -437,6 +463,9 @@ def _lexical_rerank(question: str, hits: List[Dict[str, Any]]) -> List[Dict[str,
             "folder_hit": folder_hit,
             "overlap": overlap,
             "score": score,
+            "score_kind": kind,
+            "rrf": rrf,
+            "tie": tie,
             "why": " · ".join(why_bits),
         }
         annotated.append(row)
@@ -448,7 +477,7 @@ def _lexical_rerank(question: str, hits: List[Dict[str, Any]]) -> List[Dict[str,
             int(r.get("path_hit") or 0),
             int(r.get("folder_hit") or 0),
             int(r.get("overlap") or 0),
-            float(r.get("score") or 0),
+            float(r.get("tie") or 0),
         )
 
     return sorted(annotated, key=key, reverse=True)
@@ -546,6 +575,12 @@ def _citation_from_hit(rank: int, h: Dict[str, Any]) -> Dict[str, Any]:
         "title": meta.get("title"),
         "canonical": meta.get("canonical"),
         "score": h.get("score"),
+        "score_kind": (h.get("rerank") or {}).get("score_kind")
+        or (
+            "BM25"
+            if ((h.get("fusion") or {}).get("channels") or h.get("channel")) == "sparse"
+            else "dense"
+        ),
         "snippet": full_text[:280],
         "text": full_text,
         "char_count": len(full_text),

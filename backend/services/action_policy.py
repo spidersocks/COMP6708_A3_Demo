@@ -4,13 +4,18 @@ Detectors stay the fast path. This module is the long-tail authority:
 it may promote a RAG default into a tool route, and it may reject a draft
 that claims a booking or cancellation no tool actually wrote.
 
-It does not add phrase lists. Fail-open: empty / low confidence stays RAG
-and the draft is kept.
+It does not add phrase lists for routing. Fail-open: empty / low confidence
+stays RAG and the draft is kept.
+
+Latency: both LLM calls are gated. Clear info questions skip classify;
+drafts without commit-shaped language skip audit. Near-miss detector scores
+and tool-ish chat history force a classify call.
 """
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, Optional, Tuple
 
 from services import cheap_llm
 
@@ -29,6 +34,74 @@ PROMOTE_AT = 0.62
 # Discard a RAG draft only when it clearly claims a finished commit.
 COMMIT_AT = 0.75
 
+# Detector near-miss: still worth a cheap classify even if RAG won.
+_NEAR_MISS = 0.12
+_TOOL_SCORE_KEYS = (
+    "booking_dialogue",
+    "booking_tool",
+    "cancel_dialogue",
+    "opening_hours",
+    "severe_weather",
+    "staff_escalation",
+)
+
+# Structural info-question openers (not topic phrase lists).
+_INFO_OPENERS = (
+    "what ",
+    "when ",
+    "where ",
+    "which ",
+    "who ",
+    "why ",
+    "how ",
+    "do ",
+    "does ",
+    "did ",
+    "is ",
+    "are ",
+    "can ",
+    "could ",
+    "will ",
+    "would ",
+    "may ",
+    "should ",
+    "多少",
+    "什么",
+    "什麼",
+    "怎",
+    "是否",
+    "有没有",
+    "有沒有",
+    "请问",
+    "請問",
+)
+
+# Cheap prefilter before commit_audit LLM — broad claim shapes only.
+_COMMIT_CUE_RE = re.compile(
+    r"("
+    r"\b(booked|reserved|confirmed|cancelled|canceled|registered)\b|"
+    r"\b(i('ve| have)|we('ve| have)|you('re| are)|you('ve| have))\s+"
+    r"(booked|reserved|cancelled|canceled|confirmed|removed|registered)\b|"
+    r"\bon the (register|roster)\b|"
+    r"\bremoved (you|your|the)\b|"
+    r"\ball set for\b|"
+    r"已(经|經)?(预约|預約|报名|報名|取消|预订|預訂)|"
+    r"已经(预约|預約|报名|報名|取消)|"
+    r"幫你(預約|取消|報名)|帮你(预约|取消|报名)"
+    r")",
+    re.I,
+)
+
+# History that suggests an ongoing tool dialogue — force classify.
+_HISTORY_TOOL_RE = re.compile(
+    r"("
+    r"\b(book|booking|trial|cancel|seat|slot|confirm|reserve|enrol|enroll|"
+    r"assessment|placement|waitlist)\b|"
+    r"試堂|取消|預約|报名|報名|評估"
+    r")",
+    re.I,
+)
+
 
 def enabled() -> bool:
     flag = os.environ.get("BRIGHTNEST_ACTION_POLICY", "1").strip().lower()
@@ -44,10 +117,72 @@ def _history_block(history_preview: str) -> str:
     return f"Recent chat:\n{hist[-700:]}\n"
 
 
+def looks_like_info_question(message: str) -> bool:
+    """Structural FAQ shape — ends with ? or interrogative opener."""
+    t = (message or "").strip()
+    if not t:
+        return False
+    if t.endswith("?") or t.endswith("？"):
+        return True
+    low = t.lower()
+    return any(low.startswith(p) for p in _INFO_OPENERS)
+
+
+def _near_miss_tools(scores: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not scores:
+        return None
+    best_k = None
+    best_v = 0.0
+    for k in _TOOL_SCORE_KEYS:
+        try:
+            v = float(scores.get(k) or 0)
+        except (TypeError, ValueError):
+            continue
+        if v >= _NEAR_MISS and v > best_v:
+            best_v = v
+            best_k = k
+    return best_k
+
+
+def should_classify(
+    message: str,
+    *,
+    history_preview: str = "",
+    scores: Optional[Dict[str, Any]] = None,
+) -> Tuple[bool, str]:
+    """
+    Gate the action_policy LLM. Fail-open toward calling when unsure.
+    Skip only clear informational questions with no tool-ish context.
+    """
+    text = (message or "").strip()
+    if not text:
+        return False, "empty"
+    hist = (history_preview or "").strip()
+    if hist and _HISTORY_TOOL_RE.search(hist):
+        return True, "history_cues"
+    near = _near_miss_tools(scores)
+    if near:
+        return True, f"near_miss:{near}"
+    if looks_like_info_question(text):
+        return False, "info_question"
+    return True, "default"
+
+
+def should_audit(answer: str) -> Tuple[bool, str]:
+    """Gate commit_audit LLM. Skip drafts with no commit-shaped language."""
+    text = (answer or "").strip()
+    if len(text) < 12:
+        return False, "short"
+    if not _COMMIT_CUE_RE.search(text):
+        return False, "no_commit_cues"
+    return True, "commit_cues"
+
+
 def classify_turn(
     message: str,
     *,
     history_preview: str = "",
+    scores: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Returns act/route/confidence/reason/called.
@@ -66,6 +201,14 @@ def classify_turn(
     text = (message or "").strip()
     if not text:
         out["reason"] = "empty"
+        return out
+
+    run, gate = should_classify(
+        text, history_preview=history_preview, scores=scores
+    )
+    out["gate"] = gate
+    if not run:
+        out["reason"] = f"skipped:{gate}"
         return out
 
     out["called"] = True
@@ -150,9 +293,12 @@ def audit_draft(answer: str) -> Dict[str, Any]:
         out["reason"] = "disabled"
         return out
     text = (answer or "").strip()
-    if len(text) < 12:
-        out["reason"] = "short"
+    run, gate = should_audit(text)
+    out["gate"] = gate
+    if not run:
+        out["reason"] = f"skipped:{gate}"
         return out
+
     out["called"] = True
     out["model"] = cheap_llm.arbiter_model()
     prompt = (
