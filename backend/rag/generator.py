@@ -27,7 +27,9 @@ PERSONA = {
         "[[ADMIN_GAP: off_topic — not in centre KB]] "
         "Keep replies short. NEVER invent unpublished fees. "
         "Never mention internal tools, admin to-do lists, spreadsheets, or that tag to the parent. "
-        "Do not pitch trial classes unless the excerpts or parent question are about trials/booking."
+        "Do not pitch trial classes unless the excerpts or parent question are about trials/booking. "
+        "Do NOT open with Hello / Hi / Hey / Good morning unless the parent's latest message "
+        "is itself a greeting — mid-conversation continue directly with the answer."
     ),
     "zh-HK": (
         "你係「亮巢學習中心」（BrightNest Learning Centre）嘅行政助理（課堂示範用虛構中心）。"
@@ -38,6 +40,7 @@ PERSONA = {
         "然後喺最後一行單獨寫：[[ADMIN_GAP: off_topic — not in centre KB]]"
         "唔好虛構學費；唔好向家長提及內部待辦或該標記；"
         "除非家長問試堂／預約，否則唔好推銷試堂。"
+        "除非家長最新一句係打招呼，否則唔好用「你好／哈囉／Hello」開頭——跟進對話直接答。"
     ),
     "zh-CN": (
         "你是「亮巢学习中心」（BrightNest Learning Centre）的行政助理（课堂演示用虚构中心）。"
@@ -48,8 +51,16 @@ PERSONA = {
         "并在最后一行单独写：[[ADMIN_GAP: off_topic — not in centre KB]]"
         "不要虚构学费；不要向家长提及内部待办或该标记；"
         "除非家长问试听／预约，否则不要推销试听。"
+        "除非家长最新一句是打招呼，否则不要用「你好／您好／Hello」开头——跟进对话直接回答。"
     ),
 }
+
+_GREETING_OPENER_RE = re.compile(
+    r"^\s*((?:hello|hi|hey|good\s+(?:morning|afternoon|evening))"
+    r"(?:\s*[,!.，！。…]*)\s*|"
+    r"(?:你好|您好|哈囉|哈罗)(?:\s*[,!.，！。…]*)\s*)",
+    re.I,
+)
 
 _OFF_KB_REPLY = {
     "en": (
@@ -114,7 +125,21 @@ def sanitize_answer(text: str, lang: str = "en") -> str:
     return sanitize_answer_meta(text, lang)["answer"]
 
 
-def sanitize_answer_meta(text: str, lang: str = "en") -> Dict[str, Any]:
+def _strip_midthread_greeting(text: str) -> str:
+    """Drop a leading Hello/Hi when continuing an ongoing chat."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return cleaned
+    stripped = _GREETING_OPENER_RE.sub("", cleaned, count=1).lstrip()
+    return stripped or cleaned
+
+
+def sanitize_answer_meta(
+    text: str,
+    lang: str = "en",
+    *,
+    strip_greeting: bool = False,
+) -> Dict[str, Any]:
     """Sanitize reply and extract admin-gap signals for the to-do list."""
     raw = (text or "").strip()
     meta: Dict[str, Any] = {
@@ -134,6 +159,8 @@ def sanitize_answer_meta(text: str, lang: str = "en") -> Dict[str, Any]:
         raw = _ADMIN_GAP_RE.sub("", raw).strip()
 
     cleaned = _NO_ANSWER_RE.sub("", raw).strip()
+    if strip_greeting:
+        cleaned = _strip_midthread_greeting(cleaned)
     if not cleaned or cleaned in {".", "-", "—", "…"}:
         meta["answer"] = _FALLBACK.get(lang, _FALLBACK["en"])
         meta["used_fallback"] = True
@@ -158,14 +185,20 @@ def _build_prompt(
     ctx = "\n\n".join(blocks) if blocks else "(no retrieved documents)"
     persona = PERSONA.get(lang, PERSONA["en"])
     history_block = ""
+    no_hello = ""
     if history_context and history_context.strip():
         history_block = (
             "Recent conversation (use for follow-ups; do not invent facts not in the KB):\n"
             f"{history_context.strip()}\n\n"
         )
+        no_hello = (
+            "This is a follow-up turn — do NOT start with Hello/Hi/你好; "
+            "answer the question directly.\n\n"
+        )
     return (
         f"{persona}\n\n"
         f"{history_block}"
+        f"{no_hello}"
         f"Internal knowledge base excerpts:\n{ctx}\n\n"
         f"Parent question: {question}\n\n"
         "Write a short parent-facing answer grounded ONLY in the excerpts. "
@@ -298,10 +331,15 @@ def compose_grounded_fact(
 
     persona = PERSONA.get(lang, PERSONA["en"])
     history_block = ""
-    if history_context and history_context.strip():
+    no_hello = ""
+    has_history = bool(history_context and history_context.strip())
+    if has_history:
         history_block = (
             "Recent conversation (keep continuity):\n"
             f"{history_context.strip()}\n\n"
+        )
+        no_hello = (
+            "Follow-up turn — do NOT start with Hello/Hi/你好; answer directly.\n\n"
         )
     kb_bits = []
     for i, h in enumerate(contexts[:5], start=1):
@@ -337,6 +375,7 @@ def compose_grounded_fact(
         "No [[ADMIN_GAP]] / NO_ANSWER.\n"
         f"{tool_block}\n"
         f"{history_block}"
+        f"{no_hello}"
         f"Route: {route}\n\n"
         f"PRIVILEGED DOCS:\n---\n{privileged}\n---\n\n"
         f"KB EXCERPTS (secondary / general advice):\n---\n{kb_block}\n---\n\n"
@@ -350,7 +389,7 @@ def compose_grounded_fact(
             temperature=0.25,
             role="grounded_compose",
         )
-        meta = sanitize_answer_meta(raw, lang)
+        meta = sanitize_answer_meta(raw, lang, strip_greeting=has_history)
         composed = (meta.get("answer") or "").strip()
         invoke: Optional[bool] = None
         if ask_tool_ok:
@@ -421,10 +460,15 @@ def adapt_structured_fact(
 
     persona = PERSONA.get(lang, PERSONA["en"])
     history_block = ""
-    if history_context and history_context.strip():
+    no_hello = ""
+    has_history = bool(history_context and history_context.strip())
+    if has_history:
         history_block = (
             "Recent conversation (keep continuity):\n"
             f"{history_context.strip()}\n\n"
+        )
+        no_hello = (
+            "Follow-up turn — do NOT start with Hello/Hi/你好; answer directly.\n\n"
         )
     prompt = (
         f"{persona}\n\n"
@@ -439,6 +483,7 @@ def adapt_structured_fact(
         "- Keep it short: parents will follow up if they need more detail.\n"
         "- Warm, spoken, concise. No template/meta talk. No [[ADMIN_GAP]] / NO_ANSWER.\n\n"
         f"{history_block}"
+        f"{no_hello}"
         f"Route: {route}\n\n"
         f"Fact card:\n---\n{card}\n---\n\n"
         f"Parent question: {question}\n\n"
@@ -451,7 +496,7 @@ def adapt_structured_fact(
             temperature=0.25,
             role="fact_adapt",
         )
-        meta = sanitize_answer_meta(raw, lang)
+        meta = sanitize_answer_meta(raw, lang, strip_greeting=has_history)
         adapted = (meta.get("answer") or "").strip()
         if not adapted or meta.get("used_fallback") or len(adapted) < 20:
             return out
@@ -483,19 +528,20 @@ def generate_answer_meta(
     lang: str = "en",
     history_context: Optional[str] = None,
 ) -> Dict[str, Any]:
+    has_history = bool(history_context and history_context.strip())
     if SETTINGS.has_dashscope and contexts:
         try:
             raw = _dashscope_generation_http(
                 _build_prompt(question, contexts, lang, history_context=history_context),
                 role="rag_generate",
             )
-            meta = sanitize_answer_meta(raw, lang)
+            meta = sanitize_answer_meta(raw, lang, strip_greeting=has_history)
             meta["provider"] = "dashscope"
             return meta
         except Exception as e:
             print(f"[GEN] DashScope Generation failed ({e}); extractive fallback.", flush=True)
     fb = _extractive_fallback(question, contexts, lang)
-    meta = sanitize_answer_meta(fb, lang)
+    meta = sanitize_answer_meta(fb, lang, strip_greeting=has_history)
     meta["provider"] = "local_fallback"
     if not contexts:
         meta["used_fallback"] = True
@@ -526,7 +572,8 @@ def _dashscope_generation_http(
         "You are BrightNest's centre admin assistant. "
         "Answer only from the provided excerpts about the learning centre. "
         "Refuse general science, homework, and other off-KB topics briefly; "
-        "do not invent centre facts. Never mention [[ADMIN_GAP]] tags to the parent."
+        "do not invent centre facts. Never mention [[ADMIN_GAP]] tags to the parent. "
+        "Do not open with Hello/Hi/你好 on follow-up turns — answer directly."
     )
     if multimodal:
         messages = [
