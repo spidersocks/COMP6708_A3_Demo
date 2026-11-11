@@ -91,7 +91,7 @@ class Settings:
         "true",
         "yes",
     )
-    # Standalone retrieval query from chat context ("tell me more about that")
+    # CRAG-lite corrective rewrite: only after weak first retrieve + prior chat
     arbiter_query_rewrite: bool = os.environ.get("ARBITER_QUERY_REWRITE", "true").lower() in (
         "1",
         "true",

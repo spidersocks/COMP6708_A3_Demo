@@ -289,6 +289,10 @@ def chat(req: ChatRequest) -> ChatResponse:
         new_message=message,
         include_new=True,
     )
+    # Prior turns only — query rewrite must never see the current inbound as "history"
+    prior_context = (
+        build_context_string(history, include_new=False) if use_history else ""
+    )
 
     phone = (req.phone or "").strip() or "+852 9000 0000"
     parent_name = (req.parent_name or "").strip()
@@ -465,6 +469,7 @@ def chat(req: ChatRequest) -> ChatResponse:
                 language=lang,
                 top_k=SETTINGS.grounding_enrich_top_k,
                 history_context=history_context if use_history else None,
+                prior_context=prior_context if use_history else None,
             )
             rag_hits = enrich_pack.get("hits") or []
             rag_cites = enrich_pack.get("citations") or []
@@ -1192,6 +1197,7 @@ def chat(req: ChatRequest) -> ChatResponse:
         language=lang,
         debug=True,
         history_context=history_context if use_history else None,
+        prior_context=prior_context if use_history else None,
     )
     answer = result.get("answer") or ""
     rag_debug = result.get("debug") or {}

@@ -7,17 +7,22 @@ from typing import Any, Dict, List, Optional
 from config import SETTINGS
 from services import cheap_llm
 
-# Deictic / underspecified follow-ups that need chat context to retrieve well.
+# Deictic / underspecified follow-ups that need *prior* chat to retrieve well.
+# Do NOT match standalone "know more about your math programmes" (no deixis).
 _CONTEXTUAL_QUERY_RE = re.compile(
-    r"(?i)\b("
-    r"that|this|it|those|these|them|"
-    r"more\s+about|tell\s+me\s+more|can\s+you\s+expand|"
-    r"what\s+about|how\s+about|and\s+the|the\s+other|"
-    r"same\s+(one|thing)|as\s+well|too\b|also\b|"
-    r"you\s+(said|mentioned|told)|earlier|above|"
-    r"the\s+(first|second|third|last)\s+one|"
-    r"那個|這個|那個呢|呢個|多啲|詳細|再說|上面|剛才"
-    r")\b"
+    r"(?i)(?:"
+    r"\b(?:tell\s+me\s+)?more\s+about\s+(?:that|this|it|them|those|these)\b|"
+    r"\btell\s+me\s+more\b|"
+    r"\bcan\s+you\s+expand\b|"
+    r"\b(?:what|how)\s+about\s+(?:that|this|it|them|those|these)\b|"
+    r"\b(?:and|also)\s+(?:that|this|it|them|the\s+other)\b|"
+    r"\bthe\s+other\s+(?:one|class|course|programme|program)\b|"
+    r"\bthe\s+(?:first|second|third|last)\s+one\b|"
+    r"\byou\s+(?:said|mentioned|told)\b|"
+    r"\b(?:earlier|above)\b|"
+    r"\b(?:that|this|those|these)\s+(?:one|class|course|programme|program|fee|option)\b|"
+    r"那個|這個|那個呢|呢個|多啲|詳細啲|再說|上面|剛才"
+    r")"
 )
 
 
@@ -191,18 +196,54 @@ def parse_booking_hints(message: str) -> Dict[str, Any]:
     }
 
 
+def _prior_history_only(
+    history_context: Optional[str],
+    message: str,
+) -> str:
+    """
+    Drop the current inbound line if the caller passed include_new=True context.
+    Rewrite must only see *prior* turns — never treat turn-1 as its own history.
+    """
+    hist = (history_context or "").strip()
+    if not hist:
+        return ""
+    msg = (message or "").strip()
+    if not msg:
+        return hist
+    lines = [ln for ln in hist.splitlines() if ln.strip()]
+    # Strip trailing "Parent: <this message>"
+    if lines:
+        last = lines[-1]
+        if last.startswith("Parent:") and msg.lower() in last.lower():
+            lines = lines[:-1]
+    prior = "\n".join(lines).strip()
+    if not prior:
+        return ""
+    if prior.lower() in {msg.lower(), f"parent: {msg.lower()}"}:
+        return ""
+    return prior
+
+
 def needs_retrieval_rewrite(message: str, history_context: Optional[str]) -> bool:
-    """True when the ask likely depends on prior turns to be searchable."""
-    if not (history_context or "").strip():
-        return False
+    """Heuristic: deictic / very short follow-up given real prior turns."""
     msg = (message or "").strip()
     if not msg:
         return False
+    prior = _prior_history_only(history_context, msg)
+    if not prior:
+        return False
     if _CONTEXTUAL_QUERY_RE.search(msg):
         return True
-    # Very short follow-ups with history ("fees?", "and math?")
     tokens = re.findall(r"[A-Za-z\u4e00-\u9fff]+", msg)
     return len(tokens) <= 6
+
+
+_PROTOCOL_RULE = (
+    "CRAG-lite (Yan et al. 2024) + Self-RAG-style retry: "
+    "retrieve with the parent text → grade Correct/Ambiguous/Incorrect → "
+    "only if not Correct and prior chat exists, cheap-rewrite once and "
+    "re-retrieve (max 1 retry). Never rewrite on turn 1 when retrieval is strong."
+)
 
 
 def rewrite_retrieval_query(
@@ -210,12 +251,18 @@ def rewrite_retrieval_query(
     history_context: Optional[str],
     *,
     lang: str = "en",
+    grade: str = "incorrect",
+    hit_titles: Optional[List[str]] = None,
+    force: bool = False,
 ) -> Dict[str, Any]:
     """
-    Cheap rewrite: turn a context-dependent parent ask into a standalone
-    retrieval query. Fail-open → original message.
+    Corrective rewrite after a weak first retrieve (not proactive).
+
+    ``force=True`` when the retrieval grader said Ambiguous/Incorrect.
+    Without force, only deictic/short asks with prior are rewritten.
     """
     original = (message or "").strip()
+    prior = _prior_history_only(history_context, original)
     out: Dict[str, Any] = {
         "rewritten": False,
         "called": False,
@@ -223,29 +270,43 @@ def rewrite_retrieval_query(
         "reason": "skipped",
         "original": original,
         "query": original,
+        "prior_chars": len(prior),
+        "grade": grade,
+        "protocol": "CRAG-lite",
+        "rule": _PROTOCOL_RULE,
         "model": cheap_llm.arbiter_model() if cheap_llm.enabled() else None,
     }
     if not SETTINGS.arbiter_query_rewrite:
         out["reason"] = "disabled"
         return out
-    if not needs_retrieval_rewrite(original, history_context):
-        out["reason"] = "standalone"
+    if not prior:
+        out["reason"] = "no_prior"
+        return out
+    deictic = needs_retrieval_rewrite(original, prior)
+    if not force and not deictic:
+        out["reason"] = "retrieval_ok"
+        return out
+    # force path still needs something to gain from context
+    if force and not deictic and len(prior) < 20:
+        out["reason"] = "no_useful_prior"
         return out
     out["needed"] = True
     if not cheap_llm.enabled():
         out["reason"] = "no_llm"
         return out
-    hist = (history_context or "").strip()
-    if len(hist) > 1600:
-        hist = hist[-1600:]
+    hist = prior[-1600:] if len(prior) > 1600 else prior
+    titles = hit_titles or []
+    title_line = "; ".join(t for t in titles[:5] if t) or "(none useful)"
     out["called"] = True
     prompt = (
-        "Rewrite the parent's latest message into ONE standalone search query "
-        "for a centre knowledge base. Resolve pronouns like that/this/it using "
-        "the chat. Keep the same language as the parent. Output ONLY the query "
-        "text — no quotes, no preamble.\n"
+        "First retrieval looked weak for this parent ask. Rewrite into ONE "
+        "standalone centre-KB search query using PRIOR chat to resolve "
+        "that/this/it and the topic. Same language as the parent. "
+        "Output ONLY the query — no quotes, no preamble.\n"
         f"Lang: {lang}\n"
-        f"Chat:\n{hist}\n\n"
+        f"Grade: {grade}\n"
+        f"Weak hits: {title_line}\n"
+        f"Prior chat:\n{hist}\n\n"
         f"Latest: {original}\n"
         "Standalone query:"
     )
@@ -260,17 +321,10 @@ def rewrite_retrieval_query(
     if not cleaned or len(cleaned) < 4:
         out["reason"] = "empty"
         return out
-    # Guard: model must not dump the whole chat back
     if len(cleaned) > 280:
         cleaned = cleaned[:280].rsplit(" ", 1)[0] or cleaned[:280]
     if cleaned.lower() == original.lower():
         out.update({"reason": "unchanged", "query": original})
         return out
-    out.update(
-        {
-            "rewritten": True,
-            "reason": "ok",
-            "query": cleaned,
-        }
-    )
+    out.update({"rewritten": True, "reason": "ok", "query": cleaned})
     return out

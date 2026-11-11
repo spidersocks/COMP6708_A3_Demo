@@ -15,6 +15,7 @@ const LLM_ROLE_LABELS = {
   gap_polish: "Gap polish (cheap)",
   cancel_pick: "Cancel pick (cheap)",
   booking_parse: "Booking parse (cheap)",
+  query_rewrite: "Query rewrite (cheap)",
   staff_email: "Staff email draft (cheap)",
   main_generate: "Main generate",
   cheap_llm: "Cheap LLM",
@@ -37,10 +38,11 @@ const LAYOUT = {
   fsm: { x: -168, y: 560, w: 140, h: 46 },
   rag: { x: 168, y: 560, w: 140, h: 46 },
   live: { x: -168, y: 650, w: 140, h: 46 },
-  chroma: { x: 168, y: 650, w: 124, h: 58 },
-  sheets: { x: -168, y: 750, w: 132, h: 58 },
-  llm: { x: 40, y: 750, w: 156, h: 46 },
-  answer: { x: 0, y: 850, w: 156, h: 42 },
+  rewrite: { x: 168, y: 650, w: 148, h: 46 },
+  chroma: { x: 168, y: 740, w: 124, h: 58 },
+  sheets: { x: -168, y: 840, w: 132, h: 58 },
+  llm: { x: 40, y: 840, w: 156, h: 46 },
+  answer: { x: 0, y: 940, w: 156, h: 42 },
 };
 
 const EDGES = [
@@ -56,15 +58,16 @@ const EDGES = [
   { id: "e-fsm-live", from: "fsm", to: "live", dashed: true },
   { id: "e-fsm-llm", from: "fsm", to: "llm" },
   { id: "e-fsm-sheets", from: "fsm", to: "sheets" },
-  { id: "e-rag-chroma", from: "rag", to: "chroma" },
+  { id: "e-rag-rewrite", from: "rag", to: "rewrite" },
+  { id: "e-rewrite-chroma", from: "rewrite", to: "chroma" },
   { id: "e-chroma-llm", from: "chroma", to: "llm" },
   { id: "e-live-llm", from: "live", to: "llm", dashed: true },
-  { id: "e-live-chroma", from: "live", to: "chroma", dashed: true },
+  { id: "e-live-rewrite", from: "live", to: "rewrite", dashed: true },
   { id: "e-llm-answer", from: "llm", to: "answer" },
   { id: "e-sheets-answer", from: "sheets", to: "answer" },
 ];
 
-const WORLD = { minX: -340, minY: -28, maxX: 340, maxY: 910 };
+const WORLD = { minX: -340, minY: -28, maxX: 340, maxY: 1000 };
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2.0;
 
@@ -619,7 +622,6 @@ function NodeDetail({
 
     case "memory": {
       const loaded = priorTurns.length;
-      const qr = rag?.query_rewrite || null;
       return (
         <>
           <ul className="bn-fact-list">
@@ -639,46 +641,93 @@ function NodeDetail({
                     : "no"}
               </code>
             </li>
-            {qr ? (
-              <li>
-                <span>Retrieval rewrite</span>
-                <code>
-                  {qr.rewritten
-                    ? "yes"
-                    : qr.needed
-                      ? qr.reason || "needed"
-                      : qr.reason || "not needed"}
-                </code>
-              </li>
-            ) : null}
           </ul>
-          {qr?.rewritten || qr?.needed ? (
-            <p className="bn-rules-hint">
-              Contextual follow-ups (“tell me more about that”) get a cheap LLM
-              rewrite into a standalone retrieval query before Chroma runs.
-              {qr.rewritten ? (
-                <>
-                  {" "}
-                  Used: <code>{qr.query}</code>
-                </>
-              ) : null}
-            </p>
-          ) : null}
+          <p className="bn-rules-hint">
+            Prior turns only. Contextual retrieval rewrite (if any) is the{" "}
+            <strong>Query rewrite</strong> node on the RAG arm.
+          </p>
           <StageIO
             request={`session ${trace.session_id || "—"}`}
-            payload={{
+            payload={priorPreview || "(no prior turns)"}
+          />
+        </>
+      );
+    }
+
+    case "rewrite": {
+      const qr = rag?.query_rewrite || null;
+      const grade = rag?.retrieval_grade || null;
+      const ran = Boolean(
+        hits.length || enrichMode || path === "rag" || qr || grade
+      );
+      if (!ran) {
+        return <Skipped>Retrieve did not run — rewrite not evaluated.</Skipped>;
+      }
+      return (
+        <>
+          <p className="bn-rules-hint">
+            {qr?.rule ||
+              "CRAG-lite (Yan et al., 2024) + Self-RAG-style retry: retrieve → grade Correct/Ambiguous/Incorrect → only if not Correct and prior chat exists, cheap-rewrite once and re-retrieve (max 1)."}
+          </p>
+          <ul className="bn-fact-list">
+            <li>
+              <span>Protocol</span>
+              <code>{qr?.protocol || "CRAG-lite"}</code>
+            </li>
+            <li>
+              <span>Pass-1 grade</span>
+              <code>
+                {grade?.grade || qr?.grade || "—"}
+                {grade?.why || qr?.grade_why
+                  ? ` · ${grade?.why || qr?.grade_why}`
+                  : ""}
+              </code>
+            </li>
+            <li>
+              <span>Retry</span>
+              <code>
+                {qr?.retried
+                  ? `yes · kept ${qr?.kept || "pass2"}`
+                  : qr?.reason || "no"}
+              </code>
+            </li>
+            <li>
+              <span>Rewritten</span>
+              <code>{qr?.rewritten ? "yes" : "no"}</code>
+            </li>
+            <li>
+              <span>Called LLM</span>
+              <code>{qr?.called ? "yes" : "no"}</code>
+            </li>
+          </ul>
+          <StageIO
+            request={{
+              parent: inbound,
               prior: priorPreview || "(no prior turns)",
+              pass1_query: qr?.original || inbound,
+            }}
+            payload={{
+              grade: grade || { grade: qr?.grade, why: qr?.grade_why },
+              retrieval_query: rag?.retrieval_query || inbound,
               query_rewrite: qr || null,
             }}
           />
+          {qr?.rewritten ? (
+            <ul className="bn-fact-list">
+              <li>
+                <span>Pass 1</span>
+                <code>{qr.original || inbound}</code>
+              </li>
+              <li>
+                <span>Pass 2</span>
+                <code>{qr.pass2_query || qr.query}</code>
+              </li>
+            </ul>
+          ) : null}
           {llmCalls
             .filter((c) => c.role === "query_rewrite")
             .map((c, i) => (
-              <LlmCallCard
-                key={`mem-qr-${i}`}
-                call={c}
-                defaultOpen
-              />
+              <LlmCallCard key={`qr-${i}`} call={c} defaultOpen />
             ))}
         </>
       );
@@ -1162,8 +1211,8 @@ function NodeDetail({
       return (
         <>
           <p className="bn-rules-hint">
-            Main LLM calls via DashScope (Qwen). Query rewrite lives on Session
-            memory; arbiter / final-check cards live on their own nodes.
+            Main LLM calls via DashScope (Qwen). Corrective query rewrite lives
+            on the Query rewrite node; arbiter / final-check on theirs.
           </p>
           {genCalls.length === 0 ? (
             <Skipped>No LLM call (template / deterministic reply).</Skipped>
@@ -1455,6 +1504,21 @@ export default function TurnPipeline({
         status: !hasTrace ? "idle" : liveOn ? "done" : "skipped",
       },
       {
+        id: "rewrite",
+        label: "Query rewrite",
+        kind: "llm",
+        shape: "process",
+        status: !hasTrace
+          ? "idle"
+          : !(path === "rag" || enrichMode || hits.length)
+            ? "skipped"
+            : rag?.query_rewrite?.rewritten || rag?.query_rewrite?.retried
+              ? "done"
+              : rag?.retrieval_grade || rag?.query_rewrite
+                ? "done"
+                : "skipped",
+      },
+      {
         id: "chroma",
         label: "Chroma KB",
         kind: "store",
@@ -1508,6 +1572,8 @@ export default function TurnPipeline({
     facts,
     hits.length,
     rag?.hit_count,
+    rag?.query_rewrite,
+    rag?.retrieval_grade,
     enrichMode,
     llmCalls,
     adminTodo,
@@ -1536,7 +1602,10 @@ export default function TurnPipeline({
     if (path === "fsm") {
       lit.add("fsm");
       if (liveOn) lit.add("live");
-      if (hits.length || enrichMode) lit.add("chroma");
+      if (hits.length || enrichMode) {
+        lit.add("rewrite");
+        lit.add("chroma");
+      }
       if (
         adminTodo ||
         staffMessage ||
@@ -1547,6 +1616,7 @@ export default function TurnPipeline({
       }
     } else if (path === "rag") {
       lit.add("rag");
+      lit.add("rewrite");
       lit.add("chroma");
       if (liveOn) lit.add("live");
       if (adminTodo) lit.add("sheets");
@@ -1573,7 +1643,8 @@ export default function TurnPipeline({
     const ok = (id) =>
       statusById[id] === "done" ||
       statusById[id] === "empty" ||
-      (id === "memory" && on(id));
+      (id === "memory" && on(id)) ||
+      (id === "rewrite" && on(id));
     const link = (from, to, edgeId) => {
       if (on(from) && on(to) && ok(from) && ok(to)) lit.add(edgeId);
     };
@@ -1592,11 +1663,14 @@ export default function TurnPipeline({
     if (on("fsm") && on("live")) link("fsm", "live", "e-fsm-live");
     if (on("fsm") && on("llm")) link("fsm", "llm", "e-fsm-llm");
     if (on("fsm") && on("sheets")) link("fsm", "sheets", "e-fsm-sheets");
-    if (on("rag") && on("chroma")) link("rag", "chroma", "e-rag-chroma");
+    if (on("rag") && on("rewrite")) link("rag", "rewrite", "e-rag-rewrite");
+    if (on("rewrite") && on("chroma")) {
+      link("rewrite", "chroma", "e-rewrite-chroma");
+    }
     if (on("chroma") && on("llm")) link("chroma", "llm", "e-chroma-llm");
     if (on("live") && on("llm")) link("live", "llm", "e-live-llm");
-    if (on("live") && on("chroma") && enrichMode) {
-      link("live", "chroma", "e-live-chroma");
+    if (on("live") && on("rewrite") && enrichMode) {
+      link("live", "rewrite", "e-live-rewrite");
     }
     if (on("llm")) link("llm", "answer", "e-llm-answer");
     if (on("sheets")) link("sheets", "answer", "e-sheets-answer");
@@ -1627,13 +1701,21 @@ export default function TurnPipeline({
       "e-arb-path": arbiter?.called ? arbiter.action || "keep" : "",
       "e-path-fsm": path === "fsm" ? "FSM" : "",
       "e-path-rag": path === "rag" ? "RAG" : "",
+      "e-rag-rewrite": rag?.retrieval_grade?.grade
+        ? String(rag.retrieval_grade.grade)
+        : "",
+      "e-rewrite-chroma": rag?.query_rewrite?.retried
+        ? "retry ×1"
+        : rag?.query_rewrite?.reason === "retrieval_ok"
+          ? "pass-1 ok"
+          : "",
       "e-chroma-llm":
         hits.length && scoreLabel(hits[0]?.score)
           ? `sim ${scoreLabel(hits[0]?.score)}`
           : "",
     };
     return labels;
-  }, [routing, winningRuleId, route, arbiter, path, hits]);
+  }, [routing, winningRuleId, route, arbiter, path, hits, rag]);
 
   const fitView = useCallback(() => {
     const el = viewportRef.current;

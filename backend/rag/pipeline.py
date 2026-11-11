@@ -499,12 +499,198 @@ def _score_stats(hits: List[Dict[str, Any]]) -> Dict[str, Optional[float]]:
     return {"rank1_score": scores[0], "max_score": max(scores)}
 
 
+def _pool_and_keep(
+    query: str,
+    *,
+    lang: str,
+    keep_k: int,
+    pool_k: int,
+) -> Dict[str, Any]:
+    """One Chroma retrieve + language fallback + age overlay + lexical keep."""
+    lang_fallback = False
+    hits = retrieve(query, lang=lang, top_k=pool_k)
+    if not hits and lang:
+        hits = retrieve(query, lang=None, top_k=pool_k)
+        lang_fallback = True
+    pool_returned = len(hits)
+    hits = _merge_hits(hits, _age_faq_overlay(query, lang))
+    hits = _lexical_rerank(query, hits)[:keep_k]
+    return {
+        "hits": hits,
+        "lang_fallback": lang_fallback,
+        "pool_returned": pool_returned,
+        "pool_k": pool_k,
+        "keep_k": keep_k,
+        "query": query,
+    }
+
+
+def _grade_retrieval(
+    message: str,
+    hits: List[Dict[str, Any]],
+    *,
+    local_embeddings: bool = False,
+) -> Dict[str, Any]:
+    """
+    CRAG-style confidence: Correct / Ambiguous / Incorrect.
+    Lightweight heuristics (no extra LLM) — rewrite LLM runs only on non-Correct.
+    """
+    weak_cut = _WEAK_SCORE_LOCAL if local_embeddings else _WEAK_SCORE
+    if not hits:
+        return {
+            "grade": "incorrect",
+            "why": "no hits",
+            "rank1_score": None,
+            "max_score": None,
+        }
+    stats = _score_stats(hits)
+    rank1 = stats["rank1_score"]
+    max_s = stats["max_score"]
+    top = hits[0]
+    if _off_topic(message, top) and (rank1 is None or rank1 < _GROUNDED_RETRIEVAL_SCORE):
+        return {
+            "grade": "incorrect",
+            "why": "top hit looks off-topic / weakly grounded",
+            "rank1_score": rank1,
+            "max_score": max_s,
+        }
+    if rank1 is not None and rank1 < weak_cut:
+        return {
+            "grade": "incorrect",
+            "why": f"rank-1 vector {rank1:.3f} < weak cut {weak_cut}",
+            "rank1_score": rank1,
+            "max_score": max_s,
+        }
+    if rank1 is not None and rank1 >= _GROUNDED_RETRIEVAL_SCORE:
+        return {
+            "grade": "correct",
+            "why": f"rank-1 vector {rank1:.3f} ≥ grounded cut",
+            "rank1_score": rank1,
+            "max_score": max_s,
+        }
+    return {
+        "grade": "ambiguous",
+        "why": f"mid scores (rank-1={rank1})",
+        "rank1_score": rank1,
+        "max_score": max_s,
+    }
+
+
+def _hit_titles(hits: List[Dict[str, Any]]) -> List[str]:
+    out: List[str] = []
+    for h in hits[:5]:
+        meta = h.get("metadata") or {}
+        out.append(str(meta.get("title") or meta.get("source") or "")[:80])
+    return out
+
+
+def _best_hit_pack(
+    a: Dict[str, Any],
+    b: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Prefer the pack with stronger max vector score (then more hits)."""
+    sa = _score_stats(a.get("hits") or [])
+    sb = _score_stats(b.get("hits") or [])
+    ma = sa["max_score"] if sa["max_score"] is not None else -1.0
+    mb = sb["max_score"] if sb["max_score"] is not None else -1.0
+    if mb > ma + 0.02:
+        return b
+    if ma > mb + 0.02:
+        return a
+    if len(b.get("hits") or []) > len(a.get("hits") or []):
+        return b
+    return a
+
+
+def _corrective_retrieve(
+    message: str,
+    *,
+    lang: str,
+    keep_k: int,
+    pool_k: int,
+    prior_context: Optional[str],
+) -> Dict[str, Any]:
+    """
+    Pass 1: retrieve with parent text.
+    Grade (CRAG Correct/Ambiguous/Incorrect).
+    If not Correct and prior chat exists → rewrite once → Pass 2 retrieve.
+    """
+    local = not SETTINGS.has_dashscope
+    pass1 = _pool_and_keep(message, lang=lang, keep_k=keep_k, pool_k=pool_k)
+    grade = _grade_retrieval(message, pass1["hits"], local_embeddings=local)
+    rewrite: Dict[str, Any] = {
+        "rewritten": False,
+        "called": False,
+        "needed": False,
+        "reason": "retrieval_ok" if grade["grade"] == "correct" else "pending",
+        "original": message,
+        "query": message,
+        "grade": grade["grade"],
+        "grade_why": grade["why"],
+        "protocol": "CRAG-lite",
+        "pass": 1,
+        "retried": False,
+    }
+    chosen = pass1
+    if grade["grade"] != "correct":
+        try:
+            from services import demo_polish
+
+            rewrite = demo_polish.rewrite_retrieval_query(
+                message,
+                prior_context,
+                lang=lang,
+                grade=grade["grade"],
+                hit_titles=_hit_titles(pass1["hits"]),
+                force=True,
+            )
+            rewrite["grade"] = grade["grade"]
+            rewrite["grade_why"] = grade["why"]
+            rewrite["protocol"] = "CRAG-lite"
+            rewrite["pass"] = 1
+            rewrite["retried"] = False
+            if rewrite.get("rewritten") and rewrite.get("query"):
+                pass2 = _pool_and_keep(
+                    str(rewrite["query"]),
+                    lang=lang,
+                    keep_k=keep_k,
+                    pool_k=pool_k,
+                )
+                chosen = _best_hit_pack(pass1, pass2)
+                rewrite["retried"] = True
+                rewrite["pass"] = 2 if chosen is pass2 else 1
+                rewrite["pass2_query"] = rewrite["query"]
+                rewrite["kept"] = "pass2" if chosen is pass2 else "pass1"
+        except Exception as e:
+            print(f"[RAG] corrective rewrite failed: {e}", flush=True)
+            rewrite["reason"] = "error"
+    else:
+        from services import demo_polish as _dp  # noqa: PLC0415
+
+        rewrite["reason"] = "retrieval_ok"
+        rewrite["rule"] = getattr(_dp, "_PROTOCOL_RULE", None) or (
+            "CRAG-lite: first retrieve graded Correct — no rewrite/retry."
+        )
+        rewrite["needed"] = False
+
+    return {
+        "pack": chosen,
+        "pass1": pass1,
+        "grade": grade,
+        "rewrite": rewrite,
+        "lang_fallback": bool(
+            chosen.get("lang_fallback") or pass1.get("lang_fallback")
+        ),
+    }
+
+
 def retrieve_for_enrich(
     message: str,
     *,
     language: Optional[str] = None,
     top_k: Optional[int] = None,
     history_context: Optional[str] = None,
+    prior_context: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Lightweight retrieve for grounded-compose (structured fact + KB excerpts).
@@ -512,19 +698,16 @@ def retrieve_for_enrich(
     """
     lang = language or "en"
     k = int(top_k or SETTINGS.grounding_enrich_top_k or SETTINGS.rag_top_k)
-    rewrite = _maybe_rewrite_query(message, history_context, lang=lang)
-    search_q = rewrite.get("query") or message
-    lang_fallback = False
     pool_k = max(k, 8)
-    hits = retrieve(search_q, lang=lang, top_k=pool_k)
-    if not hits and lang:
-        hits = retrieve(search_q, lang=None, top_k=pool_k)
-        lang_fallback = True
-    pool_before = len(hits)
-    hits = _merge_hits(hits, _age_faq_overlay(search_q, lang))
-    hits = _lexical_rerank(search_q, hits)[:k]
+    prior = prior_context if prior_context is not None else history_context
+    corr = _corrective_retrieve(
+        message, lang=lang, keep_k=k, pool_k=pool_k, prior_context=prior
+    )
+    pack = corr["pack"]
+    hits = pack["hits"]
     citations = [_citation_from_hit(rank, h) for rank, h in enumerate(hits, start=1)]
     stats = _score_stats(hits)
+    search_q = pack.get("query") or message
     return {
         "hits": hits,
         "citations": citations,
@@ -532,16 +715,17 @@ def retrieve_for_enrich(
             "mode": "grounded_enrich",
             "hit_count": len(hits),
             "language": lang,
-            "language_fallback": lang_fallback,
+            "language_fallback": corr["lang_fallback"],
             "index_size": get_store().count,
             "top_k": k,
             "pool_k": pool_k,
-            "pool_returned": pool_before,
+            "pool_returned": pack.get("pool_returned"),
             "order_rule": (
                 "lexical then vector score — age/path/folder/overlap beat raw similarity"
             ),
             "retrieval_query": search_q,
-            "query_rewrite": rewrite,
+            "query_rewrite": corr["rewrite"],
+            "retrieval_grade": corr["grade"],
             "embedding_mode": "dashscope" if SETTINGS.has_dashscope else "local_hash",
             "hits": citations,
             "top_score": stats["rank1_score"],
@@ -553,62 +737,31 @@ def retrieve_for_enrich(
     }
 
 
-def _maybe_rewrite_query(
-    message: str,
-    history_context: Optional[str],
-    *,
-    lang: str,
-) -> Dict[str, Any]:
-    try:
-        from services import demo_polish
-
-        return demo_polish.rewrite_retrieval_query(
-            message, history_context, lang=lang
-        )
-    except Exception as e:
-        print(f"[RAG] query rewrite failed: {e}", flush=True)
-        return {
-            "rewritten": False,
-            "called": False,
-            "needed": False,
-            "reason": "error",
-            "original": message,
-            "query": message,
-        }
-
-
 def chat_with_rag(
     message: str,
     *,
     language: Optional[str] = None,
     debug: bool = False,
     history_context: Optional[str] = None,
+    prior_context: Optional[str] = None,
 ) -> Dict[str, Any]:
     lang = language or "en"
-    lang_fallback = False
-    rewrite = _maybe_rewrite_query(message, history_context, lang=lang)
-    search_q = rewrite.get("query") or message
-    age_ask = bool(_query_age_digits(search_q) or _query_age_digits(message))
-    # Ask Chroma for a pool, then keep top_k after lexical re-rank.
-    # Age asks need a wider pool — the right band often sits ~15–25 by raw vector.
+    age_ask = bool(_query_age_digits(message))
     keep_k = SETTINGS.rag_top_k
     pool_k = max(keep_k, 20) if age_ask else max(keep_k, 8)
-    hits = retrieve(search_q, lang=lang, top_k=pool_k)
-    # If language filter returned nothing, retry without filter
-    if not hits and lang:
-        hits = retrieve(search_q, lang=None, top_k=pool_k)
-        lang_fallback = True
-    pool_returned = len(hits)
-    hits = _merge_hits(hits, _age_faq_overlay(search_q, lang))
-    hits = _lexical_rerank(search_q, hits)[:keep_k]
+    prior = prior_context if prior_context is not None else history_context
+    corr = _corrective_retrieve(
+        message, lang=lang, keep_k=keep_k, pool_k=pool_k, prior_context=prior
+    )
+    pack = corr["pack"]
+    hits = pack["hits"]
+    search_q = pack.get("query") or message
+    rewrite = corr["rewrite"]
+    lang_fallback = corr["lang_fallback"]
+    pool_returned = pack.get("pool_returned")
 
     top_hit = hits[0] if hits else None
-    # Off-topic check uses the parent's words + rewritten query cues
-    off_topic = bool(
-        hits
-        and top_hit is not None
-        and (_off_topic(message, top_hit) and _off_topic(search_q, top_hit))
-    )
+    off_topic = bool(hits and top_hit is not None and _off_topic(message, top_hit))
 
     gen = generate_answer_meta(
         message,
@@ -619,7 +772,6 @@ def chat_with_rag(
     answer = gen.get("answer") or ""
     citations = [_citation_from_hit(rank, h) for rank, h in enumerate(hits, start=1)]
     stats = _score_stats(hits)
-    # Gap / grounding still keys off rank-1 after lexical order (what we feed the LLM)
     top_score = stats["rank1_score"]
 
     gap_reason = None
@@ -636,7 +788,6 @@ def chat_with_rag(
     elif not hits:
         gap_reason = "no_retrieval"
     elif (off_topic or model_flagged_off) and not retrieval_strong:
-        # Unrelated to centre KB — refuse; do not lecture from world knowledge
         gap_reason = "off_topic_retrieval"
     elif top_score is not None and top_score < weak_cut and provider != "local_fallback":
         gap_reason = "weak_retrieval"
@@ -649,15 +800,11 @@ def chat_with_rag(
     ):
         gap_reason = "generic_fallback"
 
-    # Hard refuse only when retrieval is weak *and* ungrounded — never when
-    # Chroma already found a solid centre chunk (e.g. phonics ask → Phonics.md).
     if gap_reason == "off_topic_retrieval" and not greeting_ok and not retrieval_strong:
         from rag.generator import _OFF_KB_REPLY  # noqa: PLC0415
 
         answer = _OFF_KB_REPLY.get(lang, _OFF_KB_REPLY["en"])
 
-    # Soft keyword cues — only on short replies (FAQ dumps often contain
-    # “check with the teacher” example lines and must not spam admin to-dos)
     if (
         _SOFT_GAP_RE.search(answer or "")
         and not gap_reason
@@ -673,7 +820,6 @@ def chat_with_rag(
         or gen.get("provider")
         or ("dashscope" if SETTINGS.has_dashscope else "local_fallback"),
     }
-    # Always attach RAG trace for the COMP6708 technical dashboard
     out["debug"] = {
         "hit_count": len(hits),
         "language": lang,
@@ -693,6 +839,7 @@ def chat_with_rag(
         ),
         "retrieval_query": search_q,
         "query_rewrite": rewrite,
+        "retrieval_grade": corr["grade"],
         "history_chars": len(history_context or ""),
         "embedding_mode": "dashscope" if SETTINGS.has_dashscope else "local_hash",
         "hits": citations,
