@@ -1293,7 +1293,26 @@ code,
   max-width: 58%;
 }
 .bn-shape-cylinder .bn-flow-node-body {
-  padding-top: 4px;
+  /* Sit below the cylinder lid ellipse */
+  padding: 16px 10px 8px;
+  max-width: 88%;
+  gap: 2px;
+}
+.bn-shape-cylinder .bn-pipe-node-label {
+  font-size: 0.68rem;
+  line-height: 1.1;
+}
+.bn-shape-cylinder .bn-pipe-node-status {
+  font-size: 0.5rem;
+}
+.bn-stage-io {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin-top: 0.45rem;
+}
+.bn-pipe-shape-tag {
+  display: none;
 }
 
 .bn-pipe-rag.bn-shape-process {

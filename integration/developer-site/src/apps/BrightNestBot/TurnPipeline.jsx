@@ -23,50 +23,48 @@ const LLM_ROLE_LABELS = {
 
 /**
  * Compact top-down layout (world px, origin at spine).
- * Spine: parent → memory → router → tier → … → answer
- * Side fans: rules/arbiter, soft|hard|rag, tools/stores
+ * Spine: parent → language → memory → router → path → FSM|RAG → … → answer
+ * Live data is a side arm (HKO / register), not a third answer tier.
  */
 const LAYOUT = {
   parent: { x: 0, y: 0, w: 156, h: 42 },
-  memory: { x: 0, y: 78, w: 132, h: 58 },
-  router: { x: 0, y: 168, w: 146, h: 46 },
-  rules: { x: -168, y: 248, w: 132, h: 46 },
-  arbiter: { x: 168, y: 248, w: 132, h: 46 },
-  tier: { x: 0, y: 348, w: 108, h: 108 },
-  soft: { x: -188, y: 468, w: 136, h: 46 },
-  hard: { x: 0, y: 468, w: 136, h: 46 },
-  rag: { x: 188, y: 468, w: 136, h: 46 },
-  hko: { x: -258, y: 558, w: 124, h: 46 },
-  chroma: { x: 188, y: 558, w: 124, h: 58 },
-  llm: { x: -70, y: 658, w: 146, h: 46 },
-  sheets: { x: 130, y: 658, w: 132, h: 58 },
-  answer: { x: 0, y: 748, w: 156, h: 42 },
+  lang: { x: 0, y: 72, w: 132, h: 42 },
+  memory: { x: 0, y: 150, w: 132, h: 58 },
+  router: { x: 0, y: 240, w: 146, h: 46 },
+  rules: { x: -168, y: 320, w: 132, h: 46 },
+  arbiter: { x: 168, y: 320, w: 132, h: 46 },
+  path: { x: 0, y: 420, w: 112, h: 112 },
+  fsm: { x: -168, y: 550, w: 140, h: 46 },
+  rag: { x: 168, y: 550, w: 140, h: 46 },
+  live: { x: -168, y: 640, w: 140, h: 46 },
+  chroma: { x: 168, y: 640, w: 124, h: 58 },
+  sheets: { x: -168, y: 740, w: 132, h: 58 },
+  llm: { x: 40, y: 740, w: 146, h: 46 },
+  answer: { x: 0, y: 840, w: 156, h: 42 },
 };
 
-/** Spine: parent → memory → router → rules → tier → branch…  Arbiter is optional side. */
 const EDGES = [
-  { id: "e-parent-mem", from: "parent", to: "memory" },
+  { id: "e-parent-lang", from: "parent", to: "lang" },
+  { id: "e-lang-mem", from: "lang", to: "memory" },
   { id: "e-mem-router", from: "memory", to: "router" },
   { id: "e-router-rules", from: "router", to: "rules" },
-  { id: "e-rules-tier", from: "rules", to: "tier" },
+  { id: "e-rules-path", from: "rules", to: "path" },
   { id: "e-router-arb", from: "router", to: "arbiter", dashed: true },
-  { id: "e-arb-tier", from: "arbiter", to: "tier", dashed: true },
-  { id: "e-tier-soft", from: "tier", to: "soft", label: "live" },
-  { id: "e-tier-hard", from: "tier", to: "hard", label: "hard" },
-  { id: "e-tier-rag", from: "tier", to: "rag", label: "RAG" },
-  { id: "e-soft-hko", from: "soft", to: "hko" },
-  { id: "e-soft-llm", from: "soft", to: "llm" },
-  { id: "e-soft-chroma", from: "soft", to: "chroma", dashed: true },
-  { id: "e-hard-llm", from: "hard", to: "llm" },
-  { id: "e-hard-sheets", from: "hard", to: "sheets" },
+  { id: "e-arb-path", from: "arbiter", to: "path", dashed: true },
+  { id: "e-path-fsm", from: "path", to: "fsm" },
+  { id: "e-path-rag", from: "path", to: "rag" },
+  { id: "e-fsm-live", from: "fsm", to: "live", dashed: true },
+  { id: "e-fsm-llm", from: "fsm", to: "llm" },
+  { id: "e-fsm-sheets", from: "fsm", to: "sheets" },
   { id: "e-rag-chroma", from: "rag", to: "chroma" },
   { id: "e-chroma-llm", from: "chroma", to: "llm" },
-  { id: "e-hko-llm", from: "hko", to: "llm", dashed: true },
+  { id: "e-live-llm", from: "live", to: "llm", dashed: true },
+  { id: "e-live-chroma", from: "live", to: "chroma", dashed: true },
   { id: "e-llm-answer", from: "llm", to: "answer" },
   { id: "e-sheets-answer", from: "sheets", to: "answer" },
 ];
 
-const WORLD = { minX: -340, minY: -28, maxX: 340, maxY: 820 };
+const WORLD = { minX: -340, minY: -28, maxX: 340, maxY: 910 };
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2.0;
 
@@ -90,20 +88,53 @@ function clip(text, n = 120) {
   return `${s.slice(0, n - 1)}…`;
 }
 
-function tierForRoute(route, grounding) {
+/** FSM (tools / sticky dialogue) vs RAG (retrieve → generate). */
+function pathKind(route, grounding) {
   const g = grounding?.mode;
   if (g === "pure_rag" || route === "rag") return "rag";
-  if (
-    route === "booking_dialogue" ||
-    route === "cancel_dialogue" ||
-    route === "staff_escalation" ||
-    route === "off_domain" ||
-    g === "bypass"
-  ) {
-    return "hard";
-  }
-  if (route) return "soft";
+  if (route) return "fsm";
   return null;
+}
+
+/** Live arm: HKO/hours facts, register seats, weather feed, etc. */
+function liveUsed(route, grounding, facts) {
+  return Boolean(
+    grounding?.live_doc ||
+      facts ||
+      route === "booking_tool" ||
+      route === "severe_weather" ||
+      route === "opening_hours"
+  );
+}
+
+function formatRouteScore(route, value, origin) {
+  if (route === "rag" && (origin?.source === "default_floor" || Number(value) === 0.5)) {
+    return "default";
+  }
+  if (value == null || Number.isNaN(Number(value))) return "—";
+  return Number(value).toFixed(2);
+}
+
+function StageIO({ request, payload, defaultOpen = true }) {
+  if (!request && !payload) return null;
+  const asText = (v) =>
+    typeof v === "string" ? v : JSON.stringify(v, null, 2);
+  return (
+    <div className="bn-stage-io">
+      {request != null && request !== "" ? (
+        <details className="bn-llm-part" open={defaultOpen}>
+          <summary>Request</summary>
+          <pre className="bn-pre bn-pre-tall">{asText(request)}</pre>
+        </details>
+      ) : null}
+      {payload != null && payload !== "" ? (
+        <details className="bn-llm-part" open={defaultOpen}>
+          <summary>Payload</summary>
+          <pre className="bn-pre bn-pre-tall">{asText(payload)}</pre>
+        </details>
+      ) : null}
+    </div>
+  );
 }
 
 function turnsToPreview(turns) {
@@ -138,7 +169,7 @@ function nodeAnchor(id, side = "bottom") {
   const n = LAYOUT[id];
   if (!n) return { x: 0, y: 0 };
   // Diamond ports sit on the diamond vertices (inset from the square bbox)
-  if (id === "tier") {
+  if (id === "path") {
     const inset = n.w * 0.08;
     if (side === "top") return { x: n.x, y: n.y - n.h / 2 + inset };
     if (side === "bottom") return { x: n.x, y: n.y + n.h / 2 - inset };
@@ -178,14 +209,11 @@ function edgeGeometry(fromId, toId) {
   let rawStart;
   let rawEnd;
 
-  if (fromId === "tier" && toId === "soft") {
-    rawStart = nodeAnchor("tier", "sw");
+  if (fromId === "path" && toId === "fsm") {
+    rawStart = nodeAnchor("path", "sw");
     rawEnd = nodeAnchor(toId, "top");
-  } else if (fromId === "tier" && toId === "rag") {
-    rawStart = nodeAnchor("tier", "se");
-    rawEnd = nodeAnchor(toId, "top");
-  } else if (fromId === "tier" && toId === "hard") {
-    rawStart = nodeAnchor("tier", "bottom");
+  } else if (fromId === "path" && toId === "rag") {
+    rawStart = nodeAnchor("path", "se");
     rawEnd = nodeAnchor(toId, "top");
   } else if (fromId === "router" && toId === "rules") {
     rawStart = nodeAnchor("router", "left");
@@ -193,12 +221,15 @@ function edgeGeometry(fromId, toId) {
   } else if (fromId === "router" && toId === "arbiter") {
     rawStart = nodeAnchor("router", "right");
     rawEnd = nodeAnchor("arbiter", "top");
-  } else if (fromId === "rules" && toId === "tier") {
+  } else if (fromId === "rules" && toId === "path") {
     rawStart = nodeAnchor("rules", "bottom");
-    rawEnd = nodeAnchor("tier", "left");
-  } else if (fromId === "arbiter" && toId === "tier") {
+    rawEnd = nodeAnchor("path", "left");
+  } else if (fromId === "arbiter" && toId === "path") {
     rawStart = nodeAnchor("arbiter", "bottom");
-    rawEnd = nodeAnchor("tier", "right");
+    rawEnd = nodeAnchor("path", "right");
+  } else if (fromId === "fsm" && toId === "llm") {
+    rawStart = nodeAnchor("fsm", "right");
+    rawEnd = nodeAnchor("llm", "left");
   } else if (Math.abs(b.x - a.x) > 40 && Math.abs(b.y - a.y) < 30) {
     rawStart = nodeAnchor(fromId, b.x < a.x ? "left" : "right");
     rawEnd = nodeAnchor(toId, b.x < a.x ? "right" : "left");
@@ -217,7 +248,7 @@ function edgeGeometry(fromId, toId) {
     const midY = (start.y + end.y) / 2;
     d = `M ${start.x} ${start.y} L ${end.x} ${end.y}`;
     labelAt = { x: start.x + 10, y: midY };
-  } else if (fromId === "router" || toId === "tier") {
+  } else if (fromId === "router" || toId === "path") {
     // Orthogonal elbow for fan-ins/outs
     const midY = (start.y + end.y) / 2;
     d = `M ${start.x} ${start.y} L ${start.x} ${midY} L ${end.x} ${midY} L ${end.x} ${end.y}`;
@@ -505,7 +536,8 @@ function NodeDetail({
   winningRuleId,
   matchSummary,
   arbiter,
-  tier,
+  path,
+  liveOn,
   finalCheck,
   adminTodo,
   staffMessage,
@@ -515,7 +547,7 @@ function NodeDetail({
   if (!trace) {
     return (
       <p className="bn-empty">
-        Send a parent message to populate this stage. Click again after a turn.
+        Send a parent message, then click a stage.
       </p>
     );
   }
@@ -540,14 +572,7 @@ function NodeDetail({
     case "parent":
       return (
         <>
-          <p className="bn-rules-hint">
-            Inbound parent text for this turn — before routing or tools.
-          </p>
           <ul className="bn-fact-list">
-            <li>
-              <span>Language</span>
-              <code>{trace.language || "—"}</code>
-            </li>
             <li>
               <span>Session</span>
               <code>{trace.session_id || "—"}</code>
@@ -557,17 +582,36 @@ function NodeDetail({
         </>
       );
 
+    case "lang":
+      return (
+        <>
+          <p className="bn-rules-hint">
+            Reply language + KB language filter for this turn.
+          </p>
+          <ul className="bn-fact-list">
+            <li>
+              <span>Detected</span>
+              <code>{trace.language || "—"}</code>
+            </li>
+            <li>
+              <span>KB fallback</span>
+              <code>{rag?.language_fallback ? "yes" : "no"}</code>
+            </li>
+          </ul>
+          <StageIO
+            request={inbound}
+            payload={{ language: trace.language || null }}
+          />
+        </>
+      );
+
     case "memory": {
       const loaded = priorTurns.length;
       return (
         <>
-          <p className="bn-rules-hint">
-            Session memory <strong>before</strong> this inbound message was
-            appended — what the router and models could already see.
-          </p>
           <ul className="bn-fact-list">
             <li>
-              <span>Prior turns loaded</span>
+              <span>Prior turns</span>
               <code>
                 {history?.turns_loaded ?? loaded}/{history?.limit ?? "—"}
               </code>
@@ -583,38 +627,10 @@ function NodeDetail({
               </code>
             </li>
           </ul>
-          {priorPreview ? (
-            <details className="bn-llm-part" open>
-              <summary>
-                Prior context only
-                <em>{String(priorPreview).length} chars</em>
-              </summary>
-              <pre className="bn-pre bn-pre-tall">{priorPreview}</pre>
-            </details>
-          ) : (
-            <p className="bn-note">
-              No prior turns — first message in this session.
-            </p>
-          )}
-          {priorTurns.length > 0 ? (
-            <ul className="bn-mem-turns">
-              {priorTurns.map((t, i) => (
-                <li key={`mem-${i}`}>
-                  <details>
-                    <summary>
-                      <strong>
-                        {t.role === "user" || t.role === "parent"
-                          ? "parent"
-                          : "bot"}
-                      </strong>
-                      <span>{clip(t.content || "", 100)}</span>
-                    </summary>
-                    <pre className="bn-hit-full">{t.content || ""}</pre>
-                  </details>
-                </li>
-              ))}
-            </ul>
-          ) : null}
+          <StageIO
+            request={`session ${trace.session_id || "—"}`}
+            payload={priorPreview || "(no prior turns)"}
+          />
         </>
       );
     }
@@ -623,17 +639,13 @@ function NodeDetail({
       return (
         <>
           <p className="bn-rules-hint">
-            Hybrid intent pick for this inbound — scores and rules live on their
-            own nodes.
+            Sticky FSM state + detector pick → one route id. Scores are on{" "}
+            <em>Rules</em>; FSM vs RAG is on <em>Path</em>.
           </p>
           <ul className="bn-fact-list">
             <li>
-              <span>Picked route</span>
+              <span>Route</span>
               <code>{route || "—"}</code>
-            </li>
-            <li>
-              <span>Winning rule</span>
-              <code>{winningRuleId || "—"}</code>
             </li>
             {routing?.hours_followup_promoted ? (
               <li>
@@ -654,7 +666,20 @@ function NodeDetail({
               </li>
             ) : null}
           </ul>
-          <MatchSummaryCard summary={matchSummary} />
+          <StageIO
+            request={{
+              message: inbound,
+              language: trace.language,
+              prior_turns: history?.turns_loaded ?? 0,
+            }}
+            payload={{
+              route,
+              sticky: {
+                booking: Boolean(routing?.dialogue_active),
+                cancel: Boolean(routing?.cancel_active),
+              },
+            }}
+          />
         </>
       );
 
@@ -663,18 +688,22 @@ function NodeDetail({
         <>
           <div className="bn-score-howto">
             <p>
-              <strong>How a route wins</strong>
+              <strong>Detector awards</strong> (not RAG similarity)
             </p>
             <ol>
-              <li>Each detector that matches awards a <em>fixed</em> score (not RAG similarity).</li>
-              <li>Drop anything under <code>0.28</code>.</li>
-              <li>Highest score wins. Ties break by priority: escalate → off-domain → weather → cancel → book → seats → hours → RAG.</li>
-              <li>If nothing matched → RAG at <code>0.5</code>.</li>
+              <li>Matching detectors award a fixed score.</li>
+              <li>Drop scores under <code>0.28</code>.</li>
+              <li>
+                Highest wins; ties use priority (escalate → off-domain → weather
+                → cancel → book → seats → hours → RAG).
+              </li>
+              <li>No match → RAG default path (no detector award).</li>
             </ol>
           </div>
+          <MatchSummaryCard summary={matchSummary} />
           {routing?.scores && Object.keys(routing.scores).length > 0 ? (
             <details className="bn-rules" open>
-              <summary>Scores · detector awards</summary>
+              <summary>Scores</summary>
               <ul className="bn-fact-list">
                 {Object.entries(routing.scores)
                   .sort((a, b) => Number(b[1]) - Number(a[1]))
@@ -691,14 +720,14 @@ function NodeDetail({
                             <em className="bn-score-src"> · {origin.source}</em>
                           ) : null}
                         </span>
-                        <code>{Number(v).toFixed(3)}</code>
+                        <code>{formatRouteScore(k, v, origin)}</code>
                       </li>
                     );
                   })}
               </ul>
               {scoreLedger.length > 0 ? (
                 <details className="bn-rules bn-ledger">
-                  <summary>Ledger · {scoreLedger.length} steps</summary>
+                  <summary>Ledger · {scoreLedger.length}</summary>
                   <ol className="bn-score-ledger">
                     {scoreLedger.map((e, i) => (
                       <li
@@ -709,10 +738,9 @@ function NodeDetail({
                         <span>
                           <code>{e.route}</code>
                           {e.score != null
-                            ? ` = ${Number(e.score).toFixed(3)}`
+                            ? ` = ${formatRouteScore(e.route, e.score, e)}`
                             : ""}
-                          {" · "}
-                          {e.source}
+                          {e.source ? ` · ${e.source}` : ""}
                           {e.why ? ` — ${e.why}` : ""}
                         </span>
                       </li>
@@ -744,7 +772,7 @@ function NodeDetail({
         return (
           <>
             <Skipped>
-              Route arbiter did not run this turn
+              Skipped
               {arbiter?.reason ? ` — ${arbiter.reason}` : ""}.
             </Skipped>
             {arbiter?.skip_detail ? (
@@ -757,7 +785,7 @@ function NodeDetail({
         <>
           <ul className="bn-fact-list">
             <li>
-              <span>Action</span>
+              <span>Decision</span>
               <code>{arbiter?.action || "—"}</code>
             </li>
             <li>
@@ -765,158 +793,119 @@ function NodeDetail({
               <code>{arbiter?.model || "—"}</code>
             </li>
           </ul>
-          {arbiter?.reason ? <p className="bn-note">{arbiter.reason}</p> : null}
-          {arbiter?.raw ? (
-            <pre className="bn-pre">{String(arbiter.raw)}</pre>
-          ) : null}
           {arbCalls.map((c, i) => (
             <LlmCallCard key={`arb-${i}`} call={c} defaultOpen />
           ))}
+          {!arbCalls.length ? (
+            <StageIO
+              request={{ proposed: route, scores: routing?.scores }}
+              payload={{
+                action: arbiter?.action,
+                reason: arbiter?.reason,
+                raw: arbiter?.raw || null,
+              }}
+            />
+          ) : null}
         </>
       );
     }
 
-    case "tier":
+    case "path":
       return (
         <>
           <p className="bn-rules-hint">
-            Decision for this turn — which outbound branch lit up.
+            Branch from the route: <strong>FSM</strong> (tools / sticky
+            dialogue) or <strong>RAG</strong> (retrieve → generate). Live feeds
+            are a separate arm when used.
           </p>
           <ul className="bn-fact-list">
             <li>
-              <span>Branch</span>
-              <code>
-                {tier === "rag"
-                  ? "pure_rag"
-                  : tier === "hard"
-                    ? "hard_fsm"
-                    : tier === "soft"
-                      ? "live_structured"
-                      : "—"}
-              </code>
+              <span>Path</span>
+              <code>{path === "rag" ? "RAG" : path === "fsm" ? "FSM" : "—"}</code>
             </li>
             <li>
               <span>Route</span>
               <code>{route || "—"}</code>
             </li>
             <li>
-              <span>Grounding</span>
-              <code>{grounding?.mode || "—"}</code>
+              <span>Live arm</span>
+              <code>{liveOn ? "on" : "off"}</code>
             </li>
           </ul>
-          {grounding?.why ? <p className="bn-note">{grounding.why}</p> : null}
+          <StageIO
+            request={{ route, grounding: grounding?.mode }}
+            payload={{
+              path: path || null,
+              live: Boolean(liveOn),
+              why: grounding?.why || null,
+            }}
+          />
         </>
       );
 
-    case "soft":
-      if (tier !== "soft") {
+    case "fsm":
+      if (path !== "fsm") {
         return (
           <Skipped>
-            Live / structured branch not taken — tier was{" "}
-            <code>{tier || "unset"}</code>.
+            FSM path not taken (this turn used RAG).
           </Skipped>
         );
       }
       return (
         <>
+          <p className="bn-rules-hint">
+            Tool / sticky dialogue for <code>{route || "—"}</code>.
+          </p>
           <ul className="bn-fact-list">
-            <li>
-              <span>Live doc</span>
-              <code>
-                {grounding?.live_doc
-                  ? `${grounding.live_doc_chars || "?"} chars`
-                  : "no"}
-              </code>
-            </li>
-            <li>
-              <span>Composed</span>
-              <code>{grounding?.composed ? "yes" : "no"}</code>
-            </li>
-            <li>
-              <span>Docs privileged</span>
-              <code>{grounding?.structured_privileged ? "yes" : "no"}</code>
-            </li>
+            {trace?.booking?.stage ? (
+              <li>
+                <span>Booking</span>
+                <code>{trace.booking.stage}</code>
+              </li>
+            ) : null}
+            {trace?.cancel?.stage ? (
+              <li>
+                <span>Cancel</span>
+                <code>{trace.cancel.stage}</code>
+              </li>
+            ) : null}
+            {finalCheck?.action ? (
+              <li>
+                <span>Final check</span>
+                <code>{finalCheck.action}</code>
+              </li>
+            ) : null}
+            {grounding?.composed != null ? (
+              <li>
+                <span>Composed</span>
+                <code>{grounding.composed ? "yes" : "no"}</code>
+              </li>
+            ) : null}
           </ul>
-          {grounding?.why ? <p className="bn-note">{grounding.why}</p> : null}
-          {trace?.adapt ? (
-            <details className="bn-llm-part">
-              <summary>Adapt meta</summary>
-              <pre className="bn-pre">{JSON.stringify(trace.adapt, null, 2)}</pre>
-            </details>
-          ) : null}
-          {llmCalls
-            .filter((c) =>
-              ["grounded_compose", "fact_adapt"].includes(c.role)
-            )
-            .map((c, i) => (
-              <LlmCallCard
-                key={`soft-llm-${i}`}
-                call={c}
-                defaultOpen={i === 0}
-              />
-            ))}
-        </>
-      );
-
-    case "hard":
-      if (tier !== "hard") {
-        return (
-          <Skipped>
-            Hard FSM branch not taken — tier was <code>{tier || "unset"}</code>.
-          </Skipped>
-        );
-      }
-      return (
-        <>
-          <ul className="bn-fact-list">
-            <li>
-              <span>Booking stage</span>
-              <code>{trace?.booking?.stage || "—"}</code>
-            </li>
-            <li>
-              <span>Cancel stage</span>
-              <code>{trace?.cancel?.stage || "—"}</code>
-            </li>
-            <li>
-              <span>Final check</span>
-              <code>{finalCheck?.action || "—"}</code>
-            </li>
-          </ul>
-          {finalCheck ? (
-            <details className="bn-llm-part" open>
-              <summary>Final check</summary>
-              <pre className="bn-pre bn-pre-tall">
-                {JSON.stringify(finalCheck, null, 2)}
-              </pre>
-            </details>
-          ) : null}
-          {trace?.booking ? (
-            <details className="bn-llm-part">
-              <summary>Booking trace</summary>
-              <pre className="bn-pre bn-pre-tall">
-                {JSON.stringify(trace.booking, null, 2)}
-              </pre>
-            </details>
-          ) : null}
-          {trace?.cancel ? (
-            <details className="bn-llm-part">
-              <summary>Cancel trace</summary>
-              <pre className="bn-pre bn-pre-tall">
-                {JSON.stringify(trace.cancel, null, 2)}
-              </pre>
-            </details>
-          ) : null}
+          <StageIO
+            request={{ route, message: inbound }}
+            payload={{
+              booking: trace?.booking || null,
+              cancel: trace?.cancel || null,
+              final_check: finalCheck || null,
+              grounding: grounding || null,
+            }}
+          />
           {llmCalls
             .filter(
               (c) =>
                 String(c.role || "").startsWith("final_check") ||
-                ["booking_parse", "cancel_pick", "staff_email"].includes(
-                  c.role
-                )
+                [
+                  "booking_parse",
+                  "cancel_pick",
+                  "staff_email",
+                  "grounded_compose",
+                  "fact_adapt",
+                ].includes(c.role)
             )
             .map((c, i) => (
               <LlmCallCard
-                key={`hard-llm-${i}`}
+                key={`fsm-llm-${i}`}
                 call={c}
                 defaultOpen={i === 0}
               />
@@ -925,13 +914,11 @@ function NodeDetail({
       );
 
     case "rag":
-      if (tier !== "rag") {
+      if (path !== "rag") {
         return (
           <Skipped>
-            Pure RAG branch not taken — tier was <code>{tier || "unset"}</code>.
-            {enrichMode
-              ? " Soft path may still enrich via Chroma."
-              : ""}
+            RAG path not taken
+            {enrichMode ? " (FSM may still enrich via Chroma)." : "."}
           </Skipped>
         );
       }
@@ -953,118 +940,85 @@ function NodeDetail({
               <code>{rag?.gap_reason || "—"}</code>
             </li>
           </ul>
-          <p className="bn-note">
-            Chunks are on <strong>Chroma KB</strong>; model I/O on{" "}
-            <strong>DashScope</strong>.
-          </p>
+          <StageIO
+            request={{ query: inbound, language: trace.language }}
+            payload={{
+              hit_count: rag?.hit_count ?? hits.length,
+              top_score: rag?.top_score ?? hits[0]?.score ?? null,
+              gap_reason: rag?.gap_reason || null,
+            }}
+          />
         </>
       );
 
-    case "hko":
-      if (!facts) {
-        return (
-          <Skipped>
-            No hours / holiday / HKO check on this turn.
-          </Skipped>
-        );
+    case "live":
+      if (!liveOn) {
+        return <Skipped>No live feed on this turn.</Skipped>;
       }
       return (
         <>
           <p className="bn-rules-hint">
-            Holiday check on the resolved date; live HKO only when that date is
-            today.
+            Live feed (HKO, hours engine, register seats, weather card). Privileged
+            over KB when present.
           </p>
-          {(facts.checks || []).length > 0 ? (
-            <ul className="bn-rule-checks bn-hours-checks">
-              {facts.checks.map((c) => (
-                <li
-                  key={c.id || c.label}
-                  className={c.passed ? "pass" : "fail"}
-                >
-                  <strong>
-                    {c.passed ? "hit" : c.checked ? "clear" : "skip"}
-                  </strong>
-                  <span>
-                    {c.label}
-                    {c.detail ? ` — ${c.detail}` : ""}
-                  </span>
-                </li>
-              ))}
+          {facts ? (
+            <ul className="bn-fact-list">
+              <li>
+                <span>Resolved</span>
+                <code>{facts.datetime || "—"}</code>
+              </li>
+              <li>
+                <span>Window</span>
+                <code>
+                  {facts.open_time && facts.close_time
+                    ? `${facts.open_time}–${facts.close_time}`
+                    : facts.is_sunday
+                      ? "closed (Sunday)"
+                      : "—"}
+                </code>
+              </li>
+              <li>
+                <span>Holiday</span>
+                <code>
+                  {facts.is_holiday
+                    ? facts.holiday_name || "yes"
+                    : "no"}
+                </code>
+              </li>
+              <li>
+                <span>HKO</span>
+                <code>
+                  {facts.weather_hint
+                    ? facts.weather_hint
+                    : facts.parse_debug?.weather_applied
+                      ? "checked · clear"
+                      : "not run"}
+                </code>
+              </li>
             </ul>
           ) : null}
-          <ul className="bn-fact-list">
-            <li>
-              <span>Resolved</span>
-              <code>{facts.datetime}</code>
-            </li>
-            <li>
-              <span>Matched via</span>
-              <code>
-                {facts.parse_debug?.matched_via ||
-                  (facts.parse_debug?.is_fallback_to_now
-                    ? "fallback_now"
-                    : "—")}
-              </code>
-            </li>
-            <li>
-              <span>Window</span>
-              <code>
-                {facts.open_time && facts.close_time
-                  ? `${facts.open_time}–${facts.close_time}`
-                  : facts.is_sunday
-                    ? "closed (Sunday)"
-                    : "—"}
-              </code>
-            </li>
-            <li>
-              <span>Holiday</span>
-              <code>
-                {facts.is_holiday
-                  ? `YES · ${facts.holiday_name || "public holiday"}`
-                  : "NO · not a public holiday"}
-              </code>
-            </li>
-            <li>
-              <span>HKO</span>
-              <code>
-                {facts.weather_hint
-                  ? `CLOSURE · ${facts.weather_hint}`
-                  : facts.parse_debug?.weather_applied
-                    ? "CHECKED · no severe signal today"
-                    : facts.parse_debug?.weather_same_day_only
-                      ? "SKIPPED · date is not today"
-                      : "not run"}
-              </code>
-            </li>
-            {trace?.opening_hours?.effective_message ? (
-              <li>
-                <span>Effective msg</span>
-                <code>{trace.opening_hours.effective_message}</code>
-              </li>
-            ) : null}
-          </ul>
+          <StageIO
+            request={{ route, message: inbound }}
+            payload={{
+              live_doc: grounding?.live_doc
+                ? `${grounding.live_doc_chars || "?"} chars`
+                : false,
+              facts: facts || null,
+              opening_hours: trace?.opening_hours || null,
+            }}
+          />
         </>
       );
 
     case "chroma":
-      if (!(hits.length || enrichMode || tier === "rag")) {
-        return (
-          <Skipped>
-            KB retrieve did not run this turn (hard / tool path with no enrich).
-          </Skipped>
-        );
+      if (!(hits.length || enrichMode || path === "rag")) {
+        return <Skipped>KB retrieve did not run.</Skipped>;
       }
       if (!hits.length) {
         return <Skipped>Retrieve ran but no chunks returned.</Skipped>;
       }
       return (
         <>
-          {enrichMode ? (
-            <p className="bn-note">
-              Enrichment chunks — structured <code>{route}</code> card stays
-              source of truth.
-            </p>
-          ) : null}
           <div className="bn-rag-strip">
             <span>index {rag?.index_size ?? "—"}</span>
             <span>top_k {rag?.top_k ?? hits.length}</span>
@@ -1073,10 +1027,21 @@ function NodeDetail({
               top {scoreLabel(rag?.top_score ?? hits[0]?.score) ?? "—"}
             </span>
             <span>{rag?.embedding_mode || "—"}</span>
-            {enrichMode ? <span>grounded_enrich</span> : null}
-            {rag?.language_fallback ? <span>lang fallback</span> : null}
-            {rag?.gap_reason ? <span>gap {rag.gap_reason}</span> : null}
+            {enrichMode ? <span>enrich</span> : null}
           </div>
+          <StageIO
+            request={{
+              query: inbound,
+              language: trace.language,
+              mode: enrichMode ? "grounded_enrich" : "retrieve",
+            }}
+            payload={hits.map((h) => ({
+              rank: h.rank,
+              source: h.source,
+              score: h.score,
+              title: h.title,
+            }))}
+          />
           <ul className="bn-hits">
             {hits.map((h, i) => (
               <RagHit key={`${h.source}-${h.rank || i}`} hit={h} index={i} />
@@ -1089,24 +1054,8 @@ function NodeDetail({
       const genCalls = llmCalls.filter((c) => c.role !== "intent_arbiter");
       return (
         <>
-          <p className="bn-rules-hint">
-            DashScope calls for this turn (arbiter I/O is on the Arbiter node).
-            Context below includes the inbound message.
-          </p>
-          {history?.preview ? (
-            <details className="bn-llm-part bn-llm-context">
-              <summary>
-                Prompt context string (prior + inbound)
-                <em>{String(history.preview).length} chars</em>
-              </summary>
-              <pre className="bn-pre bn-pre-tall">{history.preview}</pre>
-            </details>
-          ) : null}
           {genCalls.length === 0 ? (
-            <Skipped>
-              No generation / final-check DashScope call (deterministic
-              template).
-            </Skipped>
+            <Skipped>No DashScope call (template / deterministic).</Skipped>
           ) : (
             <div className="bn-llm-calls">
               {genCalls.map((call, i) => (
@@ -1130,49 +1079,18 @@ function NodeDetail({
         trace?.cancel?.cancelled ||
         trace?.cancel?.stage === "cancelled";
       if (!wrote) {
-        return (
-          <Skipped>No SheetPro / MailBox / CSV write this turn.</Skipped>
-        );
+        return <Skipped>No SheetPro / MailBox / CSV write.</Skipped>;
       }
       return (
-        <>
-          {adminTodo ? (
-            <details className="bn-llm-part" open>
-              <summary>SheetPro admin todo</summary>
-              <pre className="bn-pre bn-pre-tall">
-                {JSON.stringify(adminTodo, null, 2)}
-              </pre>
-            </details>
-          ) : null}
-          {staffMessage ? (
-            <details className="bn-llm-part" open>
-              <summary>MailBox staff message</summary>
-              <pre className="bn-pre bn-pre-tall">
-                {JSON.stringify(staffMessage, null, 2)}
-              </pre>
-            </details>
-          ) : null}
-          {trace?.booking?.booking || trace?.booking?.stage === "booked" ? (
-            <details className="bn-llm-part" open>
-              <summary>Chat booking</summary>
-              <pre className="bn-pre bn-pre-tall">
-                {JSON.stringify(
-                  trace.booking.booking || trace.booking,
-                  null,
-                  2
-                )}
-              </pre>
-            </details>
-          ) : null}
-          {trace?.cancel ? (
-            <details className="bn-llm-part" open>
-              <summary>Cancel / CSV</summary>
-              <pre className="bn-pre bn-pre-tall">
-                {JSON.stringify(trace.cancel, null, 2)}
-              </pre>
-            </details>
-          ) : null}
-        </>
+        <StageIO
+          request={{ route, session: trace.session_id }}
+          payload={{
+            admin_todo: adminTodo || null,
+            staff_message: staffMessage || null,
+            booking: trace?.booking?.booking || null,
+            cancel: trace?.cancel || null,
+          }}
+        />
       );
     }
 
@@ -1191,7 +1109,7 @@ function NodeDetail({
               </code>
             </li>
           </ul>
-          <pre className="bn-pre bn-pre-tall">{answer || "(empty)"}</pre>
+          <StageIO request={{ route }} payload={answer || "(empty)"} />
         </>
       );
 
@@ -1326,7 +1244,8 @@ export default function TurnPipeline({
     trace?.booking?.final_check ||
     trace?.cancel?.final_check ||
     null;
-  const tier = tierForRoute(route, grounding);
+  const path = pathKind(route, grounding);
+  const liveOn = liveUsed(route, grounding, facts);
   const adminTodo = trace?.admin_todo || trace?.debug?.admin_todo;
   const staffMessage = trace?.staff_message || trace?.debug?.staff_message;
   const inbound =
@@ -1338,6 +1257,7 @@ export default function TurnPipeline({
   const nodes = useMemo(() => {
     const hasTrace = Boolean(trace);
     const memLoaded = Number(history?.turns_loaded || 0) > 0;
+    const genN = llmCalls.filter((c) => c.role !== "intent_arbiter").length;
     return [
       {
         id: "parent",
@@ -1347,11 +1267,17 @@ export default function TurnPipeline({
         status: hasTrace ? "done" : "idle",
       },
       {
+        id: "lang",
+        label: "Language",
+        kind: "router",
+        shape: "process",
+        status: hasTrace ? "done" : "idle",
+      },
+      {
         id: "memory",
         label: "Session memory",
         kind: "store",
         shape: "cylinder",
-        // Always consulted when history is enabled — empty prior is still a real load.
         status: !hasTrace
           ? "idle"
           : history?.enabled === false
@@ -1374,51 +1300,44 @@ export default function TurnPipeline({
         shape: "process",
         status: !hasTrace
           ? "idle"
-          : rulesEvaluated.length
+          : rulesEvaluated.length || routing?.scores
             ? "done"
             : "skipped",
       },
       {
         id: "arbiter",
-        label: arbiter?.called ? "Route arbiter" : "Arbiter",
+        label: "Arbiter",
         kind: "llm",
         shape: "process",
         status: !hasTrace ? "idle" : arbiter?.called ? "done" : "skipped",
       },
       {
-        id: "tier",
-        label: "Answer tier?",
+        id: "path",
+        label: "FSM or RAG?",
         kind: "branch",
         shape: "decision",
-        status: hasTrace && route ? "done" : "idle",
+        status: hasTrace && path ? "done" : "idle",
       },
       {
-        id: "soft",
-        label: "Live / structured",
-        kind: "compose",
-        shape: "process",
-        status: !hasTrace ? "idle" : tier === "soft" ? "done" : "skipped",
-      },
-      {
-        id: "hard",
-        label: "Hard FSM",
+        id: "fsm",
+        label: "FSM · tools",
         kind: "hard",
         shape: "process",
-        status: !hasTrace ? "idle" : tier === "hard" ? "done" : "skipped",
+        status: !hasTrace ? "idle" : path === "fsm" ? "done" : "skipped",
       },
       {
         id: "rag",
-        label: "Pure RAG",
+        label: "RAG",
         kind: "rag",
         shape: "process",
-        status: !hasTrace ? "idle" : tier === "rag" ? "done" : "skipped",
+        status: !hasTrace ? "idle" : path === "rag" ? "done" : "skipped",
       },
       {
-        id: "hko",
-        label: "HKO · holiday",
+        id: "live",
+        label: "Live data",
         kind: "live",
         shape: "process",
-        status: !hasTrace ? "idle" : facts ? "done" : "skipped",
+        status: !hasTrace ? "idle" : liveOn ? "done" : "skipped",
       },
       {
         id: "chroma",
@@ -1429,22 +1348,18 @@ export default function TurnPipeline({
           ? "idle"
           : hits.length || rag?.hit_count
             ? "done"
-            : tier === "rag" || enrichMode
+            : path === "rag" || enrichMode
               ? "empty"
               : "skipped",
       },
       {
         id: "llm",
-        label: llmCalls.filter((c) => c.role !== "intent_arbiter").length
-          ? `DashScope · ${
-              llmCalls.filter((c) => c.role !== "intent_arbiter").length
-            }`
-          : "DashScope",
+        label: genN ? `DashScope · ${genN}` : "DashScope",
         kind: "llm",
         shape: "process",
         status: !hasTrace
           ? "idle"
-          : llmCalls.some((c) => c.role !== "intent_arbiter")
+          : genN
             ? "done"
             : "skipped",
       },
@@ -1475,8 +1390,10 @@ export default function TurnPipeline({
     route,
     history,
     rulesEvaluated.length,
+    routing?.scores,
     arbiter,
-    tier,
+    path,
+    liveOn,
     facts,
     hits.length,
     rag?.hit_count,
@@ -1494,37 +1411,43 @@ export default function TurnPipeline({
 
   const activePath = useMemo(() => {
     if (!trace) return new Set();
-    // Memory is always on the spine when history ran (even 0 prior turns).
-    const path = new Set(["parent", "memory", "router", "rules", "tier", "answer"]);
-    if (history?.enabled === false) path.delete("memory");
-    if (arbiter?.called) path.add("arbiter");
-    if (tier === "soft") {
-      path.add("soft");
-      if (facts) path.add("hko");
-      if (hits.length || enrichMode) path.add("chroma");
-    } else if (tier === "hard") {
-      path.add("hard");
+    const lit = new Set([
+      "parent",
+      "lang",
+      "memory",
+      "router",
+      "rules",
+      "path",
+      "answer",
+    ]);
+    if (history?.enabled === false) lit.delete("memory");
+    if (arbiter?.called) lit.add("arbiter");
+    if (path === "fsm") {
+      lit.add("fsm");
+      if (liveOn) lit.add("live");
+      if (hits.length || enrichMode) lit.add("chroma");
       if (
         adminTodo ||
         staffMessage ||
         trace?.booking?.stage === "booked" ||
         trace?.cancel?.stage === "cancelled"
       ) {
-        path.add("sheets");
+        lit.add("sheets");
       }
-    } else if (tier === "rag") {
-      path.add("rag");
-      path.add("chroma");
-      if (adminTodo) path.add("sheets");
+    } else if (path === "rag") {
+      lit.add("rag");
+      lit.add("chroma");
+      if (liveOn) lit.add("live");
+      if (adminTodo) lit.add("sheets");
     }
-    if (llmCalls.some((c) => c.role !== "intent_arbiter")) path.add("llm");
-    return path;
+    if (llmCalls.some((c) => c.role !== "intent_arbiter")) lit.add("llm");
+    return lit;
   }, [
     trace,
     history?.enabled,
     arbiter,
-    tier,
-    facts,
+    path,
+    liveOn,
     hits.length,
     enrichMode,
     llmCalls,
@@ -1543,68 +1466,67 @@ export default function TurnPipeline({
     const link = (from, to, edgeId) => {
       if (on(from) && on(to) && ok(from) && ok(to)) lit.add(edgeId);
     };
-    link("parent", "memory", "e-parent-mem");
+    link("parent", "lang", "e-parent-lang");
+    link("lang", "memory", "e-lang-mem");
     link("memory", "router", "e-mem-router");
     link("router", "rules", "e-router-rules");
-    link("rules", "tier", "e-rules-tier");
+    link("rules", "path", "e-rules-path");
     if (arbiter?.called) {
       link("router", "arbiter", "e-router-arb");
-      link("arbiter", "tier", "e-arb-tier");
+      link("arbiter", "path", "e-arb-path");
     }
-    if (tier === "soft") link("tier", "soft", "e-tier-soft");
-    if (tier === "hard") link("tier", "hard", "e-tier-hard");
-    if (tier === "rag") link("tier", "rag", "e-tier-rag");
-    if (on("soft") && on("hko")) link("soft", "hko", "e-soft-hko");
-    if (on("soft") && on("llm")) link("soft", "llm", "e-soft-llm");
-    if (on("soft") && on("chroma")) link("soft", "chroma", "e-soft-chroma");
-    if (on("hard") && on("llm")) link("hard", "llm", "e-hard-llm");
-    if (on("hard") && on("sheets")) link("hard", "sheets", "e-hard-sheets");
+    if (path === "fsm") link("path", "fsm", "e-path-fsm");
+    if (path === "rag") link("path", "rag", "e-path-rag");
+    if (on("fsm") && on("live")) link("fsm", "live", "e-fsm-live");
+    if (on("fsm") && on("llm")) link("fsm", "llm", "e-fsm-llm");
+    if (on("fsm") && on("sheets")) link("fsm", "sheets", "e-fsm-sheets");
     if (on("rag") && on("chroma")) link("rag", "chroma", "e-rag-chroma");
     if (on("chroma") && on("llm")) link("chroma", "llm", "e-chroma-llm");
-    if (on("hko") && on("llm")) link("hko", "llm", "e-hko-llm");
+    if (on("live") && on("llm")) link("live", "llm", "e-live-llm");
+    if (on("live") && on("chroma") && enrichMode) {
+      link("live", "chroma", "e-live-chroma");
+    }
     if (on("llm")) link("llm", "answer", "e-llm-answer");
     if (on("sheets")) link("sheets", "answer", "e-sheets-answer");
     return lit;
-  }, [trace, activePath, statusById, arbiter, tier]);
+  }, [trace, activePath, statusById, arbiter, path, enrichMode]);
 
   const edgeLabels = useMemo(() => {
-    const priorN = Number(history?.turns_loaded || 0);
-    const win =
-      matchSummary?.cue
-        ? `«${clip(matchSummary.cue, 18)}»`
-        : winningRuleId || route || "";
+    // Only scores / decisions — not narrative labels on every hop.
+    const winScore =
+      routing?.scores?.[winningRuleId] ??
+      routing?.scores?.[route];
+    const winOrigin =
+      routing?.score_origins?.[winningRuleId] ||
+      routing?.score_origins?.[route];
+    const pick =
+      winningRuleId || route
+        ? `${winningRuleId || route}${
+            winScore != null
+              ? ` ${formatRouteScore(winningRuleId || route, winScore, winOrigin)}`
+              : ""
+          }`
+        : "";
     const labels = {
-      "e-parent-mem": "inbound",
-      "e-mem-router":
-        priorN > 0
-          ? `${priorN} prior msg${priorN === 1 ? "" : "s"}`
-          : "0 prior",
-      "e-router-rules": "detectors",
-      "e-rules-tier": win ? `→ ${win}` : "pick",
-      "e-router-arb": arbiter?.called ? "review" : "",
-      "e-arb-tier": arbiter?.action || "",
-      "e-tier-soft": "live",
-      "e-tier-hard": "hard",
-      "e-tier-rag": "RAG",
-      "e-soft-hko": facts ? "hours" : "",
-      "e-soft-chroma": enrichMode ? "enrich" : "",
-      "e-rag-chroma": hits.length ? `${hits.length} hits` : "retrieve",
-      "e-chroma-llm": hits.length ? `top ${scoreLabel(hits[0]?.score) || "—"}` : "",
-      "e-hard-sheets": adminTodo || staffMessage ? "write" : "",
-      "e-llm-answer": "reply",
+      "e-rules-path": pick ? `→ ${pick}` : "",
+      "e-arb-path": arbiter?.called
+        ? arbiter.action || "keep"
+        : "",
+      "e-path-fsm": path === "fsm" ? "FSM" : "",
+      "e-path-rag": path === "rag" ? "RAG" : "",
+      "e-chroma-llm":
+        hits.length && scoreLabel(hits[0]?.score)
+          ? `sim ${scoreLabel(hits[0]?.score)}`
+          : "",
     };
     return labels;
   }, [
-    history?.turns_loaded,
-    matchSummary,
+    routing,
     winningRuleId,
     route,
     arbiter,
-    facts,
-    enrichMode,
+    path,
     hits,
-    adminTodo,
-    staffMessage,
   ]);
 
   const fitView = useCallback(() => {
@@ -1752,17 +1674,9 @@ export default function TurnPipeline({
   const metaLine = trace
     ? `${route || "—"} · ${
         trace.latency_ms != null ? `${trace.latency_ms} ms` : "—"
-      }${
-        tier
-          ? ` · ${
-              tier === "rag"
-                ? "pure RAG"
-                : tier === "hard"
-                  ? "hard FSM"
-                  : "live / structured"
-            }`
-          : ""
-      }`
+      }${path ? ` · ${path === "rag" ? "RAG" : "FSM"}` : ""}${
+        liveOn ? " · live" : ""
+      }${trace.language ? ` · ${trace.language}` : ""}`
     : "Idle — drag to pan · scroll to zoom · click a node";
 
   return (
@@ -1929,7 +1843,6 @@ export default function TurnPipeline({
                     <span className={`bn-pipe-pill bn-pipe-${active.status}`}>
                       {active.status}
                     </span>
-                    <span className="bn-pipe-shape-tag">{active.shape}</span>
                   </div>
                   <button
                     ref={closeBtnRef}
@@ -1961,7 +1874,8 @@ export default function TurnPipeline({
                     winningRuleId={winningRuleId}
                     matchSummary={matchSummary}
                     arbiter={arbiter}
-                    tier={tier}
+                    path={path}
+                    liveOn={liveOn}
                     finalCheck={finalCheck}
                     adminTodo={adminTodo}
                     staffMessage={staffMessage}
