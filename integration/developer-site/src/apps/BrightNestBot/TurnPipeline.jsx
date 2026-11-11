@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 const LLM_ROLE_LABELS = {
   intent_arbiter: "Intent arbiter (cheap)",
@@ -13,6 +14,49 @@ const LLM_ROLE_LABELS = {
   cheap_llm: "Cheap LLM",
   cheap_json: "Cheap JSON",
 };
+
+/** Layout positions in viewBox units (0–1000 × 0–720). */
+const NODE_LAYOUT = {
+  parent: { x: 500, y: 36 },
+  memory: { x: 500, y: 118 },
+  router: { x: 500, y: 200 },
+  rules: { x: 280, y: 292 },
+  arbiter: { x: 720, y: 292 },
+  tier: { x: 500, y: 384 },
+  soft: { x: 220, y: 476 },
+  hard: { x: 500, y: 476 },
+  rag: { x: 780, y: 476 },
+  hko: { x: 120, y: 568 },
+  chroma: { x: 780, y: 568 },
+  llm: { x: 420, y: 650 },
+  sheets: { x: 620, y: 650 },
+  answer: { x: 500, y: 732 },
+};
+
+const EDGES = [
+  ["parent", "memory"],
+  ["memory", "router"],
+  ["router", "rules"],
+  ["router", "arbiter"],
+  ["router", "tier"],
+  ["rules", "tier"],
+  ["arbiter", "tier"],
+  ["tier", "soft"],
+  ["tier", "hard"],
+  ["tier", "rag"],
+  ["soft", "hko"],
+  ["soft", "chroma"],
+  ["soft", "llm"],
+  ["hard", "llm"],
+  ["hard", "sheets"],
+  ["rag", "chroma"],
+  ["chroma", "llm"],
+  ["llm", "answer"],
+  ["sheets", "answer"],
+];
+
+const NODE_W = 148;
+const NODE_H = 44;
 
 function llmRoleLabel(role) {
   const raw = String(role || "");
@@ -95,7 +139,9 @@ function RagHit({ hit, index }) {
         </div>
         <span className="bn-hit-src">{hit.source}</span>
         {!open && body ? <p className="bn-hit-snip">{body}</p> : null}
-        <span className="bn-hit-expand-hint">{open ? "Collapse chunk" : "Expand full chunk"}</span>
+        <span className="bn-hit-expand-hint">
+          {open ? "Collapse chunk" : "Expand full chunk"}
+        </span>
       </button>
       {open && body ? <pre className="bn-hit-full">{body}</pre> : null}
     </li>
@@ -170,8 +216,564 @@ function tierForRoute(route, grounding) {
   return null;
 }
 
+function edgePath(fromId, toId) {
+  const a = NODE_LAYOUT[fromId];
+  const b = NODE_LAYOUT[toId];
+  if (!a || !b) return "";
+  const x1 = a.x;
+  const y1 = a.y + NODE_H / 2 - 2;
+  const x2 = b.x;
+  const y2 = b.y - NODE_H / 2 + 2;
+  const mid = (y1 + y2) / 2;
+  return `M ${x1} ${y1} C ${x1} ${mid}, ${x2} ${mid}, ${x2} ${y2}`;
+}
+
+function NodeDetail({
+  node,
+  trace,
+  answer,
+  route,
+  grounding,
+  routing,
+  steps,
+  llmCalls,
+  history,
+  rag,
+  facts,
+  hits,
+  enrichMode,
+  rulesEvaluated,
+  winningRuleId,
+  matchSummary,
+  arbiter,
+  tier,
+  finalCheck,
+  adminTodo,
+  staffMessage,
+}) {
+  if (!trace) {
+    return (
+      <p className="bn-empty">
+        Send a parent message to light this node. Click again after a turn for
+        the exact inputs, scores, and model I/O.
+      </p>
+    );
+  }
+  if (!node) return null;
+
+  switch (node.id) {
+    case "parent":
+      return (
+        <>
+          <p className="bn-rules-hint">Inbound turn on this session.</p>
+          <ul className="bn-fact-list">
+            <li>
+              <span>Route</span>
+              <code>{route || "—"}</code>
+            </li>
+            <li>
+              <span>Provider</span>
+              <code>{trace.provider || trace.answer_provider || "—"}</code>
+            </li>
+            <li>
+              <span>Latency</span>
+              <code>
+                {trace.latency_ms != null ? `${trace.latency_ms} ms` : "—"}
+              </code>
+            </li>
+          </ul>
+          {(history?.turns || []).length ? (
+            <div className="bn-pipe-block">
+              <h4>Latest parent turn in memory</h4>
+              <pre className="bn-pre">
+                {([...history.turns].reverse().find((t) =>
+                  ["user", "parent"].includes(t.role)
+                )?.content) || "(see chat)"}
+              </pre>
+            </div>
+          ) : null}
+        </>
+      );
+    case "memory":
+      return (
+        <>
+          <ul className="bn-fact-list">
+            <li>
+              <span>Turns loaded</span>
+              <code>
+                {history?.turns_loaded ?? (history?.turns || []).length ?? 0}/
+                {history?.limit ?? "—"}
+              </code>
+            </li>
+            <li>
+              <span>Enabled</span>
+              <code>{history?.enabled ? "yes" : "no"}</code>
+            </li>
+          </ul>
+          {history?.preview ? (
+            <details className="bn-llm-part" open>
+              <summary>
+                Context string fed downstream
+                <em>{String(history.preview).length} chars</em>
+              </summary>
+              <pre className="bn-pre bn-pre-tall">{history.preview}</pre>
+            </details>
+          ) : (
+            <p className="bn-empty">No prior turns in session memory.</p>
+          )}
+          {(history?.turns || []).length > 0 ? (
+            <ul className="bn-mem-turns">
+              {history.turns.map((t, i) => (
+                <li key={`mem-${i}`}>
+                  <details>
+                    <summary>
+                      <strong>
+                        {t.role === "user" || t.role === "parent"
+                          ? "parent"
+                          : "bot"}
+                      </strong>
+                      <span>{clip(t.content || "", 100)}</span>
+                    </summary>
+                    <pre className="bn-hit-full">{t.content || ""}</pre>
+                  </details>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </>
+      );
+    case "router":
+      return (
+        <>
+          <ul className="bn-fact-list">
+            <li>
+              <span>Picked route</span>
+              <code>{route || "—"}</code>
+            </li>
+            <li>
+              <span>Winning rule</span>
+              <code>{winningRuleId || "—"}</code>
+            </li>
+            <li>
+              <span>Grounding</span>
+              <code>{grounding?.mode || "—"}</code>
+            </li>
+          </ul>
+          {matchSummary?.headline ? (
+            <p className="bn-match-headline">{matchSummary.headline}</p>
+          ) : null}
+          {matchSummary?.cue ? (
+            <p className="bn-note">
+              Cue «{matchSummary.cue}» →{" "}
+              <code>{matchSummary.route || route}</code>
+            </p>
+          ) : null}
+          {steps.length > 0 ? (
+            <ol className="bn-step-rail" aria-label="Pipeline steps">
+              {steps
+                .filter((s) => s.status !== "skipped" || s.id === "final_check")
+                .map((s) => (
+                  <li
+                    key={s.id}
+                    className={`bn-step-chip bn-step-${s.status || "idle"}`}
+                    title={s.detail}
+                  >
+                    <span>{s.label}</span>
+                  </li>
+                ))}
+            </ol>
+          ) : null}
+        </>
+      );
+    case "rules":
+      return (
+        <>
+          <p className="bn-rules-hint">
+            Detector awards this turn — not RAG similarity. Expand a rule for
+            evidence.
+          </p>
+          {routing?.scores && Object.keys(routing.scores).length > 0 ? (
+            <ul className="bn-fact-list">
+              {Object.entries(routing.scores)
+                .sort((a, b) => Number(b[1]) - Number(a[1]))
+                .slice(0, 10)
+                .map(([k, v]) => (
+                  <li key={k}>
+                    <span>{k}</span>
+                    <code>{Number(v).toFixed(3)}</code>
+                  </li>
+                ))}
+            </ul>
+          ) : null}
+          {rulesEvaluated.length > 0 ? (
+            <ul className="bn-rule-list">
+              {rulesEvaluated.map((r) => (
+                <RuleRow
+                  key={r.id}
+                  rule={r}
+                  isWinner={r.id === winningRuleId && Boolean(r.matched)}
+                />
+              ))}
+            </ul>
+          ) : (
+            <p className="bn-empty">No rule trace on this turn.</p>
+          )}
+        </>
+      );
+    case "arbiter": {
+      const arbCalls = llmCalls.filter((c) => c.role === "intent_arbiter");
+      return (
+        <>
+          <ul className="bn-fact-list">
+            <li>
+              <span>Called</span>
+              <code>{arbiter?.called ? "yes" : "no"}</code>
+            </li>
+            <li>
+              <span>Action</span>
+              <code>{arbiter?.action || arbiter?.reason || "skipped"}</code>
+            </li>
+            <li>
+              <span>Model</span>
+              <code>{arbiter?.model || "—"}</code>
+            </li>
+          </ul>
+          {arbiter?.reason ? <p className="bn-note">{arbiter.reason}</p> : null}
+          {arbiter?.raw ? (
+            <pre className="bn-pre">{String(arbiter.raw)}</pre>
+          ) : null}
+          {arbCalls.map((c, i) => (
+            <LlmCallCard key={`arb-${i}`} call={c} defaultOpen />
+          ))}
+        </>
+      );
+    }
+    case "tier":
+      return (
+        <>
+          <ul className="bn-fact-list">
+            <li>
+              <span>Tier</span>
+              <code>
+                {tier === "rag"
+                  ? "pure_rag"
+                  : tier === "hard"
+                    ? "hard_fsm"
+                    : tier === "soft"
+                      ? "live_structured"
+                      : "—"}
+              </code>
+            </li>
+            <li>
+              <span>Route</span>
+              <code>{route || "—"}</code>
+            </li>
+            <li>
+              <span>Grounding mode</span>
+              <code>{grounding?.mode || "—"}</code>
+            </li>
+          </ul>
+          {grounding?.why ? <p className="bn-note">{grounding.why}</p> : null}
+          {trace?.adapt ? (
+            <pre className="bn-pre">{JSON.stringify(trace.adapt, null, 2)}</pre>
+          ) : null}
+        </>
+      );
+    case "soft":
+      return (
+        <>
+          <p className="bn-rules-hint">
+            Live / structured path — privileged centre docs may be composed with
+            KB enrichment.
+          </p>
+          <ul className="bn-fact-list">
+            <li>
+              <span>Active</span>
+              <code>{tier === "soft" ? "yes" : "no"}</code>
+            </li>
+            <li>
+              <span>Live doc</span>
+              <code>
+                {grounding?.live_doc
+                  ? `${grounding.live_doc_chars || "?"} chars`
+                  : "no"}
+              </code>
+            </li>
+            <li>
+              <span>Composed</span>
+              <code>{grounding?.composed ? "yes" : "no"}</code>
+            </li>
+          </ul>
+          {llmCalls
+            .filter((c) =>
+              ["grounded_compose", "fact_adapt"].includes(c.role)
+            )
+            .map((c, i) => (
+              <LlmCallCard key={`soft-llm-${i}`} call={c} defaultOpen={i === 0} />
+            ))}
+        </>
+      );
+    case "hard":
+      return (
+        <>
+          <p className="bn-rules-hint">
+            Booking / cancel / escalate / refuse — retrieve usually bypassed;
+            final check may gate commits.
+          </p>
+          <ul className="bn-fact-list">
+            <li>
+              <span>Active</span>
+              <code>{tier === "hard" ? "yes" : "no"}</code>
+            </li>
+            <li>
+              <span>Booking stage</span>
+              <code>{trace?.booking?.stage || "—"}</code>
+            </li>
+            <li>
+              <span>Cancel stage</span>
+              <code>{trace?.cancel?.stage || "—"}</code>
+            </li>
+            <li>
+              <span>Final check</span>
+              <code>{finalCheck?.action || "—"}</code>
+            </li>
+          </ul>
+          {finalCheck ? (
+            <pre className="bn-pre">{JSON.stringify(finalCheck, null, 2)}</pre>
+          ) : null}
+          {trace?.booking ? (
+            <details className="bn-llm-part">
+              <summary>Booking trace</summary>
+              <pre className="bn-pre bn-pre-tall">
+                {JSON.stringify(trace.booking, null, 2)}
+              </pre>
+            </details>
+          ) : null}
+          {trace?.cancel ? (
+            <details className="bn-llm-part">
+              <summary>Cancel trace</summary>
+              <pre className="bn-pre bn-pre-tall">
+                {JSON.stringify(trace.cancel, null, 2)}
+              </pre>
+            </details>
+          ) : null}
+        </>
+      );
+    case "rag":
+      return (
+        <>
+          <ul className="bn-fact-list">
+            <li>
+              <span>Active</span>
+              <code>{tier === "rag" ? "yes" : "no"}</code>
+            </li>
+            <li>
+              <span>Hits</span>
+              <code>{rag?.hit_count ?? hits.length}</code>
+            </li>
+            <li>
+              <span>Top score</span>
+              <code>
+                {scoreLabel(rag?.top_score ?? hits[0]?.score) ?? "—"}
+              </code>
+            </li>
+            <li>
+              <span>Gap</span>
+              <code>{rag?.gap_reason || "—"}</code>
+            </li>
+          </ul>
+          {llmCalls
+            .filter((c) => c.role === "rag_generate" || c.role === "gap_polish")
+            .map((c, i) => (
+              <LlmCallCard key={`rag-llm-${i}`} call={c} defaultOpen={i === 0} />
+            ))}
+        </>
+      );
+    case "hko":
+      return facts ? (
+        <>
+          <p className="bn-rules-hint">
+            Public-holiday check on the resolved date; live HKO severe-weather
+            only when that date is today.
+          </p>
+          {(facts.checks || []).length > 0 ? (
+            <ul className="bn-rule-checks bn-hours-checks">
+              {facts.checks.map((c) => (
+                <li
+                  key={c.id || c.label}
+                  className={c.passed ? "pass" : c.checked ? "fail" : "fail"}
+                >
+                  <strong>
+                    {c.passed ? "hit" : c.checked ? "clear" : "skip"}
+                  </strong>
+                  <span>
+                    {c.label}
+                    {c.detail ? ` — ${c.detail}` : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <ul className="bn-fact-list">
+            <li>
+              <span>Resolved</span>
+              <code>{facts.datetime}</code>
+            </li>
+            <li>
+              <span>Window</span>
+              <code>
+                {facts.open_time && facts.close_time
+                  ? `${facts.open_time}–${facts.close_time}`
+                  : facts.is_sunday
+                    ? "closed (Sunday)"
+                    : "—"}
+              </code>
+            </li>
+            <li>
+              <span>Holiday</span>
+              <code>
+                {facts.is_holiday
+                  ? `YES · ${facts.holiday_name || "public holiday"}`
+                  : "NO"}
+              </code>
+            </li>
+            <li>
+              <span>HKO</span>
+              <code>
+                {facts.weather_hint
+                  ? `CLOSURE · ${facts.weather_hint}`
+                  : facts.parse_debug?.weather_applied
+                    ? "CHECKED · clear"
+                    : facts.parse_debug?.weather_same_day_only
+                      ? "SKIPPED · not today"
+                      : "not run"}
+              </code>
+            </li>
+          </ul>
+        </>
+      ) : (
+        <p className="bn-empty">No hours / holiday / HKO check on this turn.</p>
+      );
+    case "chroma":
+      return hits.length === 0 ? (
+        <p className="bn-empty">
+          {tier === "rag" || enrichMode
+            ? "No chunks returned."
+            : "KB retrieve did not run (hard / tool path)."}
+        </p>
+      ) : (
+        <>
+          <div className="bn-rag-strip">
+            <span>index {rag?.index_size ?? "—"}</span>
+            <span>top_k {rag?.top_k ?? hits.length}</span>
+            <span>hits {rag?.hit_count ?? hits.length}</span>
+            <span>
+              top {scoreLabel(rag?.top_score ?? hits[0]?.score) ?? "—"}
+            </span>
+            <span>{rag?.embedding_mode || "—"}</span>
+          </div>
+          <ul className="bn-hits">
+            {hits.map((h, i) => (
+              <RagHit key={`${h.source}-${h.rank || i}`} hit={h} index={i} />
+            ))}
+          </ul>
+        </>
+      );
+    case "llm":
+      return llmCalls.length === 0 ? (
+        <p className="bn-empty">
+          No DashScope call this turn (deterministic tool / template).
+        </p>
+      ) : (
+        <div className="bn-llm-calls">
+          {llmCalls.map((call, i) => (
+            <LlmCallCard
+              key={`${call.id || i}-${call.role}`}
+              call={call}
+              defaultOpen={i === llmCalls.length - 1}
+            />
+          ))}
+        </div>
+      );
+    case "sheets":
+      return (
+        <>
+          <p className="bn-rules-hint">
+            Side effects written this turn — SheetPro todos, MailBox, chat
+            bookings / cancellations CSV.
+          </p>
+          {!adminTodo &&
+          !staffMessage &&
+          trace?.booking?.stage !== "booked" &&
+          !trace?.cancel?.cancelled ? (
+            <p className="bn-empty">No sheet / mailbox writes this turn.</p>
+          ) : null}
+          {adminTodo ? (
+            <details className="bn-llm-part" open>
+              <summary>SheetPro admin todo</summary>
+              <pre className="bn-pre bn-pre-tall">
+                {JSON.stringify(adminTodo, null, 2)}
+              </pre>
+            </details>
+          ) : null}
+          {staffMessage ? (
+            <details className="bn-llm-part" open>
+              <summary>MailBox staff message</summary>
+              <pre className="bn-pre bn-pre-tall">
+                {JSON.stringify(staffMessage, null, 2)}
+              </pre>
+            </details>
+          ) : null}
+          {trace?.booking?.booking || trace?.booking?.stage === "booked" ? (
+            <details className="bn-llm-part" open>
+              <summary>Chat booking</summary>
+              <pre className="bn-pre bn-pre-tall">
+                {JSON.stringify(
+                  trace.booking.booking || trace.booking,
+                  null,
+                  2
+                )}
+              </pre>
+            </details>
+          ) : null}
+          {trace?.cancel ? (
+            <details className="bn-llm-part">
+              <summary>Cancel / CSV</summary>
+              <pre className="bn-pre bn-pre-tall">
+                {JSON.stringify(trace.cancel, null, 2)}
+              </pre>
+            </details>
+          ) : null}
+        </>
+      );
+    case "answer":
+      return (
+        <>
+          <ul className="bn-fact-list">
+            <li>
+              <span>Provider</span>
+              <code>{trace.provider || trace.answer_provider || "—"}</code>
+            </li>
+            <li>
+              <span>Model roster</span>
+              <code>
+                {(trace.llm?.main_model || "—") +
+                  (trace.llm?.cheap_called
+                    ? ` · cheap ${trace.llm?.cheap_model || ""}`
+                    : "")}
+              </code>
+            </li>
+          </ul>
+          <pre className="bn-pre bn-pre-tall">{answer || "(empty)"}</pre>
+        </>
+      );
+    default:
+      return <p className="bn-empty">Unknown node.</p>;
+  }
+}
+
 /**
- * Architecture-style live pipeline: click a node to inspect what ran this turn.
+ * Architecture-style live pipeline — diagram only; click a node for a popup.
  */
 export default function TurnPipeline({
   trace,
@@ -179,6 +781,7 @@ export default function TurnPipeline({
   turnKey = "idle",
 }) {
   const [activeId, setActiveId] = useState(null);
+  const closeBtnRef = useRef(null);
 
   const route = trace?.route;
   const grounding = trace?.grounding;
@@ -189,12 +792,12 @@ export default function TurnPipeline({
   const rag = trace?.rag;
   const facts = trace?.opening_hours?.facts;
   const enrichMode = rag?.mode === "grounded_enrich" || grounding?.used_rag;
-  const hits =
-    route === "rag" || enrichMode ? rag?.hits || [] : [];
+  const hits = route === "rag" || enrichMode ? rag?.hits || [] : [];
   const rulesEvaluated =
     routing?.rules_evaluated || routing?.debug?.rules_evaluated || [];
   const winningRule = routing?.winning_rule || routing?.debug?.winning_rule || {};
-  const matchSummary = routing?.match_summary || routing?.debug?.match_summary || {};
+  const matchSummary =
+    routing?.match_summary || routing?.debug?.match_summary || {};
   const arbiter = routing?.debug?.arbiter || {};
   const winningRuleId = matchSummary?.rule_id || winningRule?.route || route;
   const finalCheck =
@@ -209,13 +812,12 @@ export default function TurnPipeline({
 
   const nodes = useMemo(() => {
     const hasTrace = Boolean(trace);
-    const list = [
+    return [
       {
         id: "parent",
         label: "Parent message",
         kind: "start",
         status: hasTrace ? "done" : "idle",
-        row: 0,
       },
       {
         id: "memory",
@@ -226,14 +828,12 @@ export default function TurnPipeline({
           : history?.turns_loaded > 0 || (history?.preview || "").length > 0
             ? "done"
             : "skipped",
-        row: 1,
       },
       {
         id: "router",
         label: "Hybrid router",
         kind: "router",
-        status: hasTrace && route ? "done" : hasTrace ? "done" : "idle",
-        row: 2,
+        status: hasTrace ? "done" : "idle",
       },
       {
         id: "rules",
@@ -244,18 +844,12 @@ export default function TurnPipeline({
           : rulesEvaluated.length
             ? "done"
             : "skipped",
-        row: 3,
       },
       {
         id: "arbiter",
         label: arbiter?.called ? "Route arbiter" : "Arbiter",
         kind: "llm",
-        status: !hasTrace
-          ? "idle"
-          : arbiter?.called
-            ? "done"
-            : "skipped",
-        row: 3,
+        status: !hasTrace ? "idle" : arbiter?.called ? "done" : "skipped",
       },
       {
         id: "tier",
@@ -265,43 +859,34 @@ export default function TurnPipeline({
             : tier === "hard"
               ? "Tier · Hard FSM"
               : tier === "soft"
-                ? "Tier · Live / structured"
+                ? "Tier · Live tool"
                 : "Answer tier",
         kind: "branch",
         status: hasTrace && route ? "done" : "idle",
-        row: 4,
       },
       {
         id: "soft",
-        label: "Live / structured tool",
+        label: "Live / structured",
         kind: "compose",
         status: !hasTrace ? "idle" : tier === "soft" ? "done" : "skipped",
-        row: 5,
       },
       {
         id: "hard",
-        label: "Hard FSM / hand-off",
+        label: "Hard FSM",
         kind: "hard",
         status: !hasTrace ? "idle" : tier === "hard" ? "done" : "skipped",
-        row: 5,
       },
       {
         id: "rag",
         label: "Pure RAG",
         kind: "rag",
         status: !hasTrace ? "idle" : tier === "rag" ? "done" : "skipped",
-        row: 5,
       },
       {
         id: "hko",
         label: "HKO · holiday",
         kind: "live",
-        status: !hasTrace
-          ? "idle"
-          : facts
-            ? "done"
-            : "skipped",
-        row: 6,
+        status: !hasTrace ? "idle" : facts ? "done" : "skipped",
       },
       {
         id: "chroma",
@@ -314,7 +899,6 @@ export default function TurnPipeline({
             : tier === "rag" || enrichMode
               ? "empty"
               : "skipped",
-        row: 6,
       },
       {
         id: "llm",
@@ -322,16 +906,11 @@ export default function TurnPipeline({
           ? `DashScope · ${llmCalls.length}`
           : "DashScope",
         kind: "llm",
-        status: !hasTrace
-          ? "idle"
-          : llmCalls.length
-            ? "done"
-            : "skipped",
-        row: 7,
+        status: !hasTrace ? "idle" : llmCalls.length ? "done" : "skipped",
       },
       {
         id: "sheets",
-        label: "SheetPro · Mail · CSV",
+        label: "SheetPro · Mail",
         kind: "store",
         status: !hasTrace
           ? "idle"
@@ -341,17 +920,14 @@ export default function TurnPipeline({
               trace?.cancel?.stage === "cancelled"
             ? "done"
             : "skipped",
-        row: 7,
       },
       {
         id: "answer",
         label: "Parent answer",
         kind: "end",
         status: hasTrace ? "done" : "idle",
-        row: 8,
       },
     ];
-    return list;
   }, [
     trace,
     route,
@@ -368,604 +944,242 @@ export default function TurnPipeline({
     staffMessage,
   ]);
 
+  const statusById = useMemo(() => {
+    const m = {};
+    for (const n of nodes) m[n.id] = n.status;
+    return m;
+  }, [nodes]);
+
+  const activePath = useMemo(() => {
+    if (!trace) return new Set();
+    const path = new Set(["parent", "memory", "router", "tier", "answer"]);
+    if (rulesEvaluated.length) path.add("rules");
+    if (arbiter?.called) path.add("arbiter");
+    if (tier === "soft") {
+      path.add("soft");
+      if (facts) path.add("hko");
+      if (hits.length || enrichMode) path.add("chroma");
+      if (llmCalls.length) path.add("llm");
+    } else if (tier === "hard") {
+      path.add("hard");
+      if (llmCalls.length) path.add("llm");
+      if (
+        adminTodo ||
+        staffMessage ||
+        trace?.booking?.stage === "booked" ||
+        trace?.cancel?.stage === "cancelled"
+      ) {
+        path.add("sheets");
+      }
+    } else if (tier === "rag") {
+      path.add("rag");
+      path.add("chroma");
+      if (llmCalls.length) path.add("llm");
+      if (adminTodo) path.add("sheets");
+    }
+    if (llmCalls.length) path.add("llm");
+    return path;
+  }, [
+    trace,
+    rulesEvaluated.length,
+    arbiter,
+    tier,
+    facts,
+    hits.length,
+    enrichMode,
+    llmCalls.length,
+    adminTodo,
+    staffMessage,
+  ]);
+
   useEffect(() => {
     setActiveId(null);
   }, [turnKey]);
 
   useEffect(() => {
-    if (!trace) return;
-    // Default focus: LLM if called, else answer tier / router
-    if (llmCalls.length) setActiveId("llm");
-    else if (route) setActiveId("tier");
-    else setActiveId("router");
-  }, [turnKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!activeId) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape") setActiveId(null);
+    };
+    window.addEventListener("keydown", onKey);
+    const t = window.setTimeout(() => closeBtnRef.current?.focus(), 40);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.clearTimeout(t);
+    };
+  }, [activeId]);
 
   const active = nodes.find((n) => n.id === activeId) || null;
 
-  const rows = useMemo(() => {
-    const byRow = new Map();
-    for (const n of nodes) {
-      const r = n.row;
-      if (!byRow.has(r)) byRow.set(r, []);
-      byRow.get(r).push(n);
-    }
-    return Array.from(byRow.entries()).sort((a, b) => a[0] - b[0]);
-  }, [nodes]);
-
-  function renderDetail() {
-    if (!trace) {
-      return (
-        <p className="bn-empty">
-          Send a parent message to light up the pipeline. Click any node after a
-          turn to inspect inputs, rules, retrieval, and model I/O.
-        </p>
-      );
-    }
-    if (!active) {
-      return <p className="bn-empty">Select a node in the diagram.</p>;
-    }
-    switch (active.id) {
-      case "parent":
-        return (
-          <>
-            <p className="bn-rules-hint">Inbound turn on this session.</p>
-            <ul className="bn-fact-list">
-              <li>
-                <span>Route</span>
-                <code>{route || "—"}</code>
-              </li>
-              <li>
-                <span>Provider</span>
-                <code>{trace.provider || trace.answer_provider || "—"}</code>
-              </li>
-              <li>
-                <span>Latency</span>
-                <code>{trace.latency_ms != null ? `${trace.latency_ms} ms` : "—"}</code>
-              </li>
-            </ul>
-            {(history?.turns || []).length ? (
-              <div className="bn-pipe-block">
-                <h4>Latest parent turn in memory</h4>
-                <pre className="bn-pre">
-                  {([...history.turns].reverse().find((t) =>
-                    ["user", "parent"].includes(t.role)
-                  )?.content) || "(see chat)"}
-                </pre>
-              </div>
-            ) : null}
-          </>
-        );
-      case "memory":
-        return (
-          <>
-            <ul className="bn-fact-list">
-              <li>
-                <span>Turns loaded</span>
-                <code>
-                  {history?.turns_loaded ?? (history?.turns || []).length ?? 0}/
-                  {history?.limit ?? "—"}
-                </code>
-              </li>
-              <li>
-                <span>Enabled</span>
-                <code>{history?.enabled ? "yes" : "no"}</code>
-              </li>
-            </ul>
-            {history?.preview ? (
-              <details className="bn-llm-part" open>
-                <summary>
-                  Context string fed downstream
-                  <em>{String(history.preview).length} chars</em>
-                </summary>
-                <pre className="bn-pre bn-pre-tall">{history.preview}</pre>
-              </details>
-            ) : (
-              <p className="bn-empty">No prior turns in session memory.</p>
-            )}
-            {(history?.turns || []).length > 0 ? (
-              <ul className="bn-mem-turns">
-                {history.turns.map((t, i) => (
-                  <li key={`mem-${i}`}>
-                    <details>
-                      <summary>
-                        <strong>
-                          {t.role === "user" || t.role === "parent" ? "parent" : "bot"}
-                        </strong>
-                        <span>{clip(t.content || "", 100)}</span>
-                      </summary>
-                      <pre className="bn-hit-full">{t.content || ""}</pre>
-                    </details>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </>
-        );
-      case "router":
-        return (
-          <>
-            <ul className="bn-fact-list">
-              <li>
-                <span>Picked route</span>
-                <code>{route || "—"}</code>
-              </li>
-              <li>
-                <span>Winning rule</span>
-                <code>{winningRuleId || "—"}</code>
-              </li>
-              <li>
-                <span>Grounding</span>
-                <code>{grounding?.mode || "—"}</code>
-              </li>
-            </ul>
-            {matchSummary?.headline ? (
-              <p className="bn-match-headline">{matchSummary.headline}</p>
-            ) : null}
-            {matchSummary?.cue ? (
-              <p className="bn-note">
-                Cue «{matchSummary.cue}» → <code>{matchSummary.route || route}</code>
-              </p>
-            ) : null}
-            {steps.length > 0 ? (
-              <ol className="bn-step-rail" aria-label="Pipeline steps">
-                {steps
-                  .filter((s) => s.status !== "skipped" || s.id === "final_check")
-                  .map((s) => (
-                    <li
-                      key={s.id}
-                      className={`bn-step-chip bn-step-${s.status || "idle"}`}
-                      title={s.detail}
-                    >
-                      <span>{s.label}</span>
-                    </li>
-                  ))}
-              </ol>
-            ) : null}
-          </>
-        );
-      case "rules":
-        return (
-          <>
-            <p className="bn-rules-hint">
-              Detector awards this turn — not RAG similarity. Expand a rule for
-              evidence.
-            </p>
-            {routing?.scores && Object.keys(routing.scores).length > 0 ? (
-              <ul className="bn-fact-list">
-                {Object.entries(routing.scores)
-                  .sort((a, b) => Number(b[1]) - Number(a[1]))
-                  .slice(0, 10)
-                  .map(([k, v]) => (
-                    <li key={k}>
-                      <span>{k}</span>
-                      <code>{Number(v).toFixed(3)}</code>
-                    </li>
-                  ))}
-              </ul>
-            ) : null}
-            {rulesEvaluated.length > 0 ? (
-              <ul className="bn-rule-list">
-                {rulesEvaluated.map((r) => (
-                  <RuleRow
-                    key={r.id}
-                    rule={r}
-                    isWinner={r.id === winningRuleId && Boolean(r.matched)}
-                  />
-                ))}
-              </ul>
-            ) : (
-              <p className="bn-empty">No rule trace on this turn.</p>
-            )}
-          </>
-        );
-      case "arbiter": {
-        const arbCalls = llmCalls.filter((c) => c.role === "intent_arbiter");
-        return (
-          <>
-            <ul className="bn-fact-list">
-              <li>
-                <span>Called</span>
-                <code>{arbiter?.called ? "yes" : "no"}</code>
-              </li>
-              <li>
-                <span>Action</span>
-                <code>{arbiter?.action || arbiter?.reason || "skipped"}</code>
-              </li>
-              <li>
-                <span>Model</span>
-                <code>{arbiter?.model || "—"}</code>
-              </li>
-            </ul>
-            {arbiter?.reason ? <p className="bn-note">{arbiter.reason}</p> : null}
-            {arbiter?.raw ? (
-              <pre className="bn-pre">{String(arbiter.raw)}</pre>
-            ) : null}
-            {arbCalls.map((c, i) => (
-              <LlmCallCard key={`arb-${i}`} call={c} defaultOpen />
-            ))}
-          </>
-        );
-      }
-      case "tier":
-        return (
-          <>
-            <ul className="bn-fact-list">
-              <li>
-                <span>Tier</span>
-                <code>
-                  {tier === "rag"
-                    ? "pure_rag"
-                    : tier === "hard"
-                      ? "hard_fsm"
-                      : tier === "soft"
-                        ? "live_structured"
-                        : "—"}
-                </code>
-              </li>
-              <li>
-                <span>Route</span>
-                <code>{route || "—"}</code>
-              </li>
-              <li>
-                <span>Grounding mode</span>
-                <code>{grounding?.mode || "—"}</code>
-              </li>
-            </ul>
-            {grounding?.why ? <p className="bn-note">{grounding.why}</p> : null}
-            {trace?.adapt ? (
-              <pre className="bn-pre">{JSON.stringify(trace.adapt, null, 2)}</pre>
-            ) : null}
-          </>
-        );
-      case "soft":
-        return (
-          <>
-            <p className="bn-rules-hint">
-              Live / structured path — privileged centre docs may be composed with
-              KB enrichment.
-            </p>
-            <ul className="bn-fact-list">
-              <li>
-                <span>Active</span>
-                <code>{tier === "soft" ? "yes" : "no"}</code>
-              </li>
-              <li>
-                <span>Live doc</span>
-                <code>
-                  {grounding?.live_doc
-                    ? `${grounding.live_doc_chars || "?"} chars`
-                    : "no"}
-                </code>
-              </li>
-              <li>
-                <span>Composed</span>
-                <code>{grounding?.composed ? "yes" : "no"}</code>
-              </li>
-            </ul>
-            {llmCalls
-              .filter((c) =>
-                ["grounded_compose", "fact_adapt"].includes(c.role)
-              )
-              .map((c, i) => (
-                <LlmCallCard key={`soft-llm-${i}`} call={c} defaultOpen={i === 0} />
-              ))}
-          </>
-        );
-      case "hard":
-        return (
-          <>
-            <p className="bn-rules-hint">
-              Booking / cancel / escalate / refuse — retrieve usually bypassed;
-              final check may gate commits.
-            </p>
-            <ul className="bn-fact-list">
-              <li>
-                <span>Active</span>
-                <code>{tier === "hard" ? "yes" : "no"}</code>
-              </li>
-              <li>
-                <span>Booking stage</span>
-                <code>{trace?.booking?.stage || "—"}</code>
-              </li>
-              <li>
-                <span>Cancel stage</span>
-                <code>{trace?.cancel?.stage || "—"}</code>
-              </li>
-              <li>
-                <span>Final check</span>
-                <code>{finalCheck?.action || "—"}</code>
-              </li>
-            </ul>
-            {finalCheck ? (
-              <pre className="bn-pre">{JSON.stringify(finalCheck, null, 2)}</pre>
-            ) : null}
-            {trace?.booking ? (
-              <details className="bn-llm-part">
-                <summary>Booking trace</summary>
-                <pre className="bn-pre bn-pre-tall">
-                  {JSON.stringify(trace.booking, null, 2)}
-                </pre>
-              </details>
-            ) : null}
-            {trace?.cancel ? (
-              <details className="bn-llm-part">
-                <summary>Cancel trace</summary>
-                <pre className="bn-pre bn-pre-tall">
-                  {JSON.stringify(trace.cancel, null, 2)}
-                </pre>
-              </details>
-            ) : null}
-          </>
-        );
-      case "rag":
-        return (
-          <>
-            <ul className="bn-fact-list">
-              <li>
-                <span>Active</span>
-                <code>{tier === "rag" ? "yes" : "no"}</code>
-              </li>
-              <li>
-                <span>Hits</span>
-                <code>{rag?.hit_count ?? hits.length}</code>
-              </li>
-              <li>
-                <span>Top score</span>
-                <code>{scoreLabel(rag?.top_score ?? hits[0]?.score) ?? "—"}</code>
-              </li>
-              <li>
-                <span>Gap</span>
-                <code>{rag?.gap_reason || "—"}</code>
-              </li>
-            </ul>
-            {llmCalls
-              .filter((c) => c.role === "rag_generate" || c.role === "gap_polish")
-              .map((c, i) => (
-                <LlmCallCard key={`rag-llm-${i}`} call={c} defaultOpen={i === 0} />
-              ))}
-          </>
-        );
-      case "hko":
-        return facts ? (
-          <>
-            <p className="bn-rules-hint">
-              Public-holiday check on the resolved date; live HKO severe-weather
-              only when that date is today.
-            </p>
-            {(facts.checks || []).length > 0 ? (
-              <ul className="bn-rule-checks bn-hours-checks">
-                {facts.checks.map((c) => (
-                  <li
-                    key={c.id || c.label}
-                    className={c.passed ? "pass" : c.checked ? "fail" : "fail"}
-                  >
-                    <strong>
-                      {c.passed ? "hit" : c.checked ? "clear" : "skip"}
-                    </strong>
-                    <span>
-                      {c.label}
-                      {c.detail ? ` — ${c.detail}` : ""}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-            <ul className="bn-fact-list">
-              <li>
-                <span>Resolved</span>
-                <code>{facts.datetime}</code>
-              </li>
-              <li>
-                <span>Window</span>
-                <code>
-                  {facts.open_time && facts.close_time
-                    ? `${facts.open_time}–${facts.close_time}`
-                    : facts.is_sunday
-                      ? "closed (Sunday)"
-                      : "—"}
-                </code>
-              </li>
-              <li>
-                <span>Holiday</span>
-                <code>
-                  {facts.is_holiday
-                    ? `YES · ${facts.holiday_name || "public holiday"}`
-                    : "NO"}
-                </code>
-              </li>
-              <li>
-                <span>HKO</span>
-                <code>
-                  {facts.weather_hint
-                    ? `CLOSURE · ${facts.weather_hint}`
-                    : facts.parse_debug?.weather_applied
-                      ? "CHECKED · clear"
-                      : facts.parse_debug?.weather_same_day_only
-                        ? "SKIPPED · not today"
-                        : "not run"}
-                </code>
-              </li>
-            </ul>
-          </>
-        ) : (
-          <p className="bn-empty">No hours / holiday / HKO check on this turn.</p>
-        );
-      case "chroma":
-        return hits.length === 0 ? (
-          <p className="bn-empty">
-            {tier === "rag" || enrichMode
-              ? "No chunks returned."
-              : "KB retrieve did not run (hard / tool path)."}
-          </p>
-        ) : (
-          <>
-            <div className="bn-rag-strip">
-              <span>index {rag?.index_size ?? "—"}</span>
-              <span>top_k {rag?.top_k ?? hits.length}</span>
-              <span>hits {rag?.hit_count ?? hits.length}</span>
-              <span>top {scoreLabel(rag?.top_score ?? hits[0]?.score) ?? "—"}</span>
-              <span>{rag?.embedding_mode || "—"}</span>
-            </div>
-            <ul className="bn-hits">
-              {hits.map((h, i) => (
-                <RagHit key={`${h.source}-${h.rank || i}`} hit={h} index={i} />
-              ))}
-            </ul>
-          </>
-        );
-      case "llm":
-        return llmCalls.length === 0 ? (
-          <p className="bn-empty">
-            No DashScope call this turn (deterministic tool / template).
-          </p>
-        ) : (
-          <div className="bn-llm-calls">
-            {llmCalls.map((call, i) => (
-              <LlmCallCard
-                key={`${call.id || i}-${call.role}`}
-                call={call}
-                defaultOpen={i === llmCalls.length - 1}
-              />
-            ))}
-          </div>
-        );
-      case "sheets":
-        return (
-          <>
-            <p className="bn-rules-hint">
-              Side effects written this turn — SheetPro todos, MailBox, chat
-              bookings / cancellations CSV.
-            </p>
-            {!adminTodo &&
-            !staffMessage &&
-            trace?.booking?.stage !== "booked" &&
-            !trace?.cancel?.cancelled ? (
-              <p className="bn-empty">No sheet / mailbox writes this turn.</p>
-            ) : null}
-            {adminTodo ? (
-              <details className="bn-llm-part" open>
-                <summary>SheetPro admin todo</summary>
-                <pre className="bn-pre bn-pre-tall">
-                  {JSON.stringify(adminTodo, null, 2)}
-                </pre>
-              </details>
-            ) : null}
-            {staffMessage ? (
-              <details className="bn-llm-part" open>
-                <summary>MailBox staff message</summary>
-                <pre className="bn-pre bn-pre-tall">
-                  {JSON.stringify(staffMessage, null, 2)}
-                </pre>
-              </details>
-            ) : null}
-            {trace?.booking?.booking || trace?.booking?.stage === "booked" ? (
-              <details className="bn-llm-part" open>
-                <summary>Chat booking</summary>
-                <pre className="bn-pre bn-pre-tall">
-                  {JSON.stringify(
-                    trace.booking.booking || trace.booking,
-                    null,
-                    2
-                  )}
-                </pre>
-              </details>
-            ) : null}
-            {trace?.cancel ? (
-              <details className="bn-llm-part">
-                <summary>Cancel / CSV</summary>
-                <pre className="bn-pre bn-pre-tall">
-                  {JSON.stringify(trace.cancel, null, 2)}
-                </pre>
-              </details>
-            ) : null}
-          </>
-        );
-      case "answer":
-        return (
-          <>
-            <ul className="bn-fact-list">
-              <li>
-                <span>Provider</span>
-                <code>{trace.provider || trace.answer_provider || "—"}</code>
-              </li>
-              <li>
-                <span>Model roster</span>
-                <code>
-                  {(trace.llm?.main_model || "—") +
-                    (trace.llm?.cheap_called
-                      ? ` · cheap ${trace.llm?.cheap_model || ""}`
-                      : "")}
-                </code>
-              </li>
-            </ul>
-            <pre className="bn-pre bn-pre-tall">{answer || "(empty)"}</pre>
-          </>
-        );
-      default:
-        return <p className="bn-empty">Unknown node.</p>;
-    }
-  }
+  const metaLine = trace
+    ? `${route || "—"} · ${
+        trace.latency_ms != null ? `${trace.latency_ms} ms` : "—"
+      }${
+        tier
+          ? ` · ${
+              tier === "rag"
+                ? "pure RAG"
+                : tier === "hard"
+                  ? "hard FSM"
+                  : "live / structured"
+            }`
+          : ""
+      }`
+    : "Idle — send a parent message to light the path";
 
   return (
     <div className="bn-pipeline" key={turnKey}>
-      <div className="bn-pipeline-head">
+      <header className="bn-pipeline-head">
         <div>
-          <strong>Turn pipeline</strong>
-          <span>
-            {trace
-              ? `${route || "—"} · ${trace.latency_ms != null ? `${trace.latency_ms} ms` : "—"}`
-              : "Idle — waiting for a parent message"}
-          </span>
+          <strong>Request flow</strong>
+          <span>{metaLine}</span>
         </div>
-      </div>
+        <p className="bn-pipeline-hint">Click a node to inspect</p>
+      </header>
 
-      <div className="bn-pipeline-layout">
-        <div className="bn-pipeline-graph" role="list" aria-label="Turn architecture">
-          {rows.map(([rowIdx, rowNodes], ri) => (
-            <React.Fragment key={`row-${rowIdx}`}>
-              {ri > 0 ? (
-                <div className="bn-pipeline-arrow" aria-hidden="true">
-                  ↓
-                </div>
-              ) : null}
-              <div
-                className={`bn-pipeline-row${
-                  rowNodes.length > 1 ? " bn-pipeline-row-split" : ""
-                }`}
+      {steps.length > 0 ? (
+        <ol className="bn-step-rail bn-pipeline-steps" aria-label="Turn steps">
+          {steps
+            .filter((s) => s.status !== "skipped" || s.id === "final_check")
+            .map((s) => (
+              <li
+                key={s.id}
+                className={`bn-step-chip bn-step-${s.status || "idle"}`}
+                title={s.detail}
               >
-                {rowNodes.map((n) => (
-                  <button
-                    key={n.id}
-                    type="button"
-                    role="listitem"
-                    className={`bn-pipe-node bn-pipe-${n.kind} bn-pipe-${n.status}${
-                      activeId === n.id ? " is-active" : ""
-                    }`}
-                    onClick={() =>
-                      setActiveId((cur) => (cur === n.id ? null : n.id))
-                    }
-                  >
-                    <span className="bn-pipe-node-label">{n.label}</span>
-                    <span className="bn-pipe-node-status">{n.status}</span>
-                  </button>
-                ))}
-              </div>
-            </React.Fragment>
-          ))}
-        </div>
+                <span>{s.label}</span>
+              </li>
+            ))}
+        </ol>
+      ) : null}
 
-        <aside className="bn-pipeline-detail" aria-live="polite">
-          <div className="bn-pipeline-detail-head">
-            <strong>{active?.label || "Inspector"}</strong>
-            {active ? (
-              <span className={`bn-pipe-pill bn-pipe-${active.status}`}>
-                {active.status}
-              </span>
-            ) : null}
-          </div>
-          <div className="bn-pipeline-detail-body">{renderDetail()}</div>
-        </aside>
+      <div className="bn-pipeline-stage">
+        <svg
+          className="bn-pipeline-edges"
+          viewBox="0 0 1000 780"
+          preserveAspectRatio="xMidYMid meet"
+          aria-hidden="true"
+        >
+          <defs>
+            <marker
+              id="bn-arrow"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M 0 1.2 L 9 5 L 0 8.8 Z" fill="currentColor" />
+            </marker>
+          </defs>
+          {EDGES.map(([from, to]) => {
+            const lit =
+              activePath.has(from) &&
+              activePath.has(to) &&
+              statusById[from] === "done" &&
+              (statusById[to] === "done" || statusById[to] === "empty");
+            return (
+              <path
+                key={`${from}-${to}`}
+                d={edgePath(from, to)}
+                className={`bn-pipe-edge${lit ? " is-lit" : ""}`}
+                markerEnd="url(#bn-arrow)"
+              />
+            );
+          })}
+        </svg>
+
+        <div className="bn-pipeline-nodes" role="list" aria-label="Turn architecture">
+          {nodes.map((n) => {
+            const pos = NODE_LAYOUT[n.id];
+            const lit = activePath.has(n.id) && n.status === "done";
+            return (
+              <button
+                key={n.id}
+                type="button"
+                role="listitem"
+                className={`bn-pipe-node bn-pipe-${n.kind} bn-pipe-${n.status}${
+                  lit ? " is-lit" : ""
+                }${activeId === n.id ? " is-active" : ""}`}
+                style={{
+                  left: `${(pos.x / 1000) * 100}%`,
+                  top: `${(pos.y / 780) * 100}%`,
+                }}
+                onClick={() => setActiveId(n.id)}
+                aria-haspopup="dialog"
+                aria-expanded={activeId === n.id}
+              >
+                <span className="bn-pipe-node-label">{n.label}</span>
+                <span className="bn-pipe-node-status">{n.status}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
+
+      {active && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              className="bn-pipe-modal-root"
+              role="presentation"
+              onMouseDown={(e) => {
+                if (e.target === e.currentTarget) setActiveId(null);
+              }}
+            >
+              <div
+                className="bn-pipe-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="bn-pipe-modal-title"
+              >
+                <header className="bn-pipe-modal-head">
+                  <div>
+                    <h3 id="bn-pipe-modal-title">{active.label}</h3>
+                    <span className={`bn-pipe-pill bn-pipe-${active.status}`}>
+                      {active.status}
+                    </span>
+                  </div>
+                  <button
+                    ref={closeBtnRef}
+                    type="button"
+                    className="bn-pipe-modal-close"
+                    aria-label="Close"
+                    onClick={() => setActiveId(null)}
+                  >
+                    ×
+                  </button>
+                </header>
+                <div className="bn-pipe-modal-body">
+                  <NodeDetail
+                    node={active}
+                    trace={trace}
+                    answer={answer}
+                    route={route}
+                    grounding={grounding}
+                    routing={routing}
+                    steps={steps}
+                    llmCalls={llmCalls}
+                    history={history}
+                    rag={rag}
+                    facts={facts}
+                    hits={hits}
+                    enrichMode={enrichMode}
+                    rulesEvaluated={rulesEvaluated}
+                    winningRuleId={winningRuleId}
+                    matchSummary={matchSummary}
+                    arbiter={arbiter}
+                    tier={tier}
+                    finalCheck={finalCheck}
+                    adminTodo={adminTodo}
+                    staffMessage={staffMessage}
+                  />
+                </div>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
     </div>
   );
 }
