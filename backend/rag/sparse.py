@@ -235,7 +235,7 @@ def rrf_fuse(
             "Dense Chroma ranks chunks by embedding similarity.",
             "BM25 ranks the same KB by keyword / CJK token overlap.",
             f"RRF score = 1/({k}+dense_rank) + 1/({k}+BM25_rank); both-lists boost.",
-            "Lexical re-rank (age / path / folder / overlap) then keep top_k for the LLM.",
+            "Lexical re-rank sorts by age-file match → path keyword → folder prior → token overlap → vector score, then keep top_k.",
         ],
         "dense_top": _channel_preview(dense, channel="dense", question=question),
         "sparse_top": _channel_preview(sparse, channel="sparse", question=question),

@@ -346,6 +346,18 @@ export default function MyCalendar({
                           {formatClock(s.slot_start)}
                           {s.kind === "trial" ? " · trial" : ""}
                         </span>
+                        {(s.enrolled || []).length > 0 ? (
+                          <em className="bn-cal-kids">
+                            {(s.enrolled || [])
+                              .map((e) => e.child)
+                              .filter(Boolean)
+                              .slice(0, 3)
+                              .join(", ")}
+                            {(s.enrolled || []).filter((e) => e.child).length > 3
+                              ? "…"
+                              : ""}
+                          </em>
+                        ) : null}
                       </button>
                     );
                   })}
@@ -401,19 +413,16 @@ export default function MyCalendar({
               ) : (
                 <ul className="bn-cal-roster">
                   {(selected.enrolled || []).map((e, i) => (
-                    <li key={`${e.child}-${i}`}>
-                      <strong>{e.child}</strong>
-                      <span>{e.parent || "—"}</span>
+                    <li key={`${e.child}-${e.parent || ""}-${i}`}>
+                      <strong>{e.child || "—"}</strong>
+                      <span>
+                        {e.parent || "—"}
+                        {e.via === "chat" ? " · chat" : ""}
+                      </span>
                     </li>
                   ))}
                 </ul>
               )}
-              {selected.chat_bookings ? (
-                <p className="bn-cal-chat-note">
-                  +{selected.chat_bookings} chat booking
-                  {selected.chat_bookings === 1 ? "" : "s"} counted in seats
-                </p>
-              ) : null}
             </aside>
           ) : null}
         </div>

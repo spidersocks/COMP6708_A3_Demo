@@ -462,19 +462,18 @@ export default function BrightNestBotDemo() {
       const hitTodo = Boolean(nextTrace.admin_todo);
       const hitBoss =
         Boolean(nextTrace.staff_message) || nextTrace.route === "staff_escalation";
+      // Refresh staff data in the background — stay on System so the inspector
+      // route stays visible; user opens Staff desk when they want.
       if (hitTodo) {
         refreshAdminTodos();
         setStaffTab("sheet");
-        setRightView("staff");
       }
       if (hitBoss) {
         refreshStaffMessages();
         if (nextTrace.staff_message?.id) {
           setSelectedMsgId(nextTrace.staff_message.id);
         }
-        // Last write wins when both fire in one turn
         setStaffTab("mail");
-        setRightView("staff");
       }
       // Keep form identity in sync when dialogue resolves a child
       const resolvedChild =
@@ -503,7 +502,6 @@ export default function BrightNestBotDemo() {
         refreshFamilies();
         if (!hitTodo && !hitBoss) {
           setStaffTab("calendar");
-          setRightView("staff");
         }
       }
     } catch (err) {

@@ -203,6 +203,19 @@ def create_booking(
     }
     # Write-through to the live CSV sheet (demo "admin spreadsheet")
     sheets.append_chat_booking(sheet_row)
+    # New-parent chat bookings should appear on Families roster too
+    try:
+        from services import families as families_svc
+
+        families_svc.ensure_family_on_sheet(
+            phone=phone,
+            parent_name=parent_name,
+            child_name=child_name,
+            preferred_courses=course_key,
+            notes="chat booking",
+        )
+    except Exception as e:
+        print(f"[BOOKING] families upsert failed: {e}", flush=True)
     # Keep SQLite mirror for older tooling
     with _conn() as c:
         c.execute(
@@ -321,7 +334,29 @@ def get_week_schedule(*, days: int = 7, lang: str = "en") -> Dict[str, Any]:
             start_dt = datetime(d.year, d.month, d.day, hour, minute, tzinfo=HK_TZ)
             iso = start_dt.isoformat()
             enrolled = list(tmpl.get("enrolled") or [])
-            chat_extra = _booked_count(tmpl["course_key"], iso)
+            chat_rows = sheets.list_chat_bookings(tmpl["course_key"], iso)
+            chat_extra = len(chat_rows)
+            # Merge chat bookings into the roster so the calendar shows names
+            roster = list(enrolled)
+            seen = {
+                ((e.get("child") or "").strip().lower(), (e.get("parent") or "").strip().lower())
+                for e in roster
+            }
+            for cb in chat_rows:
+                key = (
+                    (cb.get("child") or "").strip().lower(),
+                    (cb.get("parent") or "").strip().lower(),
+                )
+                if not key[0] or key in seen:
+                    continue
+                seen.add(key)
+                roster.append(
+                    {
+                        "child": cb.get("child") or "",
+                        "parent": cb.get("parent") or "",
+                        "via": "chat",
+                    }
+                )
             capacity = int(tmpl["capacity"])
             seats_left = max(0, capacity - len(enrolled) - chat_extra)
             sessions.append(
@@ -337,8 +372,8 @@ def get_week_schedule(*, days: int = 7, lang: str = "en") -> Dict[str, Any]:
                     "teacher_name": sd.teacher_name(tmpl["teacher_id"]),
                     "room": tmpl.get("room"),
                     "capacity": capacity,
-                    "enrolled": enrolled,
-                    "enrolled_count": len(enrolled),
+                    "enrolled": roster,
+                    "enrolled_count": len(roster),
                     "chat_bookings": chat_extra,
                     "seats_left": seats_left,
                     "status": "open" if seats_left > 0 else "full",
@@ -353,7 +388,17 @@ def get_week_schedule(*, days: int = 7, lang: str = "en") -> Dict[str, Any]:
             if start_dt.date() == now.date() and start_dt <= now:
                 continue
             iso = start_dt.isoformat()
-            chat_extra = _booked_count("trial", iso)
+            chat_rows = sheets.list_chat_bookings("trial", iso)
+            chat_extra = len(chat_rows)
+            roster = [
+                {
+                    "child": cb.get("child") or "",
+                    "parent": cb.get("parent") or "",
+                    "via": "chat",
+                }
+                for cb in chat_rows
+                if (cb.get("child") or "").strip()
+            ]
             capacity = int(tmpl["capacity"])
             seats_left = max(0, capacity - chat_extra)
             sessions.append(
@@ -369,8 +414,8 @@ def get_week_schedule(*, days: int = 7, lang: str = "en") -> Dict[str, Any]:
                     "teacher_name": sd.teacher_name(tmpl["teacher_id"]),
                     "room": tmpl.get("room"),
                     "capacity": capacity,
-                    "enrolled": [],
-                    "enrolled_count": 0,
+                    "enrolled": roster,
+                    "enrolled_count": len(roster),
                     "chat_bookings": chat_extra,
                     "seats_left": seats_left,
                     "status": "open" if seats_left > 0 else "full",

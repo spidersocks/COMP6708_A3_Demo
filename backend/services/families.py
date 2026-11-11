@@ -46,6 +46,50 @@ def list_family_by_phone(phone: str) -> Dict[str, Any]:
     }
 
 
+def ensure_family_on_sheet(
+    *,
+    phone: str,
+    parent_name: str = "",
+    child_name: str = "",
+    preferred_courses: str = "",
+    notes: str = "chat booking",
+) -> bool:
+    """
+    Upsert a WhatsApp family row so Staff → Families shows new-parent bookings.
+    Returns True when a row was added.
+    """
+    phone_s = (phone or "").strip()
+    parent_s = (parent_name or "").strip()
+    child_s = (child_name or "").strip()
+    if not phone_s or not child_s:
+        return False
+    want = _norm_phone(phone_s)
+    sheets.seed_sheets_if_needed()
+    path = sheets.sheets_dir() / "families.csv"
+    fieldnames = ["phone", "parent_name", "child_name", "preferred_courses", "notes"]
+    rows = sheets._read_csv(path)  # noqa: SLF001
+    for r in rows:
+        if _norm_phone(r.get("phone", "")) != want:
+            continue
+        if (r.get("child_name") or "").strip().lower() == child_s.lower():
+            # Refresh parent label if we learned it
+            if parent_s and not (r.get("parent_name") or "").strip():
+                r["parent_name"] = parent_s
+                sheets._write_csv(path, fieldnames, rows)  # noqa: SLF001
+            return False
+    rows.append(
+        {
+            "phone": phone_s,
+            "parent_name": parent_s,
+            "child_name": child_s,
+            "preferred_courses": preferred_courses or "",
+            "notes": notes or "chat booking",
+        }
+    )
+    sheets._write_csv(path, fieldnames, rows)  # noqa: SLF001
+    return True
+
+
 def list_all_families(*, days_ahead: int = 21) -> Dict[str, Any]:
     """Staff-desk roster: every WhatsApp family + each child's upcoming classes."""
     from services import booking_dialogue as dialogue_svc  # noqa: PLC0415

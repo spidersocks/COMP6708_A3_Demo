@@ -393,6 +393,8 @@ def _norm_person_name(raw: str) -> str:
         return ""
     # Drop accidental sentence continuation ("Chester. I want…")
     s = re.split(r"[.!?]+", s, maxsplit=1)[0].strip()
+    # "child is named David" / "called Mia" — "named"/"called" are not part of the name
+    s = re.sub(r"^(?:named|called)\s+", "", s, flags=re.I).strip()
     parts = [p for p in re.split(r"\s+", s) if p]
     # Keep at most first+last; reject if a token looks like a sentence word
     _stop = {
@@ -408,6 +410,15 @@ def _norm_person_name(raw: str) -> str:
         "for",
         "is",
         "am",
+        "named",
+        "called",
+        "do",
+        "phonics",
+        "math",
+        "mandarin",
+        "writing",
+        "playgroup",
+        "trial",
     }
     parts = [p for p in parts if p.lower() not in _stop][:2]
     s = " ".join(parts).strip(" .,;:!?")
@@ -423,9 +434,10 @@ def _parse_identity(text: str) -> Dict[str, str]:
     if not t:
         return out
 
-    # Allow "kid's name" / "child's name" (possessive), not only "kid name"
+    # Allow "kid's name" / "child is named X" (possessive + named/called)
     _child_cue = (
-        r"(?:my\s+)?(?:child|kid|son|daughter|girl|boy)(?:'?s)?(?:\s*name)?(?:\s+is)?"
+        r"(?:my\s+)?(?:child|kid|son|daughter|girl|boy)(?:'?s)?"
+        r"(?:\s*name)?(?:\s+is)?(?:\s+(?:named|called))?"
     )
     # No '.' inside names — periods end the capture (avoids "Jeff. My" / "Chester. I")
     _name = r"([A-Za-z][A-Za-z']*(?:\s+[A-Za-z][A-Za-z']*)?)"

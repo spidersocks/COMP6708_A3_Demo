@@ -311,7 +311,7 @@ def retrieve_hybrid(
     ensure_index()
     k = int(top_k or SETTINGS.rag_top_k)
     emb = embed_query(question)
-    dense_pool = max(k, SETTINGS.rag_sparse_pool_k, 12)
+    dense_pool = max(k, SETTINGS.rag_sparse_pool_k)
     dense = get_store().query(emb, top_k=dense_pool, language=lang)
     for h in dense:
         h["channel"] = "dense"
@@ -815,7 +815,7 @@ def retrieve_for_enrich(
     """
     lang = language or "en"
     k = int(top_k or SETTINGS.grounding_enrich_top_k or SETTINGS.rag_top_k)
-    pool_k = max(k, 8)
+    pool_k = max(k, SETTINGS.rag_sparse_pool_k)
     prior = prior_context if prior_context is not None else history_context
     corr = _corrective_retrieve(
         message, lang=lang, keep_k=k, pool_k=pool_k, prior_context=prior
@@ -867,7 +867,7 @@ def chat_with_rag(
     lang = language or "en"
     age_ask = bool(_query_age_digits(message))
     keep_k = SETTINGS.rag_top_k
-    pool_k = max(keep_k, 20) if age_ask else max(keep_k, 8)
+    pool_k = max(keep_k, SETTINGS.rag_sparse_pool_k)
     prior = prior_context if prior_context is not None else history_context
     corr = _corrective_retrieve(
         message, lang=lang, keep_k=keep_k, pool_k=pool_k, prior_context=prior

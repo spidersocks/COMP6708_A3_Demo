@@ -46,6 +46,14 @@ def test_parse_identity_kid_possessive():
     assert got.get("child") == "Chester"
 
 
+def test_parse_identity_named_david():
+    got = bd._parse_identity(
+        "I'm General Humpty and my child is named David. I want to do phonics"
+    )
+    assert got.get("parent") == "General Humpty"
+    assert got.get("child") == "David"
+
+
 def test_new_parent_identity_from_jeff_chester(monkeypatch):
     """Regex + DST merge must accept Jeff/Chester in one turn (no identity loop)."""
     sid = "test-jeff-" + uuid.uuid4().hex[:8]

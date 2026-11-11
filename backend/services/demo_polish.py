@@ -160,8 +160,9 @@ def _clean_person_slot(raw: Any) -> Optional[str]:
     s = str(raw).strip(" .,;:!?")
     if not s or s.lower() in {"null", "none", "n/a", "-"}:
         return None
+    s = re.sub(r"^(?:named|called)\s+", "", s, flags=re.I).strip()
     low = s.lower()
-    if low in _KINSHIP_NAME_BLOCK:
+    if low in _KINSHIP_NAME_BLOCK or low in {"named", "called"}:
         return None
     if any(tok in _KINSHIP_NAME_BLOCK for tok in re.split(r"\s+", low)):
         return None

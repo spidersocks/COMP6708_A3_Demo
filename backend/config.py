@@ -59,7 +59,8 @@ class Settings:
         "yes",
     )
     rag_rrf_k: int = int(os.environ.get("RAG_RRF_K", "60"))
-    rag_sparse_pool_k: int = int(os.environ.get("RAG_SPARSE_POOL_K", "20"))
+    # Keep the hybrid pool small — KB is ~hundreds of chunks per language
+    rag_sparse_pool_k: int = int(os.environ.get("RAG_SPARSE_POOL_K", "5"))
 
     # Generation
     # Keep short for live demo latency (thinking is also forced off in generation_parameters).

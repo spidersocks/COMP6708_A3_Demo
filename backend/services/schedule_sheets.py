@@ -441,13 +441,26 @@ def teacher_name(teacher_id: str) -> str:
 
 
 def count_chat_bookings(course_key: str, slot_start_iso: str) -> int:
+    return len(list_chat_bookings(course_key, slot_start_iso))
+
+
+def list_chat_bookings(course_key: str, slot_start_iso: str) -> List[Dict[str, str]]:
+    """Chat bookings for one course+slot (parent/child for calendar roster)."""
     root = sheets_dir()
     rows = _read_csv(root / "chat_bookings.csv")
-    return sum(
-        1
-        for r in rows
-        if r.get("course_key") == course_key and r.get("slot_start") == slot_start_iso
-    )
+    out: List[Dict[str, str]] = []
+    for r in rows:
+        if r.get("course_key") == course_key and r.get("slot_start") == slot_start_iso:
+            out.append(
+                {
+                    "id": r.get("id") or "",
+                    "child": (r.get("child_name") or "").strip(),
+                    "parent": (r.get("parent_name") or "").strip(),
+                    "phone": (r.get("phone") or "").strip(),
+                    "via": "chat",
+                }
+            )
+    return out
 
 
 def clear_chat_bookings() -> int:

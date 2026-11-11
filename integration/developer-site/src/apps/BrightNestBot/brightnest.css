@@ -3689,6 +3689,15 @@ code,
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.bn-cal-event .bn-cal-kids {
+  display: block;
+  font-style: normal;
+  font-size: 0.62rem;
+  opacity: 0.92;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .bn-cal-event.tone-phonic { background: #039be5; }
 .bn-cal-event.tone-mandarin { background: #f4511e; }
 .bn-cal-event.tone-writing { background: #8e24aa; }

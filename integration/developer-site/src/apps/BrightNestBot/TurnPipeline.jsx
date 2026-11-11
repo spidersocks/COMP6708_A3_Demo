@@ -26,7 +26,7 @@ const LLM_ROLE_LABELS = {
 
 /**
  * Compact top-down layout (world px, origin at spine).
- * Spine: parent → language → memory → rules → router → path → FSM|RAG → …
+ * Spine: parent → language → memory → rules → router (FSM|RAG) → …
  * Scores before the route pick; live data is a side arm.
  */
 const LAYOUT = {
@@ -34,36 +34,37 @@ const LAYOUT = {
   lang: { x: 0, y: 72, w: 148, h: 42 },
   memory: { x: 0, y: 150, w: 148, h: 72 },
   rules: { x: 0, y: 250, w: 146, h: 46 },
-  router: { x: 0, y: 340, w: 146, h: 46 },
-  arbiter: { x: 188, y: 340, w: 120, h: 46 },
-  path: { x: 0, y: 450, w: 112, h: 112 },
-  fsm: { x: -210, y: 590, w: 140, h: 46 },
-  rag: { x: 200, y: 590, w: 140, h: 46 },
-  dst: { x: -210, y: 680, w: 152, h: 46 },
-  live: { x: -210, y: 770, w: 140, h: 46 },
-  // Hybrid retrieve expands here: dense ∥ sparse → RRF → pass 1
-  dense: { x: 100, y: 700, w: 136, h: 76 },
-  sparse: { x: 300, y: 700, w: 136, h: 76 },
-  fuse: { x: 200, y: 810, w: 148, h: 48 },
-  chroma: { x: 200, y: 920, w: 148, h: 76 },
-  rewrite: { x: 200, y: 1030, w: 152, h: 48 },
-  // Pass 2 sits to the RIGHT so the no-retry path never crosses it
-  chroma2: { x: 360, y: 1140, w: 148, h: 76 },
-  sheets: { x: -210, y: 1140, w: 168, h: 76 },
-  llm: { x: 40, y: 1140, w: 160, h: 48 },
-  answer: { x: 0, y: 1250, w: 156, h: 42 },
+  // Combined hybrid router + FSM|RAG branch (was two nodes)
+  router: { x: 0, y: 380, w: 128, h: 128 },
+  arbiter: { x: 210, y: 380, w: 120, h: 46 },
+  fsm: { x: -280, y: 560, w: 140, h: 46 },
+  rag: { x: 280, y: 560, w: 140, h: 46 },
+  dst: { x: -280, y: 660, w: 152, h: 46 },
+  live: { x: -280, y: 760, w: 140, h: 46 },
+  // Hybrid retrieve — further right so FSM→LLM corridor stays clear
+  dense: { x: 200, y: 680, w: 136, h: 76 },
+  sparse: { x: 400, y: 680, w: 136, h: 76 },
+  fuse: { x: 300, y: 800, w: 148, h: 48 },
+  chroma: { x: 300, y: 910, w: 148, h: 76 },
+  rewrite: { x: 300, y: 1020, w: 152, h: 48 },
+  chroma2: { x: 460, y: 1140, w: 148, h: 76 },
+  sheets: { x: -280, y: 1140, w: 168, h: 76 },
+  llm: { x: -40, y: 1140, w: 160, h: 48 },
+  answer: { x: 0, y: 1260, w: 156, h: 42 },
 };
+
+/** Left corridor for FSM/DST/Live → LLM (between sheets and RAG arm). */
+const FSM_LLM_X = -140;
 
 const EDGES = [
   { id: "e-parent-lang", from: "parent", to: "lang" },
   { id: "e-lang-mem", from: "lang", to: "memory" },
   { id: "e-mem-rules", from: "memory", to: "rules" },
   { id: "e-rules-router", from: "rules", to: "router" },
-  { id: "e-router-path", from: "router", to: "path" },
   { id: "e-router-arb", from: "router", to: "arbiter", dashed: true },
-  { id: "e-arb-path", from: "arbiter", to: "path", dashed: true },
-  { id: "e-path-fsm", from: "path", to: "fsm" },
-  { id: "e-path-rag", from: "path", to: "rag" },
+  { id: "e-arb-router", from: "arbiter", to: "router", dashed: true },
+  { id: "e-router-fsm", from: "router", to: "fsm" },
+  { id: "e-router-rag", from: "router", to: "rag" },
   { id: "e-fsm-dst", from: "fsm", to: "dst" },
   { id: "e-dst-live", from: "dst", to: "live", dashed: true },
   { id: "e-fsm-live", from: "fsm", to: "live", dashed: true },
@@ -85,9 +86,9 @@ const EDGES = [
   { id: "e-sheets-answer", from: "sheets", to: "answer" },
 ];
 
-const WORLD = { minX: -380, minY: -28, maxX: 460, maxY: 1320 };
-/** Default Fit: top of the spine (parent → path), not the whole flowchart. */
-const FIT_FOCUS = { minX: -220, minY: -24, maxX: 250, maxY: 480 };
+const WORLD = { minX: -450, minY: -28, maxX: 560, maxY: 1340 };
+/** Default Fit: top of the spine (parent → router), not the whole flowchart. */
+const FIT_FOCUS = { minX: -220, minY: -24, maxX: 260, maxY: 520 };
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2.0;
 const PAN_MARGIN = 72;
@@ -217,7 +218,7 @@ function nodeAnchor(id, side = "bottom") {
   const n = LAYOUT[id];
   if (!n) return { x: 0, y: 0 };
   // Diamond ports sit on the diamond vertices (inset from the square bbox)
-  if (id === "path") {
+  if (id === "router") {
     const inset = n.w * 0.08;
     if (side === "top") return { x: n.x, y: n.y - n.h / 2 + inset };
     if (side === "bottom") return { x: n.x, y: n.y + n.h / 2 - inset };
@@ -235,7 +236,7 @@ function nodeAnchor(id, side = "bottom") {
   return { x: n.x, y: n.y + n.h / 2 };
 }
 
-function shorten(a, b, padStart = 2, padEnd = 10) {
+function shorten(a, b, padStart = 2, padEnd = 14) {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const len = Math.hypot(dx, dy) || 1;
@@ -251,6 +252,23 @@ function shorten(a, b, padStart = 2, padEnd = 10) {
   };
 }
 
+/** Shorten only the end of a polyline so the arrowhead sits on the last segment. */
+function shortenPolyEnd(pts, padEnd = 14) {
+  if (!pts || pts.length < 2) return pts || [];
+  const out = pts.map((p) => ({ ...p }));
+  const a = out[out.length - 2];
+  const b = out[out.length - 1];
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const cut = Math.min(padEnd, Math.max(0, len - 2));
+  out[out.length - 1] = {
+    x: b.x - (dx / len) * cut,
+    y: b.y - (dy / len) * cut,
+  };
+  return out;
+}
+
 function edgeGeometry(fromId, toId) {
   const a = LAYOUT[fromId];
   const b = LAYOUT[toId];
@@ -260,30 +278,32 @@ function edgeGeometry(fromId, toId) {
   let rawEnd;
   let elbow = null; // optional mid waypoint(s)
 
-  if (fromId === "path" && toId === "fsm") {
-    rawStart = nodeAnchor("path", "sw");
+  if (fromId === "router" && toId === "fsm") {
+    rawStart = nodeAnchor("router", "sw");
     rawEnd = nodeAnchor(toId, "top");
-  } else if (fromId === "path" && toId === "rag") {
-    rawStart = nodeAnchor("path", "se");
+  } else if (fromId === "router" && toId === "rag") {
+    rawStart = nodeAnchor("router", "se");
     rawEnd = nodeAnchor(toId, "top");
   } else if (fromId === "router" && toId === "arbiter") {
     rawStart = nodeAnchor("router", "right");
     rawEnd = nodeAnchor("arbiter", "left");
-  } else if (fromId === "arbiter" && toId === "path") {
+  } else if (fromId === "arbiter" && toId === "router") {
     rawStart = nodeAnchor("arbiter", "bottom");
-    rawEnd = nodeAnchor("path", "right");
+    rawEnd = nodeAnchor("router", "right");
   } else if (fromId === "fsm" && toId === "dst") {
     rawStart = nodeAnchor("fsm", "bottom");
     rawEnd = nodeAnchor("dst", "top");
-  } else if (fromId === "dst" && toId === "llm") {
-    rawStart = nodeAnchor("dst", "right");
-    rawEnd = nodeAnchor("llm", "top");
-    elbow = [{ x: b.x, y: a.y }];
-  } else if (fromId === "fsm" && toId === "llm") {
-    // Right then down the center corridor (x ≈ llm) — avoid sheets cylinder
-    rawStart = nodeAnchor("fsm", "right");
-    rawEnd = nodeAnchor("llm", "top");
-    elbow = [{ x: b.x, y: a.y }];
+  } else if (
+    (fromId === "fsm" || fromId === "dst" || fromId === "live") &&
+    toId === "llm"
+  ) {
+    // Left corridor — clear of dense/chroma on the right and sheets on the far left
+    rawStart = nodeAnchor(fromId, "right");
+    rawEnd = nodeAnchor("llm", "left");
+    elbow = [
+      { x: FSM_LLM_X, y: a.y },
+      { x: FSM_LLM_X, y: b.y },
+    ];
   } else if (fromId === "fsm" && toId === "sheets") {
     rawStart = nodeAnchor("fsm", "bottom");
     rawEnd = nodeAnchor("sheets", "top");
@@ -303,7 +323,7 @@ function edgeGeometry(fromId, toId) {
     rawStart = nodeAnchor("sparse", "bottom");
     rawEnd = nodeAnchor("fuse", "right");
   } else if (fromId === "rewrite" && toId === "llm") {
-    // Diagonal down-left; pass 2 sits on the right so a normal curve stays clear
+    // Regular curve — pass 2 is further right
     rawStart = nodeAnchor("rewrite", "bottom");
     rawEnd = nodeAnchor("llm", "top");
   } else if (fromId === "rewrite" && toId === "chroma2") {
@@ -312,10 +332,6 @@ function edgeGeometry(fromId, toId) {
   } else if (fromId === "chroma2" && toId === "llm") {
     rawStart = nodeAnchor("chroma2", "left");
     rawEnd = nodeAnchor("llm", "right");
-  } else if (fromId === "live" && toId === "llm") {
-    rawStart = nodeAnchor("live", "right");
-    rawEnd = nodeAnchor("llm", "top");
-    elbow = [{ x: b.x, y: a.y }];
   } else if (fromId === "live" && toId === "fuse") {
     rawStart = nodeAnchor("live", "right");
     rawEnd = nodeAnchor("fuse", "left");
@@ -327,27 +343,40 @@ function edgeGeometry(fromId, toId) {
     rawEnd = nodeAnchor(toId, "top");
   }
 
-  const { start, end } = shorten(rawStart, rawEnd, 1, 11);
-  const dx = Math.abs(end.x - start.x);
   let d;
   let labelAt;
+  let start;
+  let end;
   if (elbow && elbow.length) {
-    const pts = [start, ...elbow, end];
+    const pts = shortenPolyEnd([rawStart, ...elbow, rawEnd], 14);
+    start = pts[0];
+    end = pts[pts.length - 1];
     d = `M ${pts[0].x} ${pts[0].y}` + pts.slice(1).map((p) => ` L ${p.x} ${p.y}`).join("");
     const mid = pts[Math.floor(pts.length / 2)];
     labelAt = { x: mid.x + 8, y: mid.y - 6 };
-  } else if (dx < 8) {
-    const midY = (start.y + end.y) / 2;
-    d = `M ${start.x} ${start.y} L ${end.x} ${end.y}`;
-    labelAt = { x: start.x + 10, y: midY };
-  } else if (fromId === "arbiter" || toId === "arbiter") {
-    const midY = (start.y + end.y) / 2;
-    d = `M ${start.x} ${start.y} L ${start.x} ${midY} L ${end.x} ${midY} L ${end.x} ${end.y}`;
-    labelAt = { x: (start.x + end.x) / 2, y: midY - 6 };
   } else {
-    const midY = (start.y + end.y) / 2;
-    d = `M ${start.x} ${start.y} C ${start.x} ${midY}, ${end.x} ${midY}, ${end.x} ${end.y}`;
-    labelAt = { x: (start.x + end.x) / 2, y: midY - 5 };
+    ({ start, end } = shorten(rawStart, rawEnd, 1, 14));
+    const dx = Math.abs(end.x - start.x);
+    if (dx < 8) {
+      const midY = (start.y + end.y) / 2;
+      d = `M ${start.x} ${start.y} L ${end.x} ${end.y}`;
+      labelAt = { x: start.x + 10, y: midY };
+    } else if (fromId === "arbiter" || toId === "arbiter") {
+      const midY = (start.y + end.y) / 2;
+      d = `M ${start.x} ${start.y} L ${start.x} ${midY} L ${end.x} ${midY} L ${end.x} ${end.y}`;
+      labelAt = { x: (start.x + end.x) / 2, y: midY - 6 };
+    } else if (fromId === "rewrite" && toId === "llm") {
+      // Straight Grade·rewrite → LLM (no elbow / bezier through pass 2)
+      d = `M ${start.x} ${start.y} L ${end.x} ${end.y}`;
+      labelAt = {
+        x: (start.x + end.x) / 2,
+        y: (start.y + end.y) / 2 - 8,
+      };
+    } else {
+      const midY = (start.y + end.y) / 2;
+      d = `M ${start.x} ${start.y} C ${start.x} ${midY}, ${end.x} ${midY}, ${end.x} ${end.y}`;
+      labelAt = { x: (start.x + end.x) / 2, y: midY - 5 };
+    }
   }
   return { d, labelAt, start, end };
 }
@@ -1155,18 +1184,34 @@ function NodeDetail({
       );
     }
 
-    case "router":
+    case "router": {
+      const whyShort =
+        path === "rag"
+          ? "No tool owned this turn → RAG"
+          : path === "fsm"
+            ? routing?.dialogue_active || routing?.cancel_active
+              ? `Sticky ${route || "fsm"}`
+              : `Tool route · ${route || "fsm"}`
+            : "—";
       return (
         <>
           <p className="bn-rules-hint">
-            After scores (and optional arbiter): pick one route id. Path then
-            maps that route to FSM vs RAG.
+            One decision: <strong>FSM</strong> (tools / sticky) or{" "}
+            <strong>RAG</strong> (retrieve → generate), from detector scores
+            {arbiter?.called ? " + arbiter" : ""}.
           </p>
           <MatchSummaryCard summary={matchSummary} />
           <ul className="bn-fact-list">
             <li>
-              <span>Route</span>
-              <code>{route || "—"}</code>
+              <span>Branch</span>
+              <code>
+                {path === "rag" ? "RAG" : path === "fsm" ? "FSM" : "—"}
+                {route ? ` · ${route}` : ""}
+              </code>
+            </li>
+            <li>
+              <span>Why</span>
+              <code>{whyShort}</code>
             </li>
             {routing?.hours_followup_promoted ? (
               <li>
@@ -1174,34 +1219,18 @@ function NodeDetail({
                 <code>promoted</code>
               </li>
             ) : null}
-            {routing?.dialogue_active ? (
-              <li>
-                <span>Booking chat open</span>
-                <code>sticky</code>
-              </li>
-            ) : null}
-            {routing?.cancel_active ? (
-              <li>
-                <span>Cancel chat open</span>
-                <code>sticky</code>
-              </li>
-            ) : null}
           </ul>
           <StageIO
-            request={{
-              scores: routing?.scores || {},
-              language: trace.language,
-            }}
+            request={{ scores: routing?.scores || {} }}
             payload={{
-              route,
-              sticky: {
-                booking_open: Boolean(routing?.dialogue_active),
-                cancel_open: Boolean(routing?.cancel_active),
-              },
+              branch: path || null,
+              route: route || null,
+              why: whyShort,
             }}
           />
         </>
       );
+    }
 
     case "rules": {
       const scoreRows = Object.entries(routing?.scores || {}).sort(
@@ -1325,45 +1354,6 @@ function NodeDetail({
         </>
       );
     }
-
-    case "path":
-      return (
-        <>
-          <p className="bn-rules-hint">
-            Branch from the route: <strong>FSM</strong> (tools / sticky
-            dialogue) or <strong>RAG</strong> (retrieve → generate). Live feeds
-            are a separate arm when used.
-          </p>
-          <ul className="bn-fact-list">
-            <li>
-              <span>Path</span>
-              <code>{path === "rag" ? "RAG" : path === "fsm" ? "FSM" : "—"}</code>
-            </li>
-            <li>
-              <span>Route</span>
-              <code>{route || "—"}</code>
-            </li>
-            <li>
-              <span>Live arm</span>
-              <code>{liveOn ? "on" : "off"}</code>
-            </li>
-          </ul>
-          <StageIO
-            request={{
-              route,
-              grounding:
-                grounding?.mode === "pure_rag"
-                  ? "rag"
-                  : grounding?.mode || null,
-            }}
-            payload={{
-              path: path || null,
-              live: Boolean(liveOn),
-              why: grounding?.why || null,
-            }}
-          />
-        </>
-      );
 
     case "fsm":
       if (path !== "fsm") {
@@ -1716,6 +1706,48 @@ function NodeDetail({
               <li key={`fuse-how-${i}`}>{line}</li>
             ))}
           </ol>
+          <p className="bn-rules-hint">
+            <strong>Lexical re-rank</strong> (after RRF) — sort key, highest
+            first. Each flag is 0/1 except overlap (token count) and vector
+            score as tie-break:
+          </p>
+          <ul className="bn-fact-list">
+            <li>
+              <span>age</span>
+              <code>
+                Query mentions an age (e.g. 4-year-old) and the chunk path is an
+                age band file whose digits match
+              </code>
+            </li>
+            <li>
+              <span>path / keyword</span>
+              <code>
+                Query contains a known stem (phonics, fees, trial, …) that also
+                appears in the chunk filename or body
+              </code>
+            </li>
+            <li>
+              <span>folder</span>
+              <code>
+                Preferred KB folder for this query type (e.g. fees/, programmes/)
+                matches the chunk’s folder
+              </code>
+            </li>
+            <li>
+              <span>overlap</span>
+              <code>
+                Count of shared content tokens between the query and the chunk
+                text (more = higher)
+              </code>
+            </li>
+            <li>
+              <span>vector</span>
+              <code>
+                Original dense/BM25 score — only breaks ties when the flags above
+                are equal
+              </code>
+            </li>
+          </ul>
           <ul className="bn-fact-list">
             <li>
               <span>RRF k</span>
@@ -2162,17 +2194,10 @@ export default function TurnPipeline({
       },
       {
         id: "router",
-        label: "Hybrid router",
+        label: "Router · FSM|RAG",
         kind: "router",
-        shape: "process",
-        status: hasTrace ? "done" : "idle",
-      },
-      {
-        id: "path",
-        label: "FSM or RAG?",
-        kind: "branch",
         shape: "decision",
-        status: hasTrace && path ? "done" : "idle",
+        status: hasTrace && path ? "done" : hasTrace ? "done" : "idle",
       },
       {
         id: "fsm",
@@ -2371,7 +2396,6 @@ export default function TurnPipeline({
       "memory",
       "rules",
       "router",
-      "path",
       "answer",
     ]);
     if (history?.enabled === false) lit.delete("memory");
@@ -2442,12 +2466,10 @@ export default function TurnPipeline({
     link("rules", "router", "e-rules-router");
     if (arbiter?.called) {
       link("router", "arbiter", "e-router-arb");
-      link("arbiter", "path", "e-arb-path");
-    } else {
-      link("router", "path", "e-router-path");
+      link("arbiter", "router", "e-arb-router");
     }
-    if (path === "fsm") link("path", "fsm", "e-path-fsm");
-    if (path === "rag") link("path", "rag", "e-path-rag");
+    if (path === "fsm") link("router", "fsm", "e-router-fsm");
+    if (path === "rag") link("router", "rag", "e-router-rag");
     if (on("fsm") && on("dst")) link("fsm", "dst", "e-fsm-dst");
     if (on("dst") && on("live")) link("dst", "live", "e-dst-live");
     else if (on("fsm") && on("live")) link("fsm", "live", "e-fsm-live");
@@ -2508,9 +2530,9 @@ export default function TurnPipeline({
     const hy = rag?.hybrid;
     const labels = {
       "e-rules-router": pick ? `→ ${pick}` : "",
-      "e-arb-path": arbiter?.called ? arbiter.action || "keep" : "",
-      "e-path-fsm": path === "fsm" ? "FSM" : "",
-      "e-path-rag": path === "rag" ? "RAG" : "",
+      "e-arb-router": arbiter?.called ? arbiter.action || "keep" : "",
+      "e-router-fsm": path === "fsm" ? "FSM" : "",
+      "e-router-rag": path === "rag" ? "RAG" : "",
       "e-fsm-dst":
         (trace?.booking?.booking_dst || trace?.booking?.arbiter_booking)?.called ||
         trace?.cancel?.cancel_dst?.called
@@ -2821,10 +2843,10 @@ export default function TurnPipeline({
                 viewBox="0 0 10 10"
                 refX="9"
                 refY="5"
-                markerWidth="6"
-                markerHeight="6"
+                markerWidth="10"
+                markerHeight="10"
                 orient="auto-start-reverse"
-                markerUnits="strokeWidth"
+                markerUnits="userSpaceOnUse"
               >
                 <path d="M 0 1.2 L 9 5 L 0 8.8 Z" fill="rgba(18,169,188,0.35)" />
               </marker>
@@ -2833,10 +2855,10 @@ export default function TurnPipeline({
                 viewBox="0 0 10 10"
                 refX="9"
                 refY="5"
-                markerWidth="6"
-                markerHeight="6"
+                markerWidth="10"
+                markerHeight="10"
                 orient="auto-start-reverse"
-                markerUnits="strokeWidth"
+                markerUnits="userSpaceOnUse"
               >
                 <path d="M 0 1.2 L 9 5 L 0 8.8 Z" fill="#0b7f8f" />
               </marker>
