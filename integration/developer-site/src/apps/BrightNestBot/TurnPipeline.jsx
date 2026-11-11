@@ -347,6 +347,7 @@ function RagHit({ hit, index }) {
   const rank = hit.rank ?? index + 1;
   const body = hit.text || hit.snippet || "";
   const score = scoreLabel(hit.score);
+  const why = hit.rerank?.why || null;
   return (
     <li className={`bn-hit ${open ? "is-open" : ""}`}>
       <button
@@ -360,13 +361,14 @@ function RagHit({ hit, index }) {
             <span className="bn-hit-rank">#{rank}</span>{" "}
             {hit.title || hit.canonical || hit.source || `Hit ${rank}`}
           </strong>
-          {score && <code title="retrieval score">{score}</code>}
+          {score && <code title="vector similarity (not sort key)">{score}</code>}
         </div>
         <span className="bn-hit-src">{hit.source}</span>
+        {why ? <p className="bn-hit-snip bn-hit-why">Order: {why}</p> : null}
         {!open && body ? <p className="bn-hit-snip">{body}</p> : null}
         {hit.char_count != null ? (
           <div className="bn-hit-meta">
-            {hit.char_count} chars · score {score ?? "—"}
+            {hit.char_count} chars · vector {score ?? "—"}
           </div>
         ) : null}
         <span className="bn-hit-expand-hint">
@@ -617,6 +619,7 @@ function NodeDetail({
 
     case "memory": {
       const loaded = priorTurns.length;
+      const qr = rag?.query_rewrite || null;
       return (
         <>
           <ul className="bn-fact-list">
@@ -636,11 +639,47 @@ function NodeDetail({
                     : "no"}
               </code>
             </li>
+            {qr ? (
+              <li>
+                <span>Retrieval rewrite</span>
+                <code>
+                  {qr.rewritten
+                    ? "yes"
+                    : qr.needed
+                      ? qr.reason || "needed"
+                      : qr.reason || "not needed"}
+                </code>
+              </li>
+            ) : null}
           </ul>
+          {qr?.rewritten || qr?.needed ? (
+            <p className="bn-rules-hint">
+              Contextual follow-ups (“tell me more about that”) get a cheap LLM
+              rewrite into a standalone retrieval query before Chroma runs.
+              {qr.rewritten ? (
+                <>
+                  {" "}
+                  Used: <code>{qr.query}</code>
+                </>
+              ) : null}
+            </p>
+          ) : null}
           <StageIO
             request={`session ${trace.session_id || "—"}`}
-            payload={priorPreview || "(no prior turns)"}
+            payload={{
+              prior: priorPreview || "(no prior turns)",
+              query_rewrite: qr || null,
+            }}
           />
+          {llmCalls
+            .filter((c) => c.role === "query_rewrite")
+            .map((c, i) => (
+              <LlmCallCard
+                key={`mem-qr-${i}`}
+                call={c}
+                defaultOpen
+              />
+            ))}
         </>
       );
     }
@@ -910,6 +949,7 @@ function NodeDetail({
                   "staff_email",
                   "grounded_compose",
                   "fact_adapt",
+                  "query_rewrite",
                 ].includes(c.role)
             )
             .map((c, i) => (
@@ -933,16 +973,28 @@ function NodeDetail({
       }
       return (
         <>
+          <p className="bn-rules-hint">
+            Retrieve → generate. Chroma is asked for a pool, then we keep up to{" "}
+            <code>top_k</code> after lexical re-rank (see Chroma KB). Generation
+            still sees the parent’s original wording plus chat history.
+          </p>
           <ul className="bn-fact-list">
             <li>
-              <span>Hits</span>
-              <code>{rag?.hit_count ?? hits.length}</code>
+              <span>Hits kept</span>
+              <code>
+                {rag?.hit_count ?? hits.length}/{rag?.top_k ?? "—"}
+              </code>
             </li>
             <li>
-              <span>Top score</span>
+              <span>Rank #1 vector</span>
               <code>
-                {scoreLabel(rag?.top_score ?? hits[0]?.score) ?? "—"}
+                {scoreLabel(rag?.rank1_score ?? rag?.top_score ?? hits[0]?.score) ??
+                  "—"}
               </code>
+            </li>
+            <li>
+              <span>Best vector in set</span>
+              <code>{scoreLabel(rag?.max_score) ?? "—"}</code>
             </li>
             <li>
               <span>Gap</span>
@@ -950,11 +1002,20 @@ function NodeDetail({
             </li>
           </ul>
           <StageIO
-            request={{ query: inbound, language: trace.language }}
+            request={{
+              parent: inbound,
+              retrieval_query: rag?.retrieval_query || inbound,
+              language: trace.language,
+            }}
             payload={{
               hit_count: rag?.hit_count ?? hits.length,
-              top_score: rag?.top_score ?? hits[0]?.score ?? null,
+              top_k: rag?.top_k ?? null,
+              pool_k: rag?.pool_k ?? null,
+              pool_returned: rag?.pool_returned ?? null,
+              rank1_score: rag?.rank1_score ?? rag?.top_score ?? null,
+              max_score: rag?.max_score ?? null,
               gap_reason: rag?.gap_reason || null,
+              query_rewrite: rag?.query_rewrite || null,
             }}
           />
         </>
@@ -1028,27 +1089,59 @@ function NodeDetail({
       }
       return (
         <>
+          <p className="bn-rules-hint">
+            {rag?.keep_rule ||
+              `Ask Chroma for pool_k=${rag?.pool_k ?? "—"}, keep up to top_k=${
+                rag?.top_k ?? "—"
+              }. Fewer than top_k means the language filter / index had fewer matches — not a random subset.`}
+          </p>
+          <p className="bn-rules-hint">
+            {rag?.order_rule ||
+              "Order is lexical then vector score (age → keyword path → folder → token overlap → similarity). Highest score is not always #1."}
+          </p>
           <div className="bn-rag-strip">
             <span>index {rag?.index_size ?? "—"}</span>
-            <span>top_k {rag?.top_k ?? hits.length}</span>
-            <span>hits {rag?.hit_count ?? hits.length}</span>
             <span>
-              top {scoreLabel(rag?.top_score ?? hits[0]?.score) ?? "—"}
+              pool {rag?.pool_returned ?? "—"}/{rag?.pool_k ?? "—"}
             </span>
+            <span>
+              keep {rag?.hit_count ?? hits.length}/{rag?.top_k ?? "—"}
+            </span>
+            <span>
+              #1 {scoreLabel(rag?.rank1_score ?? rag?.top_score ?? hits[0]?.score) ?? "—"}
+            </span>
+            <span>max {scoreLabel(rag?.max_score) ?? "—"}</span>
             <span>{rag?.embedding_mode || "—"}</span>
             {enrichMode ? <span>enrich</span> : null}
           </div>
+          {rag?.retrieval_query &&
+          rag.retrieval_query !== inbound ? (
+            <ul className="bn-fact-list">
+              <li>
+                <span>Parent said</span>
+                <code>{inbound}</code>
+              </li>
+              <li>
+                <span>Retrieved with</span>
+                <code>{rag.retrieval_query}</code>
+              </li>
+            </ul>
+          ) : null}
           <StageIO
             request={{
-              query: inbound,
+              parent: inbound,
+              retrieval_query: rag?.retrieval_query || inbound,
               language: trace.language,
               mode: enrichMode ? "grounded_enrich" : "retrieve",
+              pool_k: rag?.pool_k ?? null,
+              top_k: rag?.top_k ?? null,
             }}
             payload={hits.map((h) => ({
               rank: h.rank,
               source: h.source,
               score: h.score,
               title: h.title,
+              order: h.rerank?.why || null,
             }))}
           />
           <ul className="bn-hits">
@@ -1060,12 +1153,17 @@ function NodeDetail({
       );
 
     case "llm": {
-      const genCalls = llmCalls.filter((c) => c.role !== "intent_arbiter");
+      const genCalls = llmCalls.filter(
+        (c) =>
+          c.role !== "intent_arbiter" &&
+          c.role !== "query_rewrite" &&
+          !String(c.role || "").startsWith("final_check")
+      );
       return (
         <>
           <p className="bn-rules-hint">
-            Main LLM calls via DashScope (Qwen). Arbiter calls live on the Arbiter
-            node.
+            Main LLM calls via DashScope (Qwen). Query rewrite lives on Session
+            memory; arbiter / final-check cards live on their own nodes.
           </p>
           {genCalls.length === 0 ? (
             <Skipped>No LLM call (template / deterministic reply).</Skipped>

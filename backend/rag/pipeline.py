@@ -198,17 +198,26 @@ def _off_topic(question: str, hit: Dict[str, Any] | str) -> bool:
 
 
 _FOLDER_PRIORS = [
-    (re.compile(r"\b(teachers?|tutors?|qualifications?)\b|老師|老师|教师", re.I), "institution"),
-    (re.compile(r"\b(pick[\s-]?up|drop[\s-]?off)\b|接送", re.I), "faq"),
-    (re.compile(r"\b(wait(?:ing)?\s*list|waitlist|class\s+full)\b|候補|候补|滿班", re.I), "faq"),
-    (re.compile(r"\b(sibling|family\s+discount)\b|兄弟姊妹|兄弟姐妹", re.I), "faq"),
-    (re.compile(r"\b(make[\s-]?up|absence|reschedul)\b|補課|补课", re.I), "policies"),
-    (re.compile(r"\b(address|location|mtr|directions?)\b|地址|港鐵|喺邊", re.I), "institution"),
-    (re.compile(r"\b(allerg|peanut|nut)\b|過敏|过敏", re.I), "faq"),
-    (re.compile(r"\b(fee|tuition|price|cost|discount)\b|學費", re.I), "faq"),
-    (re.compile(r"\b(bilingual|classroom\s+language)\b|雙語|双语", re.I), "faq"),
-    (re.compile(r"\b(christmas|cny|holiday\s+hours|term\s+break)\b|聖誕|平安夜|農曆", re.I), "faq"),
+    (re.compile(r"\b(teachers?|tutors?|qualifications?)\b|老師|老师|教师", re.I), "centre"),
+    (re.compile(r"\b(pick[\s-]?up|drop[\s-]?off)\b|接送", re.I), "attendance"),
+    (re.compile(r"\b(wait(?:ing)?\s*list|waitlist|class\s+full)\b|候補|候补|滿班", re.I), "admissions"),
+    (re.compile(r"\b(sibling|family\s+discount)\b|兄弟姊妹|兄弟姐妹", re.I), "fees"),
+    (re.compile(r"\b(make[\s-]?up|absence|reschedul)\b|補課|补课", re.I), "attendance"),
+    (re.compile(r"\b(address|location|mtr|directions?)\b|地址|港鐵|喺邊", re.I), "centre"),
+    (re.compile(r"\b(allerg|peanut|nut)\b|過敏|过敏", re.I), "policies"),
+    (re.compile(r"\b(fee|tuition|price|cost|discount)\b|學費", re.I), "fees"),
+    (re.compile(r"\b(bilingual|classroom\s+language)\b|雙語|双语", re.I), "classroom"),
+    (re.compile(r"\b(christmas|cny|holiday\s+hours|term\s+break)\b|聖誕|平安夜|農曆", re.I), "centre"),
     (re.compile(r"\b(pets?|dogs?|cats?)\b|寵物|宠物", re.I), "policies"),
+    (re.compile(r"\b(trial|assessment|enrol|enroll|placement)\b|試堂|評估|报名|報名", re.I), "admissions"),
+    (
+        re.compile(
+            r"\b(phonics|mandarin|pinyin|playgroup|writing|math|clevercal|alludio|"
+            r"smart\s*spell|sound\s*explorers?)\b|拼音|拼音班|語音|數學|游戏",
+            re.I,
+        ),
+        "programmes",
+    ),
     (
         re.compile(
             r"\b\d{1,2}\s*(?:-\s*\d{1,2}\s*)?(?:year|yr)s?\s*old|"
@@ -216,7 +225,7 @@ _FOLDER_PRIORS = [
             r"\b(?:K[1-3]|PN|P[1-6])\b|歲|岁",
             re.I,
         ),
-        "faq",
+        "age_bands",
     ),
 ]
 _AGE_QUERY_RE = re.compile(
@@ -288,7 +297,12 @@ def _query_age_digits(question: str) -> set[str]:
 
 
 def _lexical_rerank(question: str, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Prefer path/alias keyword hits, folder prior + token overlap, then score."""
+    """
+    Prefer path/alias keyword hits, folder prior + token overlap, then vector score.
+
+    Order is NOT pure similarity: age/path/folder/overlap beat score when they fire.
+    Each hit gets a `rerank` annotation for the inspector.
+    """
     q = _content_tokens(question)
     if not hits:
         return hits
@@ -296,15 +310,16 @@ def _lexical_rerank(question: str, hits: List[Dict[str, Any]]) -> List[Dict[str,
     q_low = (question or "").lower()
     age_digits = _query_age_digits(question)
 
-    def key(h: Dict[str, Any]) -> tuple:
+    annotated: List[Dict[str, Any]] = []
+    for h in hits:
         meta = h.get("metadata") or {}
         source = str(meta.get("source") or "").replace("\\", "/").lower()
         folder = str(meta.get("folder") or "")
         blob = _hit_blob(h)
         blob_low = blob.lower()
         overlap = len(q & _content_tokens(blob)) if q else 0
-        # Strong boost when filename/aliases echo query keywords
         path_hit = 0
+        path_stem = ""
         for stem in (
             "sibling",
             "waiting",
@@ -325,11 +340,10 @@ def _lexical_rerank(question: str, hits: List[Dict[str, Any]]) -> List[Dict[str,
             if stem in q_low.replace(" ", "") or stem in q_low:
                 if stem in source or stem in blob_low:
                     path_hit = 1
+                    path_stem = stem
                     break
         age_hit = 0
-        # Match age digits against the filename only — body text often mentions
-        # broader ranges like "2–5 yrs" and would falsely promote age_3-4 for "5".
-        if age_digits and ("/age/" in source or "age_" in source):
+        if age_digits and ("/age/" in source or "age_" in source or "/age_bands/" in source):
             src_digits = set(re.findall(r"\d{1,2}", source))
             if age_digits & src_digits:
                 age_hit = 1
@@ -340,9 +354,38 @@ def _lexical_rerank(question: str, hits: List[Dict[str, Any]]) -> List[Dict[str,
             score = float(h.get("score") or 0)
         except (TypeError, ValueError):
             score = 0.0
-        return (age_hit, path_hit, folder_hit, overlap, score)
+        why_bits = []
+        if age_hit:
+            why_bits.append("age filename match")
+        if path_hit:
+            why_bits.append(f"keyword “{path_stem}”")
+        if folder_hit:
+            why_bits.append(f"folder “{prefer}”")
+        if overlap:
+            why_bits.append(f"{overlap} token overlap")
+        why_bits.append(f"vector {score:.3f}")
+        row = dict(h)
+        row["rerank"] = {
+            "age_hit": age_hit,
+            "path_hit": path_hit,
+            "folder_hit": folder_hit,
+            "overlap": overlap,
+            "score": score,
+            "why": " · ".join(why_bits),
+        }
+        annotated.append(row)
 
-    return sorted(hits, key=key, reverse=True)
+    def key(h: Dict[str, Any]) -> tuple:
+        r = h.get("rerank") or {}
+        return (
+            int(r.get("age_hit") or 0),
+            int(r.get("path_hit") or 0),
+            int(r.get("folder_hit") or 0),
+            int(r.get("overlap") or 0),
+            float(r.get("score") or 0),
+        )
+
+    return sorted(annotated, key=key, reverse=True)
 
 
 def _age_path_digits(stem: str) -> set[str]:
@@ -359,16 +402,19 @@ def _age_path_digits(stem: str) -> set[str]:
 
 def _age_faq_overlay(question: str, lang: str) -> List[Dict[str, Any]]:
     """
-    Local-hash embeddings often miss the right age band FAQ entirely.
-    When the parent names an age, inject matching faq/age/*.md as grounded hits.
+    Local-hash embeddings often miss the right age band doc entirely.
+    When the parent names an age, inject matching age_bands/*.md as grounded hits.
     """
     digits = _query_age_digits(question)
     if not digits:
         return []
     lang_key = (lang or "en").split("-")[0]
     candidates = [
+        SETTINGS.content_dir / lang / "age_bands",
+        SETTINGS.content_dir / lang_key / "age_bands",
+        SETTINGS.content_dir / "en" / "age_bands",
+        # legacy paths (pre-reorg)
         SETTINGS.content_dir / lang / "faq" / "age",
-        SETTINGS.content_dir / lang_key / "faq" / "age",
         SETTINGS.content_dir / "en" / "faq" / "age",
     ]
     age_dir = next((p for p in candidates if p.exists()), None)
@@ -399,7 +445,7 @@ def _age_faq_overlay(question: str, lang: str) -> List[Dict[str, Any]]:
                     "source": rel,
                     "title": title or meta.get("canonical") or path.stem,
                     "canonical": meta.get("canonical"),
-                    "folder": meta.get("folder") or "faq",
+                    "folder": meta.get("folder") or "age_bands",
                     "aliases": meta.get("aliases") or "",
                     "language": meta.get("language") or lang,
                 },
@@ -425,11 +471,40 @@ def _merge_hits(
     return merged
 
 
+def _citation_from_hit(rank: int, h: Dict[str, Any]) -> Dict[str, Any]:
+    meta = h.get("metadata") or {}
+    full_text = h.get("text") or ""
+    return {
+        "rank": rank,
+        "source": meta.get("source"),
+        "title": meta.get("title"),
+        "canonical": meta.get("canonical"),
+        "score": h.get("score"),
+        "snippet": full_text[:280],
+        "text": full_text,
+        "char_count": len(full_text),
+        "rerank": h.get("rerank"),
+    }
+
+
+def _score_stats(hits: List[Dict[str, Any]]) -> Dict[str, Optional[float]]:
+    scores: List[float] = []
+    for h in hits:
+        try:
+            scores.append(float(h.get("score")))
+        except (TypeError, ValueError):
+            continue
+    if not scores:
+        return {"rank1_score": None, "max_score": None}
+    return {"rank1_score": scores[0], "max_score": max(scores)}
+
+
 def retrieve_for_enrich(
     message: str,
     *,
     language: Optional[str] = None,
     top_k: Optional[int] = None,
+    history_context: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Lightweight retrieve for grounded-compose (structured fact + KB excerpts).
@@ -437,35 +512,19 @@ def retrieve_for_enrich(
     """
     lang = language or "en"
     k = int(top_k or SETTINGS.grounding_enrich_top_k or SETTINGS.rag_top_k)
+    rewrite = _maybe_rewrite_query(message, history_context, lang=lang)
+    search_q = rewrite.get("query") or message
     lang_fallback = False
-    hits = retrieve(message, lang=lang, top_k=max(k, 8))
+    pool_k = max(k, 8)
+    hits = retrieve(search_q, lang=lang, top_k=pool_k)
     if not hits and lang:
-        hits = retrieve(message, lang=None, top_k=max(k, 8))
+        hits = retrieve(search_q, lang=None, top_k=pool_k)
         lang_fallback = True
-    hits = _merge_hits(hits, _age_faq_overlay(message, lang))
-    hits = _lexical_rerank(message, hits)[:k]
-    citations: List[Dict[str, Any]] = []
-    for rank, h in enumerate(hits, start=1):
-        meta = h.get("metadata") or {}
-        full_text = h.get("text") or ""
-        citations.append(
-            {
-                "rank": rank,
-                "source": meta.get("source"),
-                "title": meta.get("title"),
-                "canonical": meta.get("canonical"),
-                "score": h.get("score"),
-                "snippet": full_text[:280],
-                "text": full_text,
-                "char_count": len(full_text),
-            }
-        )
-    top_score = None
-    if hits:
-        try:
-            top_score = float(hits[0].get("score"))
-        except (TypeError, ValueError):
-            top_score = None
+    pool_before = len(hits)
+    hits = _merge_hits(hits, _age_faq_overlay(search_q, lang))
+    hits = _lexical_rerank(search_q, hits)[:k]
+    citations = [_citation_from_hit(rank, h) for rank, h in enumerate(hits, start=1)]
+    stats = _score_stats(hits)
     return {
         "hits": hits,
         "citations": citations,
@@ -476,13 +535,46 @@ def retrieve_for_enrich(
             "language_fallback": lang_fallback,
             "index_size": get_store().count,
             "top_k": k,
+            "pool_k": pool_k,
+            "pool_returned": pool_before,
+            "order_rule": (
+                "lexical then vector score — age/path/folder/overlap beat raw similarity"
+            ),
+            "retrieval_query": search_q,
+            "query_rewrite": rewrite,
             "embedding_mode": "dashscope" if SETTINGS.has_dashscope else "local_hash",
             "hits": citations,
-            "top_score": top_score,
+            "top_score": stats["rank1_score"],
+            "rank1_score": stats["rank1_score"],
+            "max_score": stats["max_score"],
             "knowledge_gap": False,
             "gap_reason": None,
         },
     }
+
+
+def _maybe_rewrite_query(
+    message: str,
+    history_context: Optional[str],
+    *,
+    lang: str,
+) -> Dict[str, Any]:
+    try:
+        from services import demo_polish
+
+        return demo_polish.rewrite_retrieval_query(
+            message, history_context, lang=lang
+        )
+    except Exception as e:
+        print(f"[RAG] query rewrite failed: {e}", flush=True)
+        return {
+            "rewritten": False,
+            "called": False,
+            "needed": False,
+            "reason": "error",
+            "original": message,
+            "query": message,
+        }
 
 
 def chat_with_rag(
@@ -494,19 +586,29 @@ def chat_with_rag(
 ) -> Dict[str, Any]:
     lang = language or "en"
     lang_fallback = False
-    age_ask = bool(_query_age_digits(message))
-    # Age/course questions need a wider vector pool — correct band often ranks ~15–25
-    pool_k = max(SETTINGS.rag_top_k, 20) if age_ask else SETTINGS.rag_top_k
-    hits = retrieve(message, lang=lang, top_k=pool_k)
+    rewrite = _maybe_rewrite_query(message, history_context, lang=lang)
+    search_q = rewrite.get("query") or message
+    age_ask = bool(_query_age_digits(search_q) or _query_age_digits(message))
+    # Ask Chroma for a pool, then keep top_k after lexical re-rank.
+    # Age asks need a wider pool — the right band often sits ~15–25 by raw vector.
+    keep_k = SETTINGS.rag_top_k
+    pool_k = max(keep_k, 20) if age_ask else max(keep_k, 8)
+    hits = retrieve(search_q, lang=lang, top_k=pool_k)
     # If language filter returned nothing, retry without filter
     if not hits and lang:
-        hits = retrieve(message, lang=None, top_k=pool_k)
+        hits = retrieve(search_q, lang=None, top_k=pool_k)
         lang_fallback = True
-    hits = _merge_hits(hits, _age_faq_overlay(message, lang))
-    hits = _lexical_rerank(message, hits)[: SETTINGS.rag_top_k]
+    pool_returned = len(hits)
+    hits = _merge_hits(hits, _age_faq_overlay(search_q, lang))
+    hits = _lexical_rerank(search_q, hits)[:keep_k]
 
     top_hit = hits[0] if hits else None
-    off_topic = bool(hits and top_hit is not None and _off_topic(message, top_hit))
+    # Off-topic check uses the parent's words + rewritten query cues
+    off_topic = bool(
+        hits
+        and top_hit is not None
+        and (_off_topic(message, top_hit) and _off_topic(search_q, top_hit))
+    )
 
     gen = generate_answer_meta(
         message,
@@ -515,30 +617,10 @@ def chat_with_rag(
         history_context=history_context,
     )
     answer = gen.get("answer") or ""
-    citations = []
-    for rank, h in enumerate(hits, start=1):
-        meta = h.get("metadata") or {}
-        full_text = h.get("text") or ""
-        citations.append(
-            {
-                "rank": rank,
-                "source": meta.get("source"),
-                "title": meta.get("title"),
-                "canonical": meta.get("canonical"),
-                "score": h.get("score"),
-                "snippet": full_text[:280],
-                # Full chunk for the demo inspector (expand-in-place).
-                "text": full_text,
-                "char_count": len(full_text),
-            }
-        )
-
-    top_score = None
-    if hits:
-        try:
-            top_score = float(hits[0].get("score"))
-        except (TypeError, ValueError):
-            top_score = None
+    citations = [_citation_from_hit(rank, h) for rank, h in enumerate(hits, start=1)]
+    stats = _score_stats(hits)
+    # Gap / grounding still keys off rank-1 after lexical order (what we feed the LLM)
+    top_score = stats["rank1_score"]
 
     gap_reason = None
     provider = gen.get("provider") or ""
@@ -597,11 +679,26 @@ def chat_with_rag(
         "language": lang,
         "language_fallback": lang_fallback,
         "index_size": get_store().count,
-        "top_k": SETTINGS.rag_top_k,
+        "top_k": keep_k,
+        "pool_k": pool_k,
+        "pool_returned": pool_returned,
+        "keep_rule": (
+            f"Ask Chroma for pool_k={pool_k}; keep up to top_k={keep_k} after "
+            "lexical re-rank. Fewer hits ⇒ language filter / index had fewer matches "
+            "(not a random subset)."
+        ),
+        "order_rule": (
+            "Not sorted by similarity alone. Order: age filename match → "
+            "path/keyword → preferred folder → token overlap → vector score."
+        ),
+        "retrieval_query": search_q,
+        "query_rewrite": rewrite,
         "history_chars": len(history_context or ""),
         "embedding_mode": "dashscope" if SETTINGS.has_dashscope else "local_hash",
         "hits": citations,
         "top_score": top_score,
+        "rank1_score": stats["rank1_score"],
+        "max_score": stats["max_score"],
         "knowledge_gap": bool(gap_reason),
         "gap_reason": gap_reason,
         "admin_gap_note": gen.get("admin_gap"),

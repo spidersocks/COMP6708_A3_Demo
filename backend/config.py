@@ -91,6 +91,12 @@ class Settings:
         "true",
         "yes",
     )
+    # Standalone retrieval query from chat context ("tell me more about that")
+    arbiter_query_rewrite: bool = os.environ.get("ARBITER_QUERY_REWRITE", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     # Final cheap-LLM gate before book / cancel / escalate / refuse commits
     arbiter_final_check: bool = os.environ.get("ARBITER_FINAL_CHECK", "true").lower() in (
         "1",

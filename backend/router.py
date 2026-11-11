@@ -464,6 +464,7 @@ def chat(req: ChatRequest) -> ChatResponse:
                 message,
                 language=lang,
                 top_k=SETTINGS.grounding_enrich_top_k,
+                history_context=history_context if use_history else None,
             )
             rag_hits = enrich_pack.get("hits") or []
             rag_cites = enrich_pack.get("citations") or []

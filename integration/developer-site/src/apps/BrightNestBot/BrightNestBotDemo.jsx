@@ -73,6 +73,25 @@ function formatTime(d = new Date()) {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+/** Sheet / Mail timestamps from API ISO strings. */
+function sheetWhen(iso) {
+  if (!iso) return "—";
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return String(iso);
+    return d.toLocaleString([], {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return String(iso);
+  }
+}
+
+const mailWhen = sheetWhen;
+
 function shortSessionLabel() {
   const id = localStorage.getItem("bn_bot_session_id");
   if (!id) return "web:new";

@@ -1,10 +1,24 @@
-"""Demo-only cheap LLM polishers: gap refuses, cancel picks, booking parses."""
+"""Demo-only cheap LLM polishers: gap refuses, cancel picks, booking parses, query rewrite."""
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from config import SETTINGS
 from services import cheap_llm
+
+# Deictic / underspecified follow-ups that need chat context to retrieve well.
+_CONTEXTUAL_QUERY_RE = re.compile(
+    r"(?i)\b("
+    r"that|this|it|those|these|them|"
+    r"more\s+about|tell\s+me\s+more|can\s+you\s+expand|"
+    r"what\s+about|how\s+about|and\s+the|the\s+other|"
+    r"same\s+(one|thing)|as\s+well|too\b|also\b|"
+    r"you\s+(said|mentioned|told)|earlier|above|"
+    r"the\s+(first|second|third|last)\s+one|"
+    r"那個|這個|那個呢|呢個|多啲|詳細|再說|上面|剛才"
+    r")\b"
+)
 
 
 def polish_gap_reply(
@@ -175,3 +189,88 @@ def parse_booking_hints(message: str) -> Dict[str, Any]:
         "confidence": conf,
         "model": empty["model"],
     }
+
+
+def needs_retrieval_rewrite(message: str, history_context: Optional[str]) -> bool:
+    """True when the ask likely depends on prior turns to be searchable."""
+    if not (history_context or "").strip():
+        return False
+    msg = (message or "").strip()
+    if not msg:
+        return False
+    if _CONTEXTUAL_QUERY_RE.search(msg):
+        return True
+    # Very short follow-ups with history ("fees?", "and math?")
+    tokens = re.findall(r"[A-Za-z\u4e00-\u9fff]+", msg)
+    return len(tokens) <= 6
+
+
+def rewrite_retrieval_query(
+    message: str,
+    history_context: Optional[str],
+    *,
+    lang: str = "en",
+) -> Dict[str, Any]:
+    """
+    Cheap rewrite: turn a context-dependent parent ask into a standalone
+    retrieval query. Fail-open → original message.
+    """
+    original = (message or "").strip()
+    out: Dict[str, Any] = {
+        "rewritten": False,
+        "called": False,
+        "needed": False,
+        "reason": "skipped",
+        "original": original,
+        "query": original,
+        "model": cheap_llm.arbiter_model() if cheap_llm.enabled() else None,
+    }
+    if not SETTINGS.arbiter_query_rewrite:
+        out["reason"] = "disabled"
+        return out
+    if not needs_retrieval_rewrite(original, history_context):
+        out["reason"] = "standalone"
+        return out
+    out["needed"] = True
+    if not cheap_llm.enabled():
+        out["reason"] = "no_llm"
+        return out
+    hist = (history_context or "").strip()
+    if len(hist) > 1600:
+        hist = hist[-1600:]
+    out["called"] = True
+    prompt = (
+        "Rewrite the parent's latest message into ONE standalone search query "
+        "for a centre knowledge base. Resolve pronouns like that/this/it using "
+        "the chat. Keep the same language as the parent. Output ONLY the query "
+        "text — no quotes, no preamble.\n"
+        f"Lang: {lang}\n"
+        f"Chat:\n{hist}\n\n"
+        f"Latest: {original}\n"
+        "Standalone query:"
+    )
+    text = cheap_llm.complete_text(
+        prompt,
+        system="Output a single standalone retrieval query only.",
+        max_tokens=80,
+        temperature=0.1,
+        role="query_rewrite",
+    )
+    cleaned = (text or "").strip().strip('"').strip("'")
+    if not cleaned or len(cleaned) < 4:
+        out["reason"] = "empty"
+        return out
+    # Guard: model must not dump the whole chat back
+    if len(cleaned) > 280:
+        cleaned = cleaned[:280].rsplit(" ", 1)[0] or cleaned[:280]
+    if cleaned.lower() == original.lower():
+        out.update({"reason": "unchanged", "query": original})
+        return out
+    out.update(
+        {
+            "rewritten": True,
+            "reason": "ok",
+            "query": cleaned,
+        }
+    )
+    return out
