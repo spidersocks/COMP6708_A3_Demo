@@ -1,9 +1,9 @@
-"""Cheap LLM final check before irreversible / high-stakes commits.
+"""Cheap LLM final check before high-stakes commits.
 
-Detectors and sticky FSMs still own the dialogue. Before we write a booking
-follow-up, cancel a class, open the staff inbox, or hard-refuse, a short
-DashScope call may PROCEED, CLARIFY, or ABORT. Fail-open: empty/error → proceed
-(safety hand-offs never wait on the model).
+Sticky book/cancel FSMs commit on clear regex yes without this module.
+Escalate (non-safety) and refuse may still ask a short DashScope call to
+PROCEED, CLARIFY, or ABORT. Fail-open: empty/error → proceed. Safety hand-offs
+skip the model entirely (force_proceed).
 """
 from __future__ import annotations
 
@@ -13,18 +13,6 @@ from config import SETTINGS
 from services import cheap_llm
 
 _KINDS = {
-    "book": (
-        "Commit: queue a diagnostic assessment / provisional book for the named child.",
-        "PROCEED if the parent clearly affirmed this booking step. "
-        "CLARIFY if the reply is hedged, about a different child/course, or not a yes. "
-        "ABORT if they are declining, changing topic, or asking something else.",
-    ),
-    "cancel": (
-        "Commit: cancel the named class occurrence and log it for admin.",
-        "PROCEED if they clearly want this cancellation. "
-        "CLARIFY if ambiguous (wrong class, maybe, different day). "
-        "ABORT if they want to keep the class or are declining.",
-    ),
     "escalate": (
         "Commit: open a staff inbox item (and draft email) for human follow-up.",
         "PROCEED if a human hand-off is appropriate (safety, anger, refund fight, ask-for-staff). "
@@ -47,13 +35,30 @@ def enabled() -> bool:
     )
 
 
+def affirmative_proceed(
+    *,
+    kind: str,
+    proposed_summary: str = "",
+    reason: str = "regex_affirmative",
+) -> Dict[str, Any]:
+    """Trace helper when the sticky FSM already matched a clear yes / confirm."""
+    return {
+        "kind": (kind or "").strip().lower(),
+        "action": "proceed",
+        "reason": reason,
+        "clarify_prompt": None,
+        "called": False,
+        "model": None,
+        "proposed_summary": (proposed_summary or "")[:240],
+    }
+
+
 def review_commit(
     *,
     kind: str,
     message: str,
     proposed_summary: str,
     context: Optional[Dict[str, Any]] = None,
-    fail_open: bool = True,
 ) -> Dict[str, Any]:
     """
     Returns action ∈ {proceed, clarify, abort}, plus reason / clarify_prompt / called.
@@ -71,13 +76,24 @@ def review_commit(
     if kind_key not in _KINDS:
         out["reason"] = f"unknown_kind:{kind_key}"
         return out
+
+    # Safety escalations must open the inbox — skip LLM even when the gate is off.
+    force_proceed = bool((context or {}).get("force_proceed"))
+    if force_proceed:
+        out.update(
+            {
+                "action": "proceed",
+                "reason": "force_proceed",
+                "called": False,
+                "clarify_prompt": None,
+            }
+        )
+        return out
+
     if not enabled():
         out["reason"] = "disabled"
         return out
 
-    # Safety escalations: still call the model for the inspector, but never block
-    # the inbox on a slow/hedged verdict — coerce clarify/abort → proceed.
-    force_proceed = bool((context or {}).get("force_proceed"))
     blurb, guidance = _KINDS[kind_key]
     ctx_bits = []
     for k, v in (context or {}).items():
@@ -110,10 +126,8 @@ def review_commit(
             role=f"final_check:{kind_key}",
         )
         if not parsed:
-            out["reason"] = "llm_empty_fail_open" if fail_open else "llm_empty"
-            out["action"] = "proceed" if fail_open else "clarify"
-            if out["action"] == "clarify":
-                out["clarify_prompt"] = _default_clarify(kind_key, proposed_summary)
+            out["reason"] = "llm_empty_fail_open"
+            out["action"] = "proceed"
             return out
 
         out["raw"] = str(parsed)[:400]
@@ -122,24 +136,11 @@ def review_commit(
         clarify = str(parsed.get("clarify_prompt") or "").strip()
         if action not in {"proceed", "clarify", "abort"}:
             out["reason"] = f"invalid_action:{action}"
-            out["action"] = "proceed" if fail_open else "clarify"
-            if out["action"] == "clarify":
-                out["clarify_prompt"] = _default_clarify(kind_key, proposed_summary)
-            return out
-
-        if force_proceed and action != "proceed":
-            out.update(
-                {
-                    "action": "proceed",
-                    "reason": f"force_proceed_overrode:{action}:{reason or 'n/a'}",
-                    "clarify_prompt": None,
-                    "overrode": action,
-                }
-            )
+            out["action"] = "proceed"
             return out
 
         if action == "clarify" and not clarify:
-            clarify = _default_clarify(kind_key, proposed_summary)
+            clarify = _default_clarify(kind_key)
         out.update(
             {
                 "action": action,
@@ -150,24 +151,12 @@ def review_commit(
         return out
     except Exception as e:
         out["reason"] = f"error:{type(e).__name__}"
-        out["action"] = "proceed" if fail_open else "clarify"
-        if out["action"] == "clarify":
-            out["clarify_prompt"] = _default_clarify(kind_key, proposed_summary)
+        out["action"] = "proceed"
         print(f"[FINAL_CHECK] failed: {e}", flush=True)
         return out
 
 
-def _default_clarify(kind: str, summary: str) -> str:
-    if kind == "book":
-        return (
-            "Just to be sure — should I go ahead and ask the team to arrange that "
-            "assessment / booking? Reply **yes** to proceed, or tell me what to change."
-        )
-    if kind == "cancel":
-        return (
-            "Before I cancel — is this the class you meant?\n"
-            f"{summary}\n\nReply **yes** to cancel, or **no** to keep it booked."
-        )
+def _default_clarify(kind: str) -> str:
     if kind == "escalate":
         return (
             "I can put you through to our team — is that what you'd like, "

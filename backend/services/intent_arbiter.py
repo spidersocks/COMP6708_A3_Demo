@@ -1,7 +1,7 @@
 """Cheap DashScope second-look on ambiguous intent picks (demo-oriented).
 
-Hard detectors propose a route; only close races / conflicts ask a small LLM
-to KEEP or send to RAG. Clear detector wins skip this module entirely.
+Hard detectors propose a route; only close races ask a small LLM to KEEP or
+send to RAG. Clear detector wins skip this module entirely.
 """
 from __future__ import annotations
 
@@ -17,16 +17,13 @@ _REVIEWABLE: Set[str] = {
     "booking_tool",
     "booking_dialogue",
     "cancel_dialogue",
+    "off_domain",
 }
 
 # Never second-guess these mid-flight / safety paths.
 _SKIP: Set[str] = {
     "staff_escalation",
     "rag",
-}
-# Soft short-circuits: arbiter may only KEEP or send to RAG (no random reroute).
-_RAG_OR_KEEP: Set[str] = {
-    "off_domain",
 }
 
 _ROUTE_BLURBS: Dict[str, str] = {
@@ -40,6 +37,7 @@ _ROUTE_BLURBS: Dict[str, str] = {
     "off_domain": "Refuse off-topic asks — bad on false keyword hits.",
 }
 
+
 def should_review(
     route: str,
     *,
@@ -49,7 +47,7 @@ def should_review(
         return False
     if route in _SKIP:
         return False
-    if route not in _REVIEWABLE and route not in _RAG_OR_KEEP:
+    if route not in _REVIEWABLE:
         return False
     dbg = debug or {}
     # Sticky dialogues already in flight — don't yank the parent out
@@ -78,8 +76,7 @@ def review_intent(
     history_preview: str = "",
 ) -> Dict[str, Any]:
     """
-    Returns {action, route, reason, raw, latency_ms?} where action is
-    keep | rag | reroute.
+    Returns {action, route, reason, raw, latency_ms?} where action is keep | rag.
     """
     out: Dict[str, Any] = {
         "action": "keep",
@@ -93,22 +90,17 @@ def review_intent(
 
     # Demo-safe: referee may only KEEP the proposed route or send to RAG
     # (never jump to an unrelated tool like cancel/booking).
-    soft_only = proposed_route in _RAG_OR_KEEP
     allowed = sorted({proposed_route, "rag"})
     out["called"] = True
     out["model"] = cheap_llm.arbiter_model()
     score_block = "\n".join(_top_scores(scores)) or f"- {proposed_route}"
     hist = (history_preview or "").strip()
     hist_block = f"\nRecent chat:\n{hist[-500:]}\n" if hist else ""
-    rule_hints = []
     dbg = debug or {}
-    if dbg.get("conflicts"):
-        rule_hints.append(f"conflicts={dbg.get('conflicts')}")
-    hints = ("; ".join(rule_hints)) if rule_hints else "detector scores"
-    soft_note = (
-        "Only KEEP or RAG — never invent other routes.\n"
-        if soft_only
-        else ""
+    hints = (
+        f"conflicts={dbg.get('conflicts')}"
+        if dbg.get("conflicts")
+        else "detector scores"
     )
 
     prompt = (
@@ -117,7 +109,6 @@ def review_intent(
         "KEEP if the tool can answer; RAG if the keyword match is incidental "
         "or the ask needs KB narrative.\n"
         "Do NOT invent other routes — only keep the proposed route or send to rag.\n"
-        f"{soft_note}"
         "Reply with ONE JSON object only, no markdown:\n"
         '{"action":"keep"|"rag","route":"<route_id>","reason":"<short>"}\n\n'
         f"Proposed route: {proposed_route} — {_ROUTE_BLURBS.get(proposed_route, '')}\n"
@@ -140,17 +131,12 @@ def review_intent(
             return out
         out["raw"] = str(parsed)
         action = str(parsed.get("action") or "keep").strip().lower()
-        route = str(parsed.get("route") or proposed_route).strip()
         reason = str(parsed.get("reason") or "").strip()[:160]
         if action == "keep":
             out.update({"action": "keep", "route": proposed_route, "reason": reason or "keep"})
             return out
-        if action == "rag" or (action == "reroute" and route == "rag"):
+        if action == "rag":
             out.update({"action": "rag", "route": "rag", "reason": reason or "send_to_rag"})
-            return out
-        # Treat legacy "reroute" to the same proposed route as keep
-        if action == "reroute" and route == proposed_route:
-            out.update({"action": "keep", "route": proposed_route, "reason": reason or "keep"})
             return out
         out["reason"] = f"invalid_action:{action}"
         return out

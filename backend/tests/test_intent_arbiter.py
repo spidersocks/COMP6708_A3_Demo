@@ -28,7 +28,7 @@ def test_should_review_skips_active_cancel(monkeypatch):
     assert ia.should_review("teachers", debug={}) is False  # fact cards removed
 
 
-def test_review_reroutes_to_rag(monkeypatch):
+def test_review_sends_to_rag(monkeypatch):
     monkeypatch.setattr(ia.SETTINGS, "intent_arbiter_enabled", True)
     monkeypatch.setattr(ia.SETTINGS, "dashscope_api_key", "x")
     monkeypatch.setattr(ia.SETTINGS, "intent_arbiter_timeout_s", 2.0)

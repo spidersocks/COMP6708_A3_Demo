@@ -162,11 +162,9 @@ def _lang_bucket(lang: Optional[str]) -> str:
 def parent_reply(
     *,
     category: str,
-    topic_hint: str = "",
     lang: Optional[str] = None,
 ) -> str:
     """Parent-safe copy — never mentions internal sheets; never pastes raw rant."""
-    del topic_hint  # kept for call-site compat; staff summary uses raw message separately
     bucket = _lang_bucket(lang)
     table = _TEMPLATES.get(bucket) or _TEMPLATES["en"]
     key = category if category in table else "ask_human"

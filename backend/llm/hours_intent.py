@@ -13,6 +13,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from llm.opening_hours import _HOLIDAY_KEYWORDS
+from services import centre_facts
 
 _EN_STRONG = [
     r"\bopen(?:ing)?\b",
@@ -44,11 +45,6 @@ _ZH_CN_STRONG = [
 ]
 _ZH_CN_WEAK = [
     r"今天|明天|后天|下周|星期[一二三四五六日天]|周[一二三四五六日天]",
-]
-
-_WEATHER = [
-    r"typhoon|rainstorm|t[1389]|t10|\bt8\b|black rain|amber|red rain",
-    r"颱風|台风|風球|风球|黑雨|紅雨|红雨|黃雨|黄雨|八號|八号|三號|三号",
 ]
 
 # Booking / availability — never treat as opening-hours.
@@ -123,30 +119,33 @@ def detect_opening_hours_intent(message: str, lang: str = "en") -> Tuple[bool, D
 
     strong_score, strong_hits = _score(m, strong)
     weak_score, weak_hits = _score(m, weak)
-    weather_score, weather_hits = _score(m, _WEATHER)
     hol_hits = _holiday_hits(m)
+    weather_policy = centre_facts.is_severe_weather_intent(m)
 
-    # Weather/typhoon policy is NOT opening-hours — centre_facts / intent_router
-    # owns severe-weather answers. Do not set hours intent on weather alone.
+    # Weather/typhoon policy is NOT opening-hours — centre_facts owns it.
     is_intent = (
         strong_score > 0
         or bool(hol_hits)
-        or (weak_score > 0 and strong_score > 0)
-        or (weak_score > 0 and bool(re.search(r"\b(open|closed|hours)\b|開|开|休息|營業|营业", m, re.I)))
+        or (
+            weak_score > 0
+            and bool(
+                re.search(r"\b(open|closed|hours)\b|開|开|休息|營業|营业", m, re.I)
+            )
+        )
     )
 
     debug: Dict[str, Any] = {
         "is_intent": is_intent,
         "strong_hits": strong_hits,
         "weak_hits": weak_hits,
-        "weather_hits": weather_hits,
+        "weather_hits": ["severe_weather"] if weather_policy else [],
         "holiday_hits": hol_hits,
         "overridden_by_avail": False,
         "overridden_by_fees": False,
         "overridden_by_weather_policy": False,
     }
 
-    if weather_score > 0:
+    if weather_policy:
         # "Are you open during T8?" → severe weather policy, not Mon–Sat hours dump
         is_intent = False
         debug["is_intent"] = False
@@ -164,7 +163,7 @@ def detect_opening_hours_intent(message: str, lang: str = "en") -> Tuple[bool, D
 
 
 def is_general_hours_query(message: str, lang: str = "en") -> bool:
-    m = (message or "").lower()
+    _ = lang
     specific = [
         r"\b(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
         r"\b(today|tomorrow|yesterday|next week|this week)\b",

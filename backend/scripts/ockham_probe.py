@@ -51,9 +51,14 @@ def main() -> int:
 
     scores, dbg = score_intents("Are you open during T8?", lang="en", session_id="t")
     assert "severe_weather" in scores and "opening_hours" not in scores, scores
-    # Hours may never award when weather owns the phrase — either conflict-clear
-    # or weather-only scores are fine.
-    print("OK   weather owns T8/open phrase", scores, dbg.get("conflicts"))
+    assert not (dbg.get("conflicts") or []), dbg.get("conflicts")
+    print("OK   weather owns T8/open phrase (no hours award, no conflict)", scores)
+
+    scores_bad, _ = score_intents(
+        "Are you open in bad weather?", lang="en", session_id="t"
+    )
+    assert "severe_weather" in scores_bad and "opening_hours" not in scores_bad, scores_bad
+    print("OK   bad-weather open? → severe_weather only", scores_bad)
 
     scores_c, _ = score_intents(
         "Please cancel my booking", lang="en", session_id="t"
@@ -67,6 +72,7 @@ def main() -> int:
         "Show trial class availability",
         "Please cancel my booking",
         "Can I speak to a real person?",
+        "Are you open during typhoon signal 8?",
     ]:
         d = decide_intent(msg, lang="en", session_id="ockham-probe2")
         arb = d.debug["arbiter"]
@@ -79,13 +85,19 @@ def main() -> int:
     assert d.debug["arbiter"].get("called") is False
     print("OK   arbiter skipped on RAG default")
 
-    from services import intent_classifier as ic
+    from services import final_check
 
-    try:
-        ic.score_prototypes("x")
-        raise AssertionError("classifier should be dead")
-    except RuntimeError:
-        print("OK   intent_classifier stub raises")
+    gate = final_check.affirmative_proceed(kind="book", proposed_summary="x")
+    assert gate["action"] == "proceed" and gate["called"] is False
+    safety = final_check.review_commit(
+        kind="escalate",
+        message="hurt my child",
+        proposed_summary="safety handoff",
+        context={"force_proceed": True, "category": "safety"},
+    )
+    assert safety["action"] == "proceed" and safety["called"] is False
+    assert safety["reason"] == "force_proceed"
+    print("OK   final_check affirmative + force_proceed skip LLM")
 
     print("PROBE_FAILS", fail)
     return fail

@@ -485,47 +485,10 @@ def handle_turn(
                 f"Cancel {child_name}'s {sel.get('course_label')} on "
                 f"{sel.get('slot_display')} with {sel.get('teacher_name')}."
             )
-            gate = final_check.review_commit(
-                kind="cancel",
-                message=text,
-                proposed_summary=summary,
-                context={
-                    "child_name": child_name,
-                    "slot_display": sel.get("slot_display"),
-                    "course_label": sel.get("course_label"),
-                },
+            # Sticky confirm + clear yes / "cancel it" — no second LLM vote.
+            gate = final_check.affirmative_proceed(
+                kind="cancel", proposed_summary=summary
             )
-            if gate.get("action") == "clarify":
-                save_state(session_id, state)
-                return {
-                    "answer": gate.get("clarify_prompt")
-                    or (
-                        f"Just to confirm — cancel **{child_name}**'s "
-                        f"**{sel.get('course_label')}** on **{sel.get('slot_display')}** "
-                        f"with {sel.get('teacher_name')}?\n\n"
-                        "Reply **yes** to confirm, or **no** to keep it booked."
-                    ),
-                    "provider": "cancel_dialogue",
-                    "trace_cancel": {
-                        "stage": "confirm",
-                        "child_name": child_name,
-                        "selected": sel,
-                        "final_check": gate,
-                        "reprompt": True,
-                    },
-                    "state": state,
-                }
-            if gate.get("action") == "abort":
-                clear_state(session_id)
-                return {
-                    "answer": "Kept as booked — nothing was cancelled.",
-                    "provider": "cancel_dialogue",
-                    "trace_cancel": {
-                        "stage": "aborted_final_check",
-                        "final_check": gate,
-                    },
-                    "state": None,
-                }
             cid = f"cx-{datetime.now(HK_TZ).strftime('%H%M%S')}"
             _append_cancellation(
                 {

@@ -733,8 +733,8 @@ def handle_turn(
         }
 
     # Unknown programme (scuba, piano, …) or off-topic ask → leave booking for RAG
-    unk = unknown_programme(text)
-    if unk or should_yield_to_rag(session_id, text):
+    if should_yield_to_rag(session_id, text):
+        unk = unknown_programme(text)
         clear_state(session_id)
         return {
             "answer": "",
@@ -964,52 +964,10 @@ def handle_turn(
                 f"Queue diagnostic assessment for {child_name} toward {prog} "
                 f"(phone {state.get('phone') or 'demo'})."
             )
-            gate = final_check.review_commit(
-                kind="book",
-                message=text,
-                proposed_summary=summary,
-                context={
-                    "child_name": child_name,
-                    "programme": prog,
-                    "stage": "confirm_assessment",
-                },
+            # Sticky confirm + clear yes — no second LLM vote.
+            gate = final_check.affirmative_proceed(
+                kind="book", proposed_summary=summary
             )
-            if gate.get("action") == "clarify":
-                save_state(session_id, {**state, "stage": "confirm_assessment"})
-                return {
-                    "answer": gate.get("clarify_prompt")
-                    or (
-                        f"Just to confirm — arrange a short diagnostic assessment for "
-                        f"**{child_name}** ({prog})? Reply **yes** to proceed."
-                    ),
-                    "slots": None,
-                    "provider": "booking_dialogue",
-                    "trace_booking": {
-                        "stage": "confirm_assessment",
-                        "child_name": child_name,
-                        "programme_label": prog,
-                        "final_check": gate,
-                        "steps": steps,
-                    },
-                    "state": {**state, "stage": "confirm_assessment"},
-                }
-            if gate.get("action") == "abort":
-                clear_state(session_id)
-                return {
-                    "answer": (
-                        "No problem — I won't queue an assessment. "
-                        "Tell me a day or teacher if you'd rather browse open seats, "
-                        "or ask about programmes and fees."
-                    ),
-                    "slots": None,
-                    "provider": "booking_dialogue",
-                    "trace_booking": {
-                        "stage": "aborted_final_check",
-                        "final_check": gate,
-                        "steps": steps,
-                    },
-                    "state": None,
-                }
             clear_state(session_id)
             answer = (
                 f"Great — we'll arrange a short **diagnostic assessment** for **{child_name}** "
@@ -1078,52 +1036,10 @@ def handle_turn(
                 f"Book {child_name} into {sel.get('course_label') or course_label(state.get('course_key') or '')} "
                 f"on {sel.get('slot_display')} with {sel.get('teacher_name') or 'staff'}."
             )
-            gate = final_check.review_commit(
-                kind="book",
-                message=text,
-                proposed_summary=summary,
-                context={
-                    "child_name": child_name,
-                    "slot_display": sel.get("slot_display"),
-                    "teacher_name": sel.get("teacher_name"),
-                    "stage": "confirm_slot",
-                },
+            # Sticky confirm + clear yes — no second LLM vote.
+            gate = final_check.affirmative_proceed(
+                kind="book", proposed_summary=summary
             )
-            if gate.get("action") == "clarify":
-                save_state(session_id, state)
-                return {
-                    "answer": gate.get("clarify_prompt")
-                    or (
-                        f"Just to confirm — book **{child_name}** for "
-                        f"**{sel.get('slot_display')}** "
-                        f"({sel.get('teacher_name')} · {sel.get('room')})? Reply **yes**."
-                    ),
-                    "slots": [sel],
-                    "provider": "booking_dialogue",
-                    "trace_booking": {
-                        "stage": "confirm_slot",
-                        "selected": sel,
-                        "final_check": gate,
-                        "steps": steps,
-                    },
-                    "state": state,
-                }
-            if gate.get("action") == "abort":
-                clear_state(session_id)
-                return {
-                    "answer": (
-                        "No problem — I won't book that seat. "
-                        "Tell me another day/time, or ask about programmes and fees."
-                    ),
-                    "slots": None,
-                    "provider": "booking_dialogue",
-                    "trace_booking": {
-                        "stage": "aborted_final_check",
-                        "final_check": gate,
-                        "steps": steps,
-                    },
-                    "state": None,
-                }
             try:
                 booked = booking_svc.create_booking(
                     course_key=state.get("course_key") or sel.get("course_key") or "phonics",

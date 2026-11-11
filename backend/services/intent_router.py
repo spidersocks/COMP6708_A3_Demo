@@ -32,13 +32,6 @@ _AVAIL_STRONG_RE = re.compile(
     r")",
     re.I,
 )
-_BOOK_VERB_RE = re.compile(
-    r"("
-    r"\b(book|booking|reserve|schedule\s+a|sign\s*up\s+for|enrol(?:l)?\s+in)\b|"
-    r"我想(預約|预约|報|报)|幫我(訂|订|約|约)|预约|預約|報名|报名"
-    r")",
-    re.I,
-)
 _OFF_DOMAIN_RE = re.compile(
     r"("
     r"\b(politics|political|election|scrap(?:e|ing)|malware|hack(?:ing)?|"
@@ -105,11 +98,6 @@ SCORE_SOURCE_GUIDE = [
         "meaning": "Book/cancel FSM already open for this session.",
     },
     {
-        "id": "conflict_clear",
-        "label": "Conflict clear",
-        "meaning": "Lower-priority score dropped (e.g. weather beats hours).",
-    },
-    {
         "id": "default_floor",
         "label": "RAG default",
         "meaning": "Nothing matched → rag = 0.5.",
@@ -122,10 +110,8 @@ def score_intents(
     *,
     lang: str,
     session_id: str,
-    history: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[Dict[str, float], Dict[str, Any]]:
     """Return raw scores for audit / tests (does not short-circuit)."""
-    history = history or []
     scores: Dict[str, float] = {}
     ledger: List[Dict[str, Any]] = []
     debug: Dict[str, Any] = {"conflicts": [], "score_ledger": ledger}
@@ -147,22 +133,6 @@ def score_intents(
                 "source": source,
                 "why": why,
                 "cue": cue,
-            }
-        )
-
-    def _clear(route: str, conflict: str) -> None:
-        if route not in scores:
-            return
-        prev = scores.pop(route, None)
-        ledger.append(
-            {
-                "op": "clear",
-                "route": route,
-                "score": None,
-                "prev_score": prev,
-                "source": "conflict_clear",
-                "why": f"Cleared by conflict «{conflict}»",
-                "cue": conflict,
             }
         )
 
@@ -243,20 +213,20 @@ def score_intents(
 
     hours_intent, hours_debug = detect_opening_hours_intent(message, lang)
     if hours_intent:
+        via = (
+            "strong"
+            if hours_debug.get("strong_hits")
+            else "holiday"
+            if hours_debug.get("holiday_hits")
+            else "weak+open"
+        )
         _award(
             "opening_hours",
             0.8,
             source="hard_regex",
-            why=(
-                "detect_opening_hours_intent · fixed 0.8 · via "
-                f"{hours_debug.get('matched_via') or hours_debug.get('reason') or 'hours'}"
-            ),
+            why=f"detect_opening_hours_intent · fixed 0.8 · via {via}",
         )
         debug["hours_debug"] = hours_debug
-
-    if scores.get("severe_weather") and scores.get("opening_hours"):
-        debug["conflicts"].append("weather>hours")
-        _clear("opening_hours", "weather>hours")
 
     if not scores:
         _award(
@@ -266,18 +236,10 @@ def score_intents(
             why="No structured scores remained — default RAG floor 0.5",
         )
 
-    if "staff_escalation" in scores and not debug.get("escalation"):
-        _clear("staff_escalation", "escalation_requires_hard_detector")
-
     origin_by_route: Dict[str, Dict[str, Any]] = {}
     for entry in ledger:
         r = entry.get("route")
         if not r:
-            continue
-        if entry.get("op") == "clear":
-            origin_by_route.pop(r, None)
-            continue
-        if entry.get("op") == "note":
             continue
         origin_by_route[r] = {
             "source": entry.get("source"),
@@ -518,13 +480,16 @@ def _build_rules_evaluated(
 ) -> List[Dict[str, Any]]:
     msg = message or ""
     esc = debug.get("escalation") or escalation_svc.detect_escalation(message)
-    hours_hit = "opening_hours" in scores or bool(debug.get("hours_debug"))
+    hours_hit = "opening_hours" in scores
     hours_detail = ""
-    if debug.get("hours_debug"):
-        hours_detail = str(
-            (debug["hours_debug"] or {}).get("matched_via")
-            or (debug["hours_debug"] or {}).get("reason")
-            or "hours_intent"
+    if hours_hit and debug.get("hours_debug"):
+        hd = debug["hours_debug"] or {}
+        hours_detail = (
+            "strong"
+            if hd.get("strong_hits")
+            else "holiday"
+            if hd.get("holiday_hits")
+            else "weak+open"
         )
     leave_booking = dialogue_svc.should_yield_to_rag(session_id, message)
     dialogue_active = dialogue_svc.is_active(session_id)
@@ -726,13 +691,13 @@ def _build_rules_evaluated(
                 if hours_hit
                 else ""
             ),
-            why_not="No date/hours intent (or cleared by weather>hours conflict).",
+            why_not="No date/hours intent (weather policy asks go to severe_weather).",
             checks=[
                 _check("hours intent", hours_hit, hours_detail or "not detected"),
                 _check(
-                    "weather>hours conflict",
-                    "weather>hours" in (debug.get("conflicts") or []),
-                    "opening_hours score cleared when severe_weather also fires",
+                    "weather policy override",
+                    bool((debug.get("hours_debug") or {}).get("overridden_by_weather_policy")),
+                    "hours detector skipped — centre_facts severe weather",
                 ),
             ],
             downstream="Deterministic opening-hours engine · adapt",
@@ -771,36 +736,6 @@ def _build_rules_evaluated(
             downstream="rag/pipeline.py retrieve → generate · citations",
         ),
     ]
-
-    suppressed = set()
-    for c in debug.get("conflicts") or []:
-        if ">" in str(c):
-            loser = str(c).split(">")[-1].strip()
-            if loser == "hours":
-                loser = "opening_hours"
-            suppressed.add(loser)
-    for row in rows:
-        rid = row["id"]
-        if rid in suppressed or (
-            rid == "opening_hours" and "weather>hours" in (debug.get("conflicts") or [])
-        ):
-            row["suppressed_by_conflict"] = True
-            conflict_note = next(
-                (
-                    c
-                    for c in (debug.get("conflicts") or [])
-                    if rid in str(c) or (rid == "opening_hours" and "hours" in str(c))
-                ),
-                "conflict",
-            )
-            row["why_not"] = (
-                f"Matched initially, then cleared by conflict resolution «{conflict_note}»."
-            )
-            row["status_reason"] = row["why_not"]
-            row["detail"] = row["why_not"]
-            row["checks"] = list(row.get("checks") or []) + [
-                _check("Survived conflict resolution", False, str(conflict_note))
-            ]
 
     origins = debug.get("score_origins") or {}
     for row in rows:
@@ -858,15 +793,6 @@ def _build_decision_path(
                 "step": "rules",
                 "summary": "No tool rule ≥ 0.28 → default RAG",
                 "detail": "",
-            }
-        )
-
-    for c in debug.get("conflicts") or []:
-        path.append(
-            {
-                "step": "conflict",
-                "summary": f"Conflict: {c}",
-                "detail": "lower-priority score cleared",
             }
         )
 
@@ -930,9 +856,7 @@ def decide_intent(
     session_id: str,
     history: Optional[List[Dict[str, Any]]] = None,
 ) -> IntentDecision:
-    scores, debug = score_intents(
-        message, lang=lang, session_id=session_id, history=history
-    )
+    scores, debug = score_intents(message, lang=lang, session_id=session_id)
     cleaned = {k: v for k, v in scores.items() if v >= 0.28}
     if not cleaned:
         cleaned = {"rag": 0.5}
@@ -945,7 +869,6 @@ def decide_intent(
         from services import intent_arbiter
 
         top_score = max(cleaned.values()) if cleaned else 0.0
-        conflicts = list(debug.get("conflicts") or [])
         tool_hits = sorted(
             ((k, float(v)) for k, v in cleaned.items() if k != "rag"),
             key=lambda kv: -kv[1],
@@ -953,12 +876,7 @@ def decide_intent(
         close_race = (
             len(tool_hits) >= 2 and (tool_hits[0][1] - tool_hits[1][1]) < 0.15
         )
-        clear_detector = (
-            route != "rag"
-            and top_score >= 0.8
-            and not conflicts
-            and not close_race
-        )
+        clear_detector = route != "rag" and top_score >= 0.8 and not close_race
         if route == "rag" or clear_detector:
             debug["arbiter"] = {
                 "action": "keep",
@@ -968,11 +886,7 @@ def decide_intent(
                 "skip_detail": (
                     "rag default"
                     if route == "rag"
-                    else (
-                        f"top={top_score:.2f} ≥ 0.8, "
-                        f"conflicts={conflicts or 'none'}, "
-                        f"close_race={close_race}"
-                    )
+                    else f"top={top_score:.2f} ≥ 0.8, close_race={close_race}"
                 ),
             }
         else:
@@ -993,7 +907,7 @@ def decide_intent(
                 history_preview=hist_preview,
             )
             debug["arbiter"] = verdict
-            if verdict.get("action") in {"rag", "reroute"} and verdict.get("route"):
+            if verdict.get("action") == "rag" and verdict.get("route"):
                 new_route = str(verdict["route"])
                 if new_route not in _PRIORITY:
                     new_route = "rag"

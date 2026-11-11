@@ -57,13 +57,6 @@ _GROUNDING_ENRICH_ROUTES = {
 
 router = APIRouter()
 
-# Avoid matching "opening hours" — use open slots / availability / book / trial.
-_AVAIL_RE = re.compile(
-    r"\b(availab(?:le|ility)?|time\s*slots?|open\s+slots?|open\s+seats?|bookings?\b|book\s+a\b|"
-    r"schedule|timetable|trial\s*class|"
-    r"有冇位|有没有位|空位|預約|预约|試堂|试听|档期|檔期)\b",
-    re.IGNORECASE,
-)
 _COURSE_HINTS = [
     (re.compile(r"phonic|拼音", re.I), "phonics"),
     (re.compile(r"mandarin|putonghua|普通話|普通话", re.I), "mandarin"),
@@ -773,9 +766,7 @@ def chat(req: ChatRequest) -> ChatResponse:
                 debug={"escalation": esc, "final_check": gate},
                 adapt=False,
             )
-        answer = escalation_svc.parent_reply(
-            category=esc["category"], topic_hint=topic, lang=lang
-        )
+        answer = escalation_svc.parent_reply(category=esc["category"], lang=lang)
         drafted = staff_email.draft_boss_email(
             category=esc["category"],
             priority=esc.get("priority") or "normal",

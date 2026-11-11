@@ -44,7 +44,7 @@ def format_severe_weather_answer(message: str, lang: str = "en") -> Tuple[str, L
     bucket = _lang_bucket(lang)
     low = (message or "").lower()
     cites = [
-        {"source": "data/facts/severe_weather.json", "title": "Severe weather policy"},
+        {"source": "facts/severe_weather.json", "title": "Severe weather policy"},
         {"source": "policies/severe_weather", "title": "Severe Weather Arrangements"},
     ]
 
