@@ -728,7 +728,9 @@ export default function BrightNestBotDemo() {
           </div>
 
           <section
-            className={`bn-inspector${rightView === "staff" ? " bn-inspector--staff" : ""}`}
+            className={`bn-inspector${
+              rightView === "staff" ? " bn-inspector--staff" : " bn-inspector--system"
+            }`}
           >
           {rightView === "staff" ? (
             <div className="bn-browser">
@@ -1309,6 +1311,7 @@ export default function BrightNestBotDemo() {
                 [...chatHistory].reverse().find((m) => m.role === "bot")?.message || ""
               }
               turnKey={turnKey}
+              chatHistory={chatHistory}
             />
           )}
           </section>

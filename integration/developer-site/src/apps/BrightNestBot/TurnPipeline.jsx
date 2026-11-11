@@ -1,4 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 
 const LLM_ROLE_LABELS = {
@@ -15,48 +21,50 @@ const LLM_ROLE_LABELS = {
   cheap_json: "Cheap JSON",
 };
 
-/** Layout positions in viewBox units (0–1000 × 0–720). */
-const NODE_LAYOUT = {
-  parent: { x: 500, y: 36 },
-  memory: { x: 500, y: 118 },
-  router: { x: 500, y: 200 },
-  rules: { x: 280, y: 292 },
-  arbiter: { x: 720, y: 292 },
-  tier: { x: 500, y: 384 },
-  soft: { x: 220, y: 476 },
-  hard: { x: 500, y: 476 },
-  rag: { x: 780, y: 476 },
-  hko: { x: 120, y: 568 },
-  chroma: { x: 780, y: 568 },
-  llm: { x: 420, y: 650 },
-  sheets: { x: 620, y: 650 },
-  answer: { x: 500, y: 732 },
+/** World-space layout (px). Origin ≈ top-centre of the graph. */
+const LAYOUT = {
+  parent: { x: 0, y: 0, w: 168, h: 48 },
+  memory: { x: 0, y: 110, w: 150, h: 64 },
+  router: { x: 0, y: 230, w: 158, h: 52 },
+  rules: { x: -210, y: 340, w: 148, h: 52 },
+  arbiter: { x: 210, y: 340, w: 148, h: 52 },
+  tier: { x: 0, y: 470, w: 136, h: 136 },
+  soft: { x: -250, y: 660, w: 150, h: 52 },
+  hard: { x: 0, y: 660, w: 150, h: 52 },
+  rag: { x: 250, y: 660, w: 150, h: 52 },
+  hko: { x: -340, y: 790, w: 140, h: 52 },
+  chroma: { x: 250, y: 790, w: 140, h: 68 },
+  llm: { x: -80, y: 920, w: 158, h: 52 },
+  sheets: { x: 160, y: 920, w: 150, h: 68 },
+  answer: { x: 0, y: 1050, w: 168, h: 48 },
 };
 
 const EDGES = [
-  ["parent", "memory"],
-  ["memory", "router"],
-  ["router", "rules"],
-  ["router", "arbiter"],
-  ["router", "tier"],
-  ["rules", "tier"],
-  ["arbiter", "tier"],
-  ["tier", "soft"],
-  ["tier", "hard"],
-  ["tier", "rag"],
-  ["soft", "hko"],
-  ["soft", "chroma"],
-  ["soft", "llm"],
-  ["hard", "llm"],
-  ["hard", "sheets"],
-  ["rag", "chroma"],
-  ["chroma", "llm"],
-  ["llm", "answer"],
-  ["sheets", "answer"],
+  { from: "parent", to: "memory" },
+  { from: "memory", to: "router" },
+  { from: "router", to: "rules" },
+  { from: "router", to: "arbiter" },
+  { from: "rules", to: "tier" },
+  { from: "arbiter", to: "tier" },
+  { from: "router", to: "tier" },
+  { from: "tier", to: "soft", label: "live" },
+  { from: "tier", to: "hard", label: "hard" },
+  { from: "tier", to: "rag", label: "RAG" },
+  { from: "soft", to: "hko" },
+  { from: "soft", to: "llm" },
+  { from: "soft", to: "chroma", dashed: true },
+  { from: "hard", to: "llm" },
+  { from: "hard", to: "sheets" },
+  { from: "rag", to: "chroma" },
+  { from: "chroma", to: "llm" },
+  { from: "llm", to: "answer" },
+  { from: "sheets", to: "answer" },
+  { from: "hko", to: "llm", dashed: true },
 ];
 
-const NODE_W = 148;
-const NODE_H = 44;
+const WORLD = { minX: -460, minY: -40, maxX: 460, maxY: 1140 };
+const MIN_ZOOM = 0.45;
+const MAX_ZOOM = 1.85;
 
 function llmRoleLabel(role) {
   const raw = String(role || "");
@@ -76,6 +84,111 @@ function clip(text, n = 120) {
   const s = (text || "").trim();
   if (s.length <= n) return s;
   return `${s.slice(0, n - 1)}…`;
+}
+
+function tierForRoute(route, grounding) {
+  const g = grounding?.mode;
+  if (g === "pure_rag" || route === "rag") return "rag";
+  if (
+    route === "booking_dialogue" ||
+    route === "cancel_dialogue" ||
+    route === "staff_escalation" ||
+    route === "off_domain" ||
+    g === "bypass"
+  ) {
+    return "hard";
+  }
+  if (route) return "soft";
+  return null;
+}
+
+function nodeAnchor(id, side = "bottom") {
+  const n = LAYOUT[id];
+  if (!n) return { x: 0, y: 0 };
+  const cx = n.x;
+  const cy = n.y;
+  if (side === "top") return { x: cx, y: cy - n.h / 2 };
+  if (side === "left") return { x: cx - n.w / 2, y: cy };
+  if (side === "right") return { x: cx + n.w / 2, y: cy };
+  if (side === "center") return { x: cx, y: cy };
+  return { x: cx, y: cy + n.h / 2 };
+}
+
+function edgeGeometry(fromId, toId) {
+  const a = LAYOUT[fromId];
+  const b = LAYOUT[toId];
+  if (!a || !b) return null;
+  const start = nodeAnchor(fromId, "bottom");
+  const end = nodeAnchor(toId, "top");
+  // Decision diamond: leave from lower facets toward each branch
+  if (fromId === "tier") {
+    if (toId === "soft") {
+      start.x = a.x - a.w * 0.28;
+      start.y = a.y + a.h * 0.22;
+    } else if (toId === "rag") {
+      start.x = a.x + a.w * 0.28;
+      start.y = a.y + a.h * 0.22;
+    } else {
+      start.x = a.x;
+      start.y = a.y + a.h / 2;
+    }
+  }
+  const midY = (start.y + end.y) / 2;
+  const d = `M ${start.x} ${start.y} C ${start.x} ${midY}, ${end.x} ${midY}, ${end.x} ${end.y}`;
+  const labelAt = {
+    x: (start.x + end.x) / 2,
+    y: midY - 6,
+  };
+  return { d, labelAt, start, end };
+}
+
+function QueryHighlight({ segments, fallback, cue }) {
+  const parts =
+    Array.isArray(segments) && segments.length > 0
+      ? segments
+      : fallback
+        ? [{ text: fallback, hit: false }]
+        : [];
+  if (!parts.length) return <p className="bn-empty">No query text.</p>;
+  return (
+    <p className="bn-query-hl" title={cue ? `Cue: ${cue}` : undefined}>
+      {parts.map((seg, i) =>
+        seg.hit ? (
+          <mark key={`h-${i}`} className="bn-query-cue">
+            {seg.text}
+          </mark>
+        ) : (
+          <span key={`t-${i}`}>{seg.text}</span>
+        )
+      )}
+    </p>
+  );
+}
+
+function MatchSummaryCard({ summary }) {
+  if (!summary || (!summary.headline && !summary.query)) return null;
+  return (
+    <div className="bn-match-summary">
+      <div className="bn-match-summary-kicker">Match</div>
+      <p className="bn-match-headline">{summary.headline}</p>
+      <QueryHighlight
+        segments={summary.segments}
+        fallback={summary.query || summary.annotated}
+        cue={summary.cue}
+      />
+      {summary.cue ? (
+        <p className="bn-match-cue-line">
+          Cue <code>«{summary.cue}»</code>
+          {summary.route ? (
+            <>
+              {" "}
+              → <code>{summary.route}</code>
+            </>
+          ) : null}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 function LlmCallCard({ call, defaultOpen = false }) {
@@ -139,6 +252,11 @@ function RagHit({ hit, index }) {
         </div>
         <span className="bn-hit-src">{hit.source}</span>
         {!open && body ? <p className="bn-hit-snip">{body}</p> : null}
+        {hit.char_count != null ? (
+          <div className="bn-hit-meta">
+            {hit.char_count} chars · score {score ?? "—"}
+          </div>
+        ) : null}
         <span className="bn-hit-expand-hint">
           {open ? "Collapse chunk" : "Expand full chunk"}
         </span>
@@ -148,8 +266,12 @@ function RagHit({ hit, index }) {
   );
 }
 
-function RuleRow({ rule, isWinner }) {
-  const [open, setOpen] = useState(false);
+function RuleEvidence({ rule, defaultOpen = false, isWinner = false }) {
+  const [open, setOpen] = useState(Boolean(defaultOpen));
+  useEffect(() => {
+    setOpen(Boolean(defaultOpen));
+  }, [defaultOpen, rule?.id]);
+
   const flag = rule.matched
     ? rule.suppressed_by_conflict
       ? "cleared"
@@ -162,6 +284,12 @@ function RuleRow({ rule, isWinner }) {
     (rule.matched ? rule.why : rule.why_not) ||
     rule.detail ||
     "";
+  const checks = rule.checks || [];
+  const evidence = rule.match_evidence || {};
+  const cue = evidence.cue || rule.matched_span?.text || "";
+  const queryText = rule.query || evidence.full_query || "";
+  const segments = evidence.segments || [];
+
   return (
     <li
       className={
@@ -187,51 +315,96 @@ function RuleRow({ rule, isWinner }) {
             {isWinner ? <em className="bn-rule-winner-tag"> · winning</em> : null}
           </strong>
           <code>{rule.id}</code>
-          {rule.score != null ? <em>score {Number(rule.score).toFixed(2)}</em> : null}
+          {rule.score != null ? (
+            <em>score {Number(rule.score).toFixed(2)}</em>
+          ) : null}
+          {rule.score_origin?.source && rule.score_origin.source !== "none" ? (
+            <p className="bn-rule-score-origin">
+              score from <code>{rule.score_origin.source}</code>
+              {rule.score_origin.why ? ` — ${rule.score_origin.why}` : ""}
+            </p>
+          ) : null}
+          {cue ? (
+            <p className="bn-rule-cue-chip">
+              cue <code>«{cue}»</code>
+            </p>
+          ) : null}
+          {reason ? <p className="bn-rule-reason">{reason}</p> : null}
+          <span className="bn-hit-expand-hint">
+            {open ? "Hide match detail" : "Show what matched"}
+          </span>
         </div>
       </button>
       {open ? (
-        <div className="bn-rule-body">
+        <div className="bn-rule-why">
+          <div className="bn-rule-block bn-rule-block-query">
+            <span>Parent message · matched cue highlighted</span>
+            <QueryHighlight
+              segments={segments}
+              fallback={queryText || evidence.annotated}
+              cue={cue}
+            />
+            {cue ? (
+              <p className="bn-rule-cue-meta">
+                Exact cue <code>«{cue}»</code>
+                {evidence.start != null && evidence.end != null
+                  ? ` at characters [${evidence.start}:${evidence.end}]`
+                  : ""}
+                {evidence.kind ? ` · kind=${evidence.kind}` : ""}
+              </p>
+            ) : (
+              <p className="bn-rule-cue-meta">
+                No single substring cue — matched by{" "}
+                {evidence.kind || "predicate / session state"}.
+              </p>
+            )}
+          </div>
+          {rule.score_origin?.source && rule.score_origin.source !== "none" ? (
+            <div className="bn-rule-block">
+              <span>Where this score came from</span>
+              <p>
+                <code>{rule.score_origin.source}</code>
+                {rule.score_origin.score != null
+                  ? ` = ${Number(rule.score_origin.score).toFixed(3)}`
+                  : ""}
+                {" — "}
+                {rule.score_origin.why || "see score ledger"}
+              </p>
+              <p className="bn-rule-cue-meta">
+                Intent scores are <strong>not</strong> RAG similarity. Hard
+                detectors award fixed values (e.g. fees=0.90); prototypes may
+                blend; conflicts clear losers.
+              </p>
+            </div>
+          ) : null}
+          {checks.length > 0 ? (
+            <ul className="bn-rule-checks">
+              {checks.map((c, i) => (
+                <li
+                  key={`${rule.id}-chk-${i}`}
+                  className={c.passed ? "pass" : "fail"}
+                >
+                  <strong>{c.passed ? "pass" : "fail"}</strong>
+                  <span>
+                    {c.label || c.id}
+                    {c.detail ? ` — ${c.detail}` : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
           {reason ? <p className="bn-note">{reason}</p> : null}
-          {rule.query ? <pre className="bn-pre">{rule.query}</pre> : null}
         </div>
       ) : null}
     </li>
   );
 }
 
-function tierForRoute(route, grounding) {
-  const g = grounding?.mode;
-  if (g === "pure_rag" || route === "rag") return "rag";
-  if (
-    route === "booking_dialogue" ||
-    route === "cancel_dialogue" ||
-    route === "staff_escalation" ||
-    route === "off_domain" ||
-    g === "bypass"
-  ) {
-    return "hard";
-  }
-  if (route) return "soft";
-  return null;
-}
-
-function edgePath(fromId, toId) {
-  const a = NODE_LAYOUT[fromId];
-  const b = NODE_LAYOUT[toId];
-  if (!a || !b) return "";
-  const x1 = a.x;
-  const y1 = a.y + NODE_H / 2 - 2;
-  const x2 = b.x;
-  const y2 = b.y - NODE_H / 2 + 2;
-  const mid = (y1 + y2) / 2;
-  return `M ${x1} ${y1} C ${x1} ${mid}, ${x2} ${mid}, ${x2} ${y2}`;
-}
-
 function NodeDetail({
   node,
   trace,
   answer,
+  chatHistory = [],
   route,
   grounding,
   routing,
@@ -250,16 +423,17 @@ function NodeDetail({
   finalCheck,
   adminTodo,
   staffMessage,
+  scoreLedger,
 }) {
-  if (!trace) {
+  if (!node) return null;
+  if (!trace && node.id !== "memory") {
     return (
       <p className="bn-empty">
-        Send a parent message to light this node. Click again after a turn for
-        the exact inputs, scores, and model I/O.
+        Send a parent message to populate this node. After a turn, click again
+        for the exact inputs, scores, and model I/O.
       </p>
     );
   }
-  if (!node) return null;
 
   switch (node.id) {
     case "parent":
@@ -282,6 +456,7 @@ function NodeDetail({
               </code>
             </li>
           </ul>
+          <MatchSummaryCard summary={matchSummary} />
           {(history?.turns || []).length ? (
             <div className="bn-pipe-block">
               <h4>Latest parent turn in memory</h4>
@@ -294,20 +469,21 @@ function NodeDetail({
           ) : null}
         </>
       );
-    case "memory":
+    case "memory": {
+      const historyTurns = history?.turns || [];
       return (
         <>
           <ul className="bn-fact-list">
             <li>
               <span>Turns loaded</span>
               <code>
-                {history?.turns_loaded ?? (history?.turns || []).length ?? 0}/
+                {history?.turns_loaded ?? historyTurns.length ?? 0}/
                 {history?.limit ?? "—"}
               </code>
             </li>
             <li>
               <span>Enabled</span>
-              <code>{history?.enabled ? "yes" : "no"}</code>
+              <code>{history?.enabled == null ? "—" : history.enabled ? "yes" : "no"}</code>
             </li>
           </ul>
           {history?.preview ? (
@@ -319,11 +495,11 @@ function NodeDetail({
               <pre className="bn-pre bn-pre-tall">{history.preview}</pre>
             </details>
           ) : (
-            <p className="bn-empty">No prior turns in session memory.</p>
+            <p className="bn-note">No prior turns in session memory for this call.</p>
           )}
-          {(history?.turns || []).length > 0 ? (
+          {historyTurns.length > 0 ? (
             <ul className="bn-mem-turns">
-              {history.turns.map((t, i) => (
+              {historyTurns.map((t, i) => (
                 <li key={`mem-${i}`}>
                   <details>
                     <summary>
@@ -339,9 +515,26 @@ function NodeDetail({
                 </li>
               ))}
             </ul>
-          ) : null}
+          ) : chatHistory.length > 0 ? (
+            <ul className="bn-mem-turns">
+              {chatHistory.map((m, i) => (
+                <li key={`local-mem-${i}`}>
+                  <details>
+                    <summary>
+                      <strong>{m.role === "user" ? "parent" : "bot"}</strong>
+                      <span>{clip(m.message || "", 100)}</span>
+                    </summary>
+                    <pre className="bn-hit-full">{m.message || ""}</pre>
+                  </details>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="bn-empty">No prior turns yet.</p>
+          )}
         </>
       );
+    }
     case "router":
       return (
         <>
@@ -359,13 +552,13 @@ function NodeDetail({
               <code>{grounding?.mode || "—"}</code>
             </li>
           </ul>
-          {matchSummary?.headline ? (
-            <p className="bn-match-headline">{matchSummary.headline}</p>
-          ) : null}
-          {matchSummary?.cue ? (
-            <p className="bn-note">
-              Cue «{matchSummary.cue}» →{" "}
-              <code>{matchSummary.route || route}</code>
+          <MatchSummaryCard summary={matchSummary} />
+          {grounding ? (
+            <p className="bn-grounding-one-liner">
+              <strong>Grounding</strong> · <code>{grounding.mode}</code>
+              {grounding.structured_privileged ? " · docs privileged" : ""}
+              {grounding.live_doc ? " · live doc" : ""}
+              {grounding.composed ? " · KB enrich" : ""}
             </p>
           ) : null}
           {steps.length > 0 ? (
@@ -390,31 +583,73 @@ function NodeDetail({
         <>
           <p className="bn-rules-hint">
             Detector awards this turn — not RAG similarity. Expand a rule for
-            evidence.
+            cue, score origin, and checks.
           </p>
+          <MatchSummaryCard summary={matchSummary} />
           {routing?.scores && Object.keys(routing.scores).length > 0 ? (
-            <ul className="bn-fact-list">
-              {Object.entries(routing.scores)
-                .sort((a, b) => Number(b[1]) - Number(a[1]))
-                .slice(0, 10)
-                .map(([k, v]) => (
-                  <li key={k}>
-                    <span>{k}</span>
-                    <code>{Number(v).toFixed(3)}</code>
-                  </li>
-                ))}
-            </ul>
+            <details className="bn-rules" open>
+              <summary>Scores · detector awards (not RAG sim)</summary>
+              <ul className="bn-fact-list">
+                {Object.entries(routing.scores)
+                  .sort((a, b) => Number(b[1]) - Number(a[1]))
+                  .slice(0, 10)
+                  .map(([k, v]) => {
+                    const origin =
+                      routing.score_origins?.[k] ||
+                      scoreLedger.filter((e) => e.route === k).slice(-1)[0];
+                    return (
+                      <li key={k}>
+                        <span>
+                          {k}
+                          {origin?.source ? (
+                            <em className="bn-score-src"> · {origin.source}</em>
+                          ) : null}
+                        </span>
+                        <code>{Number(v).toFixed(3)}</code>
+                      </li>
+                    );
+                  })}
+              </ul>
+              {scoreLedger.length > 0 ? (
+                <details className="bn-rules bn-ledger">
+                  <summary>Ledger · {scoreLedger.length} steps</summary>
+                  <ol className="bn-score-ledger">
+                    {scoreLedger.map((e, i) => (
+                      <li key={`led-${i}`} className={`bn-led-${e.op || "note"}`}>
+                        <strong>{e.op || "note"}</strong>
+                        <span>
+                          <code>{e.route}</code>
+                          {e.score != null
+                            ? ` = ${Number(e.score).toFixed(3)}`
+                            : ""}
+                          {" · "}
+                          {e.source}
+                          {e.why ? ` — ${e.why}` : ""}
+                        </span>
+                      </li>
+                    ))}
+                  </ol>
+                </details>
+              ) : null}
+            </details>
           ) : null}
           {rulesEvaluated.length > 0 ? (
-            <ul className="bn-rule-list">
-              {rulesEvaluated.map((r) => (
-                <RuleRow
-                  key={r.id}
-                  rule={r}
-                  isWinner={r.id === winningRuleId && Boolean(r.matched)}
-                />
-              ))}
-            </ul>
+            <details className="bn-rules" open>
+              <summary>
+                Rules · {rulesEvaluated.filter((r) => r.matched).length} fired /{" "}
+                {rulesEvaluated.length}
+                {matchSummary?.cue ? ` · «${matchSummary.cue}»` : ""}
+              </summary>
+              <ul className="bn-rule-list">
+                {rulesEvaluated.map((r) => (
+                  <RuleEvidence
+                    key={r.id}
+                    rule={r}
+                    isWinner={r.id === winningRuleId && Boolean(r.matched)}
+                  />
+                ))}
+              </ul>
+            </details>
           ) : (
             <p className="bn-empty">No rule trace on this turn.</p>
           )}
@@ -439,6 +674,9 @@ function NodeDetail({
             </li>
           </ul>
           {arbiter?.reason ? <p className="bn-note">{arbiter.reason}</p> : null}
+          {arbiter?.skip_detail ? (
+            <p className="bn-note">{arbiter.skip_detail}</p>
+          ) : null}
           {arbiter?.raw ? (
             <pre className="bn-pre">{String(arbiter.raw)}</pre>
           ) : null}
@@ -451,6 +689,9 @@ function NodeDetail({
     case "tier":
       return (
         <>
+          <p className="bn-rules-hint">
+            Decision diamond — which answer tier won this turn.
+          </p>
           <ul className="bn-fact-list">
             <li>
               <span>Tier</span>
@@ -473,6 +714,14 @@ function NodeDetail({
               <code>{grounding?.mode || "—"}</code>
             </li>
           </ul>
+          {grounding ? (
+            <p className="bn-grounding-one-liner">
+              <strong>Grounding</strong> · <code>{grounding.mode}</code>
+              {grounding.structured_privileged ? " · docs privileged" : ""}
+              {grounding.live_doc ? " · live doc" : ""}
+              {grounding.composed ? " · KB enrich" : ""}
+            </p>
+          ) : null}
           {grounding?.why ? <p className="bn-note">{grounding.why}</p> : null}
           {trace?.adapt ? (
             <pre className="bn-pre">{JSON.stringify(trace.adapt, null, 2)}</pre>
@@ -503,7 +752,12 @@ function NodeDetail({
               <span>Composed</span>
               <code>{grounding?.composed ? "yes" : "no"}</code>
             </li>
+            <li>
+              <span>Structured privileged</span>
+              <code>{grounding?.structured_privileged ? "yes" : "no"}</code>
+            </li>
           </ul>
+          {grounding?.why ? <p className="bn-note">{grounding.why}</p> : null}
           {llmCalls
             .filter((c) =>
               ["grounded_compose", "fact_adapt"].includes(c.role)
@@ -539,7 +793,12 @@ function NodeDetail({
             </li>
           </ul>
           {finalCheck ? (
-            <pre className="bn-pre">{JSON.stringify(finalCheck, null, 2)}</pre>
+            <details className="bn-llm-part" open>
+              <summary>Final check</summary>
+              <pre className="bn-pre bn-pre-tall">
+                {JSON.stringify(finalCheck, null, 2)}
+              </pre>
+            </details>
           ) : null}
           {trace?.booking ? (
             <details className="bn-llm-part">
@@ -557,6 +816,15 @@ function NodeDetail({
               </pre>
             </details>
           ) : null}
+          {llmCalls
+            .filter(
+              (c) =>
+                String(c.role || "").startsWith("final_check") ||
+                ["booking_parse", "cancel_pick", "staff_email"].includes(c.role)
+            )
+            .map((c, i) => (
+              <LlmCallCard key={`hard-llm-${i}`} call={c} defaultOpen={i === 0} />
+            ))}
         </>
       );
     case "rag":
@@ -593,8 +861,9 @@ function NodeDetail({
       return facts ? (
         <>
           <p className="bn-rules-hint">
-            Public-holiday check on the resolved date; live HKO severe-weather
-            only when that date is today.
+            Every hours ask runs an explicit <strong>public-holiday</strong>{" "}
+            check on the resolved date and an <strong>HKO severe-weather</strong>{" "}
+            check (live signals only when that date is today).
           </p>
           {(facts.checks || []).length > 0 ? (
             <ul className="bn-rule-checks bn-hours-checks">
@@ -620,6 +889,15 @@ function NodeDetail({
               <code>{facts.datetime}</code>
             </li>
             <li>
+              <span>Matched via</span>
+              <code>
+                {facts.parse_debug?.matched_via ||
+                  (facts.parse_debug?.is_fallback_to_now
+                    ? "fallback_now"
+                    : "—")}
+              </code>
+            </li>
+            <li>
               <span>Window</span>
               <code>
                 {facts.open_time && facts.close_time
@@ -630,47 +908,76 @@ function NodeDetail({
               </code>
             </li>
             <li>
-              <span>Holiday</span>
+              <span>Holiday result</span>
               <code>
                 {facts.is_holiday
                   ? `YES · ${facts.holiday_name || "public holiday"}`
-                  : "NO"}
+                  : "NO · not a public holiday"}
               </code>
             </li>
             <li>
-              <span>HKO</span>
+              <span>HKO weather result</span>
               <code>
                 {facts.weather_hint
                   ? `CLOSURE · ${facts.weather_hint}`
                   : facts.parse_debug?.weather_applied
-                    ? "CHECKED · clear"
+                    ? "CHECKED · no severe signal today"
                     : facts.parse_debug?.weather_same_day_only
-                      ? "SKIPPED · not today"
+                      ? "SKIPPED · date is not today (same-day live HKO only)"
                       : "not run"}
               </code>
             </li>
+            {trace?.opening_hours?.effective_message ? (
+              <li>
+                <span>Effective msg</span>
+                <code>{trace.opening_hours.effective_message}</code>
+              </li>
+            ) : null}
           </ul>
         </>
       ) : (
-        <p className="bn-empty">No hours / holiday / HKO check on this turn.</p>
+        <p className="bn-empty">
+          Ask an hours/date question to populate this panel.
+        </p>
       );
     case "chroma":
       return hits.length === 0 ? (
-        <p className="bn-empty">
-          {tier === "rag" || enrichMode
-            ? "No chunks returned."
-            : "KB retrieve did not run (hard / tool path)."}
-        </p>
+        <div className="bn-rag-skip">
+          <p className="bn-empty">
+            {route === "rag"
+              ? "No chunks returned."
+              : route
+                ? `Full RAG generate did not run — router chose “${route}” (hard bypass or empty enrich).`
+                : "Idle until a KB question."}
+          </p>
+          {route && route !== "rag" ? (
+            <p className="bn-note">
+              Soft routes (allergy, fees, teachers…) retrieve KB as{" "}
+              <strong>enrichment</strong> under a privileged structured card.
+              Hard tools (typhoon, seats, booking, escalation) skip retrieve.
+            </p>
+          ) : null}
+        </div>
       ) : (
         <>
+          {enrichMode ? (
+            <p className="bn-note">
+              These chunks are <strong>secondary</strong>. The structured{" "}
+              <code>{route}</code> fact card remains source of truth; the model
+              may elaborate from KB but must not override fees, times, or policy.
+            </p>
+          ) : null}
           <div className="bn-rag-strip">
-            <span>index {rag?.index_size ?? "—"}</span>
+            <span>index size {rag?.index_size ?? "—"}</span>
             <span>top_k {rag?.top_k ?? hits.length}</span>
-            <span>hits {rag?.hit_count ?? hits.length}</span>
+            <span>hits returned {rag?.hit_count ?? hits.length}</span>
             <span>
-              top {scoreLabel(rag?.top_score ?? hits[0]?.score) ?? "—"}
+              top score {scoreLabel(rag?.top_score ?? hits[0]?.score) ?? "—"}
             </span>
-            <span>{rag?.embedding_mode || "—"}</span>
+            <span>embed {rag?.embedding_mode || "—"}</span>
+            {enrichMode ? <span>mode grounded_enrich</span> : null}
+            {rag?.language_fallback ? <span>lang fallback</span> : null}
+            {rag?.gap_reason ? <span>gap {rag.gap_reason}</span> : null}
           </div>
           <ul className="bn-hits">
             {hits.map((h, i) => (
@@ -680,20 +987,41 @@ function NodeDetail({
         </>
       );
     case "llm":
-      return llmCalls.length === 0 ? (
-        <p className="bn-empty">
-          No DashScope call this turn (deterministic tool / template).
-        </p>
-      ) : (
-        <div className="bn-llm-calls">
-          {llmCalls.map((call, i) => (
-            <LlmCallCard
-              key={`${call.id || i}-${call.role}`}
-              call={call}
-              defaultOpen={i === llmCalls.length - 1}
-            />
-          ))}
-        </div>
+      return (
+        <>
+          <p className="bn-rules-hint">
+            Exact system + user text each model call received, plus the raw
+            completion.
+          </p>
+          {history?.preview ? (
+            <details className="bn-llm-part bn-llm-context" open>
+              <summary>
+                Conversation context string
+                <em>{String(history.preview).length} chars</em>
+              </summary>
+              <pre className="bn-pre bn-pre-tall">{history.preview}</pre>
+            </details>
+          ) : (
+            <p className="bn-note">
+              No prior turns in session memory for this call.
+            </p>
+          )}
+          {llmCalls.length === 0 ? (
+            <p className="bn-empty">
+              No DashScope call this turn (deterministic tool / template).
+            </p>
+          ) : (
+            <div className="bn-llm-calls">
+              {llmCalls.map((call, i) => (
+                <LlmCallCard
+                  key={`${call.id || i}-${call.role}`}
+                  call={call}
+                  defaultOpen={i === llmCalls.length - 1}
+                />
+              ))}
+            </div>
+          )}
+        </>
       );
     case "sheets":
       return (
@@ -763,6 +1091,12 @@ function NodeDetail({
                     : "")}
               </code>
             </li>
+            <li>
+              <span>Latency</span>
+              <code>
+                {trace.latency_ms != null ? `${trace.latency_ms} ms` : "—"}
+              </code>
+            </li>
           </ul>
           <pre className="bn-pre bn-pre-tall">{answer || "(empty)"}</pre>
         </>
@@ -772,16 +1106,66 @@ function NodeDetail({
   }
 }
 
+function FlowNode({ node, lit, active, onOpen }) {
+  const pos = LAYOUT[node.id];
+  const shape = node.shape;
+  return (
+    <button
+      type="button"
+      className={`bn-flow-node bn-shape-${shape} bn-pipe-${node.kind} bn-pipe-${node.status}${
+        lit ? " is-lit" : ""
+      }${active ? " is-active" : ""}`}
+      style={{
+        left: pos.x,
+        top: pos.y,
+        width: pos.w,
+        height: pos.h,
+        marginLeft: -pos.w / 2,
+        marginTop: -pos.h / 2,
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpen(node.id);
+      }}
+      aria-haspopup="dialog"
+      aria-expanded={active}
+      title={`${node.label} · ${node.status} — click to inspect`}
+    >
+      {shape === "decision" ? (
+        <span className="bn-flow-diamond-inner">
+          <span className="bn-pipe-node-label">{node.label}</span>
+          <span className="bn-pipe-node-status">{node.status}</span>
+        </span>
+      ) : (
+        <>
+          {shape === "cylinder" ? <span className="bn-cyl-rim" aria-hidden="true" /> : null}
+          <span className="bn-pipe-node-label">{node.label}</span>
+          <span className="bn-pipe-node-status">{node.status}</span>
+          {shape === "cylinder" ? (
+            <span className="bn-cyl-base" aria-hidden="true" />
+          ) : null}
+        </>
+      )}
+    </button>
+  );
+}
+
 /**
- * Architecture-style live pipeline — diagram only; click a node for a popup.
+ * Pan/zoom architecture canvas — Lucid/Mermaid shapes, React-Flow style viewport.
  */
 export default function TurnPipeline({
   trace,
   answer = "",
   turnKey = "idle",
+  chatHistory = [],
 }) {
   const [activeId, setActiveId] = useState(null);
+  const [zoom, setZoom] = useState(0.92);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const viewportRef = useRef(null);
+  const dragRef = useRef(null);
   const closeBtnRef = useRef(null);
+  const fittedRef = useRef(false);
 
   const route = trace?.route;
   const grounding = trace?.grounding;
@@ -800,6 +1184,11 @@ export default function TurnPipeline({
     routing?.match_summary || routing?.debug?.match_summary || {};
   const arbiter = routing?.debug?.arbiter || {};
   const winningRuleId = matchSummary?.rule_id || winningRule?.route || route;
+  const scoreLedger =
+    routing?.score_ledger ||
+    routing?.debug?.score_ledger ||
+    routing?.debug?.ledger ||
+    [];
   const finalCheck =
     trace?.final_check ||
     trace?.debug?.final_check ||
@@ -817,12 +1206,14 @@ export default function TurnPipeline({
         id: "parent",
         label: "Parent message",
         kind: "start",
+        shape: "terminal",
         status: hasTrace ? "done" : "idle",
       },
       {
         id: "memory",
         label: "Session memory",
         kind: "store",
+        shape: "cylinder",
         status: !hasTrace
           ? "idle"
           : history?.turns_loaded > 0 || (history?.preview || "").length > 0
@@ -833,12 +1224,14 @@ export default function TurnPipeline({
         id: "router",
         label: "Hybrid router",
         kind: "router",
+        shape: "process",
         status: hasTrace ? "done" : "idle",
       },
       {
         id: "rules",
         label: "Rules · scores",
         kind: "rules",
+        shape: "process",
         status: !hasTrace
           ? "idle"
           : rulesEvaluated.length
@@ -849,49 +1242,49 @@ export default function TurnPipeline({
         id: "arbiter",
         label: arbiter?.called ? "Route arbiter" : "Arbiter",
         kind: "llm",
+        shape: "process",
         status: !hasTrace ? "idle" : arbiter?.called ? "done" : "skipped",
       },
       {
         id: "tier",
-        label:
-          tier === "rag"
-            ? "Tier · Pure RAG"
-            : tier === "hard"
-              ? "Tier · Hard FSM"
-              : tier === "soft"
-                ? "Tier · Live tool"
-                : "Answer tier",
+        label: "Answer tier?",
         kind: "branch",
+        shape: "decision",
         status: hasTrace && route ? "done" : "idle",
       },
       {
         id: "soft",
         label: "Live / structured",
         kind: "compose",
+        shape: "process",
         status: !hasTrace ? "idle" : tier === "soft" ? "done" : "skipped",
       },
       {
         id: "hard",
         label: "Hard FSM",
         kind: "hard",
+        shape: "process",
         status: !hasTrace ? "idle" : tier === "hard" ? "done" : "skipped",
       },
       {
         id: "rag",
         label: "Pure RAG",
         kind: "rag",
+        shape: "process",
         status: !hasTrace ? "idle" : tier === "rag" ? "done" : "skipped",
       },
       {
         id: "hko",
         label: "HKO · holiday",
         kind: "live",
+        shape: "process",
         status: !hasTrace ? "idle" : facts ? "done" : "skipped",
       },
       {
         id: "chroma",
         label: "Chroma KB",
         kind: "store",
+        shape: "cylinder",
         status: !hasTrace
           ? "idle"
           : hits.length || rag?.hit_count
@@ -906,12 +1299,14 @@ export default function TurnPipeline({
           ? `DashScope · ${llmCalls.length}`
           : "DashScope",
         kind: "llm",
+        shape: "process",
         status: !hasTrace ? "idle" : llmCalls.length ? "done" : "skipped",
       },
       {
         id: "sheets",
         label: "SheetPro · Mail",
         kind: "store",
+        shape: "cylinder",
         status: !hasTrace
           ? "idle"
           : adminTodo ||
@@ -925,6 +1320,7 @@ export default function TurnPipeline({
         id: "answer",
         label: "Parent answer",
         kind: "end",
+        shape: "terminal",
         status: hasTrace ? "done" : "idle",
       },
     ];
@@ -992,9 +1388,46 @@ export default function TurnPipeline({
     staffMessage,
   ]);
 
+  const fitView = useCallback(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const { width, height } = el.getBoundingClientRect();
+    if (width < 40 || height < 40) return;
+    const gw = WORLD.maxX - WORLD.minX;
+    const gh = WORLD.maxY - WORLD.minY;
+    const pad = 48;
+    const nextZoom = Math.min(
+      MAX_ZOOM,
+      Math.max(MIN_ZOOM, Math.min((width - pad) / gw, (height - pad) / gh))
+    );
+    const cx = (WORLD.minX + WORLD.maxX) / 2;
+    const cy = (WORLD.minY + WORLD.maxY) / 2;
+    setZoom(nextZoom);
+    setPan({
+      x: width / 2 - cx * nextZoom,
+      y: height / 2 - cy * nextZoom,
+    });
+  }, []);
+
   useEffect(() => {
     setActiveId(null);
+    fittedRef.current = false;
   }, [turnKey]);
+
+  useEffect(() => {
+    if (fittedRef.current) return;
+    const t = window.setTimeout(() => {
+      fitView();
+      fittedRef.current = true;
+    }, 40);
+    return () => window.clearTimeout(t);
+  }, [fitView, turnKey]);
+
+  useEffect(() => {
+    const onResize = () => fitView();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [fitView]);
 
   useEffect(() => {
     if (!activeId) return undefined;
@@ -1008,6 +1441,60 @@ export default function TurnPipeline({
       window.clearTimeout(t);
     };
   }, [activeId]);
+
+  const onWheel = useCallback((e) => {
+    e.preventDefault();
+    const el = viewportRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    setZoom((z) => {
+      const next = Math.min(
+        MAX_ZOOM,
+        Math.max(MIN_ZOOM, z * (e.deltaY < 0 ? 1.08 : 0.92))
+      );
+      setPan((p) => {
+        const wx = (mx - p.x) / z;
+        const wy = (my - p.y) / z;
+        return { x: mx - wx * next, y: my - wy * next };
+      });
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return undefined;
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [onWheel]);
+
+  const onPointerDown = (e) => {
+    if (e.button !== 0 && e.button !== 1) return;
+    if (e.target.closest(".bn-flow-node")) return;
+    dragRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      panX: pan.x,
+      panY: pan.y,
+      moved: false,
+    };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+
+  const onPointerMove = (e) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const dx = e.clientX - d.x;
+    const dy = e.clientY - d.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true;
+    setPan({ x: d.panX + dx, y: d.panY + dy });
+  };
+
+  const onPointerUp = () => {
+    dragRef.current = null;
+  };
 
   const active = nodes.find((n) => n.id === activeId) || null;
 
@@ -1025,96 +1512,110 @@ export default function TurnPipeline({
             }`
           : ""
       }`
-    : "Idle — send a parent message to light the path";
+    : "Idle — drag to pan · scroll to zoom · click a node";
 
   return (
-    <div className="bn-pipeline" key={turnKey}>
-      <header className="bn-pipeline-head">
+    <div className="bn-pipeline bn-pipeline--canvas" key={turnKey}>
+      <header className="bn-pipeline-head bn-pipeline-head--float">
         <div>
           <strong>Request flow</strong>
           <span>{metaLine}</span>
         </div>
-        <p className="bn-pipeline-hint">Click a node to inspect</p>
+        <div className="bn-flow-controls" role="toolbar" aria-label="Canvas controls">
+          <button type="button" onClick={() => setZoom((z) => Math.min(MAX_ZOOM, z * 1.12))} title="Zoom in">
+            +
+          </button>
+          <button type="button" onClick={() => setZoom((z) => Math.max(MIN_ZOOM, z / 1.12))} title="Zoom out">
+            −
+          </button>
+          <button type="button" onClick={fitView} title="Fit">
+            Fit
+          </button>
+          <span className="bn-flow-zoom">{Math.round(zoom * 100)}%</span>
+        </div>
       </header>
 
-      {steps.length > 0 ? (
-        <ol className="bn-step-rail bn-pipeline-steps" aria-label="Turn steps">
-          {steps
-            .filter((s) => s.status !== "skipped" || s.id === "final_check")
-            .map((s) => (
-              <li
-                key={s.id}
-                className={`bn-step-chip bn-step-${s.status || "idle"}`}
-                title={s.detail}
-              >
-                <span>{s.label}</span>
-              </li>
-            ))}
-        </ol>
-      ) : null}
-
-      <div className="bn-pipeline-stage">
-        <svg
-          className="bn-pipeline-edges"
-          viewBox="0 0 1000 780"
-          preserveAspectRatio="xMidYMid meet"
-          aria-hidden="true"
+      <div
+        ref={viewportRef}
+        className="bn-flow-viewport"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+      >
+        <div
+          className="bn-flow-world"
+          style={{
+            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+          }}
         >
-          <defs>
-            <marker
-              id="bn-arrow"
-              viewBox="0 0 10 10"
-              refX="9"
-              refY="5"
-              markerWidth="6"
-              markerHeight="6"
-              orient="auto-start-reverse"
-            >
-              <path d="M 0 1.2 L 9 5 L 0 8.8 Z" fill="currentColor" />
-            </marker>
-          </defs>
-          {EDGES.map(([from, to]) => {
-            const lit =
-              activePath.has(from) &&
-              activePath.has(to) &&
-              statusById[from] === "done" &&
-              (statusById[to] === "done" || statusById[to] === "empty");
-            return (
-              <path
-                key={`${from}-${to}`}
-                d={edgePath(from, to)}
-                className={`bn-pipe-edge${lit ? " is-lit" : ""}`}
-                markerEnd="url(#bn-arrow)"
-              />
-            );
-          })}
-        </svg>
-
-        <div className="bn-pipeline-nodes" role="list" aria-label="Turn architecture">
-          {nodes.map((n) => {
-            const pos = NODE_LAYOUT[n.id];
-            const lit = activePath.has(n.id) && n.status === "done";
-            return (
-              <button
-                key={n.id}
-                type="button"
-                role="listitem"
-                className={`bn-pipe-node bn-pipe-${n.kind} bn-pipe-${n.status}${
-                  lit ? " is-lit" : ""
-                }${activeId === n.id ? " is-active" : ""}`}
-                style={{
-                  left: `${(pos.x / 1000) * 100}%`,
-                  top: `${(pos.y / 780) * 100}%`,
-                }}
-                onClick={() => setActiveId(n.id)}
-                aria-haspopup="dialog"
-                aria-expanded={activeId === n.id}
+          <svg
+            className="bn-flow-edges"
+            width={WORLD.maxX - WORLD.minX}
+            height={WORLD.maxY - WORLD.minY}
+            viewBox={`${WORLD.minX} ${WORLD.minY} ${WORLD.maxX - WORLD.minX} ${
+              WORLD.maxY - WORLD.minY
+            }`}
+            style={{ left: WORLD.minX, top: WORLD.minY }}
+            aria-hidden="true"
+          >
+            <defs>
+              <marker
+                id="bn-flow-arrow"
+                viewBox="0 0 10 10"
+                refX="9"
+                refY="5"
+                markerWidth="7"
+                markerHeight="7"
+                orient="auto-start-reverse"
               >
-                <span className="bn-pipe-node-label">{n.label}</span>
-                <span className="bn-pipe-node-status">{n.status}</span>
-              </button>
-            );
-          })}
+                <path d="M 0 1.2 L 9 5 L 0 8.8 Z" fill="currentColor" />
+              </marker>
+            </defs>
+            {EDGES.map((edge) => {
+              const geo = edgeGeometry(edge.from, edge.to);
+              if (!geo) return null;
+              const lit =
+                activePath.has(edge.from) &&
+                activePath.has(edge.to) &&
+                statusById[edge.from] === "done" &&
+                (statusById[edge.to] === "done" ||
+                  statusById[edge.to] === "empty");
+              return (
+                <g key={`${edge.from}-${edge.to}`}>
+                  <path
+                    d={geo.d}
+                    className={`bn-pipe-edge${lit ? " is-lit" : ""}${
+                      edge.dashed ? " is-dashed" : ""
+                    }`}
+                    markerEnd="url(#bn-flow-arrow)"
+                  />
+                  {edge.label ? (
+                    <text
+                      x={geo.labelAt.x}
+                      y={geo.labelAt.y}
+                      className={`bn-pipe-edge-label${lit ? " is-lit" : ""}`}
+                      textAnchor="middle"
+                    >
+                      {edge.label}
+                    </text>
+                  ) : null}
+                </g>
+              );
+            })}
+          </svg>
+
+          <div className="bn-flow-nodes" role="list" aria-label="System architecture">
+            {nodes.map((n) => (
+              <FlowNode
+                key={n.id}
+                node={n}
+                lit={activePath.has(n.id) && n.status === "done"}
+                active={activeId === n.id}
+                onOpen={setActiveId}
+              />
+            ))}
+          </div>
         </div>
       </div>
 
@@ -1139,6 +1640,7 @@ export default function TurnPipeline({
                     <span className={`bn-pipe-pill bn-pipe-${active.status}`}>
                       {active.status}
                     </span>
+                    <span className="bn-pipe-shape-tag">{active.shape}</span>
                   </div>
                   <button
                     ref={closeBtnRef}
@@ -1155,6 +1657,7 @@ export default function TurnPipeline({
                     node={active}
                     trace={trace}
                     answer={answer}
+                    chatHistory={chatHistory}
                     route={route}
                     grounding={grounding}
                     routing={routing}
@@ -1173,6 +1676,7 @@ export default function TurnPipeline({
                     finalCheck={finalCheck}
                     adminTodo={adminTodo}
                     staffMessage={staffMessage}
+                    scoreLedger={scoreLedger}
                   />
                 </div>
               </div>
