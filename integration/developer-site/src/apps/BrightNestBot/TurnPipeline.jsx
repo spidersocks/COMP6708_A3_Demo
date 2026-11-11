@@ -30,20 +30,25 @@ const LLM_ROLE_LABELS = {
 const LAYOUT = {
   parent: { x: 0, y: 0, w: 156, h: 42 },
   lang: { x: 0, y: 72, w: 148, h: 42 },
-  memory: { x: 0, y: 150, w: 132, h: 58 },
-  rules: { x: 0, y: 240, w: 146, h: 46 },
-  router: { x: 0, y: 330, w: 146, h: 46 },
-  arbiter: { x: 178, y: 330, w: 120, h: 46 },
-  path: { x: 0, y: 430, w: 112, h: 112 },
-  fsm: { x: -168, y: 560, w: 140, h: 46 },
-  rag: { x: 168, y: 560, w: 140, h: 46 },
-  live: { x: -168, y: 650, w: 140, h: 46 },
-  chroma: { x: 168, y: 650, w: 132, h: 58 },
-  rewrite: { x: 168, y: 740, w: 148, h: 46 },
-  chroma2: { x: 168, y: 830, w: 132, h: 58 },
-  sheets: { x: -168, y: 930, w: 132, h: 58 },
-  llm: { x: 40, y: 930, w: 156, h: 46 },
-  answer: { x: 0, y: 1030, w: 156, h: 42 },
+  memory: { x: 0, y: 150, w: 148, h: 72 },
+  rules: { x: 0, y: 250, w: 146, h: 46 },
+  router: { x: 0, y: 340, w: 146, h: 46 },
+  arbiter: { x: 188, y: 340, w: 120, h: 46 },
+  path: { x: 0, y: 450, w: 112, h: 112 },
+  fsm: { x: -210, y: 590, w: 140, h: 46 },
+  rag: { x: 200, y: 590, w: 140, h: 46 },
+  live: { x: -210, y: 690, w: 140, h: 46 },
+  // Hybrid retrieve expands here: dense ∥ sparse → RRF → pass 1
+  dense: { x: 100, y: 700, w: 136, h: 76 },
+  sparse: { x: 300, y: 700, w: 136, h: 76 },
+  fuse: { x: 200, y: 810, w: 148, h: 48 },
+  chroma: { x: 200, y: 920, w: 148, h: 76 },
+  rewrite: { x: 200, y: 1030, w: 152, h: 48 },
+  // Pass 2 sits to the RIGHT so the no-retry path never crosses it
+  chroma2: { x: 360, y: 1140, w: 148, h: 76 },
+  sheets: { x: -210, y: 1140, w: 168, h: 76 },
+  llm: { x: 40, y: 1140, w: 160, h: 48 },
+  answer: { x: 0, y: 1250, w: 156, h: 42 },
 };
 
 const EDGES = [
@@ -59,20 +64,24 @@ const EDGES = [
   { id: "e-fsm-live", from: "fsm", to: "live", dashed: true },
   { id: "e-fsm-llm", from: "fsm", to: "llm" },
   { id: "e-fsm-sheets", from: "fsm", to: "sheets" },
-  { id: "e-rag-chroma", from: "rag", to: "chroma" },
+  { id: "e-rag-dense", from: "rag", to: "dense" },
+  { id: "e-rag-sparse", from: "rag", to: "sparse" },
+  { id: "e-dense-fuse", from: "dense", to: "fuse" },
+  { id: "e-sparse-fuse", from: "sparse", to: "fuse" },
+  { id: "e-fuse-chroma", from: "fuse", to: "chroma" },
   { id: "e-chroma-rewrite", from: "chroma", to: "rewrite" },
   { id: "e-rewrite-chroma2", from: "rewrite", to: "chroma2", dashed: true },
   { id: "e-chroma2-llm", from: "chroma2", to: "llm", dashed: true },
   { id: "e-rewrite-llm", from: "rewrite", to: "llm" },
   { id: "e-live-llm", from: "live", to: "llm", dashed: true },
-  { id: "e-live-chroma", from: "live", to: "chroma", dashed: true },
+  { id: "e-live-fuse", from: "live", to: "fuse", dashed: true },
   { id: "e-llm-answer", from: "llm", to: "answer" },
   { id: "e-sheets-answer", from: "sheets", to: "answer" },
 ];
 
-const WORLD = { minX: -340, minY: -28, maxX: 340, maxY: 1100 };
+const WORLD = { minX: -380, minY: -28, maxX: 460, maxY: 1320 };
 /** Default Fit: top of the spine (parent → path), not the whole flowchart. */
-const FIT_FOCUS = { minX: -210, minY: -24, maxX: 230, maxY: 460 };
+const FIT_FOCUS = { minX: -220, minY: -24, maxX: 250, maxY: 480 };
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2.0;
 const PAN_MARGIN = 72;
@@ -123,7 +132,8 @@ function clip(text, n = 120) {
 /** FSM (tools / sticky dialogue) vs RAG (retrieve → generate). */
 function pathKind(route, grounding) {
   const g = grounding?.mode;
-  if (g === "pure_rag" || route === "rag") return "rag";
+  // "pure_rag" kept for older traces; new API emits "rag"
+  if (g === "rag" || g === "pure_rag" || route === "rag") return "rag";
   if (route) return "fsm";
   return null;
 }
@@ -213,6 +223,8 @@ function nodeAnchor(id, side = "bottom") {
   if (side === "top") return { x: n.x, y: n.y - n.h / 2 };
   if (side === "left") return { x: n.x - n.w / 2, y: n.y };
   if (side === "right") return { x: n.x + n.w / 2, y: n.y };
+  if (side === "sw") return { x: n.x - n.w * 0.32, y: n.y + n.h / 2 };
+  if (side === "se") return { x: n.x + n.w * 0.32, y: n.y + n.h / 2 };
   if (side === "center") return { x: n.x, y: n.y };
   return { x: n.x, y: n.y + n.h / 2 };
 }
@@ -240,6 +252,7 @@ function edgeGeometry(fromId, toId) {
 
   let rawStart;
   let rawEnd;
+  let elbow = null; // optional mid waypoint(s)
 
   if (fromId === "path" && toId === "fsm") {
     rawStart = nodeAnchor("path", "sw");
@@ -254,8 +267,43 @@ function edgeGeometry(fromId, toId) {
     rawStart = nodeAnchor("arbiter", "bottom");
     rawEnd = nodeAnchor("path", "right");
   } else if (fromId === "fsm" && toId === "llm") {
+    // Right then down the center corridor (x ≈ llm) — avoid sheets cylinder
     rawStart = nodeAnchor("fsm", "right");
-    rawEnd = nodeAnchor("llm", "left");
+    rawEnd = nodeAnchor("llm", "top");
+    elbow = [{ x: b.x, y: a.y }];
+  } else if (fromId === "fsm" && toId === "sheets") {
+    rawStart = nodeAnchor("fsm", "bottom");
+    rawEnd = nodeAnchor("sheets", "top");
+  } else if (fromId === "rag" && toId === "dense") {
+    rawStart = nodeAnchor("rag", "sw");
+    rawEnd = nodeAnchor("dense", "top");
+  } else if (fromId === "rag" && toId === "sparse") {
+    rawStart = nodeAnchor("rag", "se");
+    rawEnd = nodeAnchor("sparse", "top");
+  } else if (fromId === "dense" && toId === "fuse") {
+    rawStart = nodeAnchor("dense", "bottom");
+    rawEnd = nodeAnchor("fuse", "left");
+  } else if (fromId === "sparse" && toId === "fuse") {
+    rawStart = nodeAnchor("sparse", "bottom");
+    rawEnd = nodeAnchor("fuse", "right");
+  } else if (fromId === "rewrite" && toId === "llm") {
+    // Exit left, drop at llm.x — never cut through KB · pass 2 (right arm)
+    rawStart = nodeAnchor("rewrite", "left");
+    rawEnd = nodeAnchor("llm", "top");
+    elbow = [{ x: b.x, y: rawStart.y }];
+  } else if (fromId === "rewrite" && toId === "chroma2") {
+    rawStart = nodeAnchor("rewrite", "right");
+    rawEnd = nodeAnchor("chroma2", "top");
+  } else if (fromId === "chroma2" && toId === "llm") {
+    rawStart = nodeAnchor("chroma2", "left");
+    rawEnd = nodeAnchor("llm", "right");
+  } else if (fromId === "live" && toId === "llm") {
+    rawStart = nodeAnchor("live", "right");
+    rawEnd = nodeAnchor("llm", "top");
+    elbow = [{ x: b.x, y: a.y }];
+  } else if (fromId === "live" && toId === "fuse") {
+    rawStart = nodeAnchor("live", "right");
+    rawEnd = nodeAnchor("fuse", "left");
   } else if (Math.abs(b.x - a.x) > 40 && Math.abs(b.y - a.y) < 30) {
     rawStart = nodeAnchor(fromId, b.x < a.x ? "left" : "right");
     rawEnd = nodeAnchor(toId, b.x < a.x ? "right" : "left");
@@ -266,11 +314,14 @@ function edgeGeometry(fromId, toId) {
 
   const { start, end } = shorten(rawStart, rawEnd, 1, 11);
   const dx = Math.abs(end.x - start.x);
-  const dy = Math.abs(end.y - start.y);
   let d;
   let labelAt;
-  if (dx < 8) {
-    // Vertical
+  if (elbow && elbow.length) {
+    const pts = [start, ...elbow, end];
+    d = `M ${pts[0].x} ${pts[0].y}` + pts.slice(1).map((p) => ` L ${p.x} ${p.y}`).join("");
+    const mid = pts[Math.floor(pts.length / 2)];
+    labelAt = { x: mid.x + 8, y: mid.y - 6 };
+  } else if (dx < 8) {
     const midY = (start.y + end.y) / 2;
     d = `M ${start.x} ${start.y} L ${end.x} ${end.y}`;
     labelAt = { x: start.x + 10, y: midY };
@@ -441,6 +492,52 @@ function RagHit({ hit, index }) {
       </button>
       {open && body ? <pre className="bn-hit-full">{body}</pre> : null}
     </li>
+  );
+}
+
+/** Compact list for a single retrieve channel (dense_top / sparse_top). */
+function ChannelPoolPanel({ title, query, rows, emptyHint, meta }) {
+  const list = rows || [];
+  return (
+    <>
+      {title ? <p className="bn-rules-hint">{title}</p> : null}
+      {query ? (
+        <ul className="bn-fact-list">
+          <li>
+            <span>Query</span>
+            <code>{query}</code>
+          </li>
+          {meta
+            ? Object.entries(meta).map(([k, v]) => (
+                <li key={k}>
+                  <span>{k}</span>
+                  <code>{v ?? "—"}</code>
+                </li>
+              ))
+            : null}
+        </ul>
+      ) : null}
+      {!list.length ? (
+        <Skipped>{emptyHint || "No rows in this channel pool."}</Skipped>
+      ) : (
+        <ul className="bn-hits">
+          {list.map((h, i) => (
+            <li key={`${h.source || h.id || i}-${i}`} className="bn-hit">
+              <div className="bn-hit-head">
+                <strong>
+                  <span className="bn-hit-rank">#{h.rank ?? i + 1}</span>{" "}
+                  {h.title || h.source || `Row ${i + 1}`}
+                </strong>
+                {h.score != null ? (
+                  <code>{scoreLabel(h.score) ?? String(h.score)}</code>
+                ) : null}
+              </div>
+              {h.source ? <span className="bn-hit-src">{h.source}</span> : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
   );
 }
 
@@ -925,6 +1022,7 @@ function NodeDetail({
             After scores (and optional arbiter): pick one route id. Path then
             maps that route to FSM vs RAG.
           </p>
+          <MatchSummaryCard summary={matchSummary} />
           <ul className="bn-fact-list">
             <li>
               <span>Route</span>
@@ -965,76 +1063,71 @@ function NodeDetail({
         </>
       );
 
-    case "rules":
+    case "rules": {
+      const scoreRows = Object.entries(routing?.scores || {}).sort(
+        (a, b) => Number(b[1]) - Number(a[1])
+      );
+      const rulesByScore = [...rulesEvaluated].sort((a, b) => {
+        const sa = Number(routing?.scores?.[a.id] ?? a.score ?? -Infinity);
+        const sb = Number(routing?.scores?.[b.id] ?? b.score ?? -Infinity);
+        return sb - sa;
+      });
       return (
         <>
-          <div className="bn-score-howto">
-            <p>
-              <strong>Detector awards</strong> (not RAG similarity)
-            </p>
-            <ol>
-              <li>Matching detectors award a fixed score.</li>
-              <li>Drop scores under <code>0.28</code>.</li>
-              <li>
-                Highest wins; ties use priority (escalate → off-domain → weather
-                → cancel → book → seats → hours → RAG).
-              </li>
-              <li>No match → RAG default path (no detector award).</li>
-            </ol>
-          </div>
-          <MatchSummaryCard summary={matchSummary} />
-          {routing?.scores && Object.keys(routing.scores).length > 0 ? (
-            <details className="bn-rules" open>
-              <summary>Scores</summary>
-              <ul className="bn-fact-list">
-                {Object.entries(routing.scores)
-                  .sort((a, b) => Number(b[1]) - Number(a[1]))
-                  .slice(0, 12)
-                  .map(([k, v]) => {
-                    const origin =
-                      routing.score_origins?.[k] ||
-                      scoreLedger.filter((e) => e.route === k).slice(-1)[0];
-                    return (
-                      <li key={k}>
-                        <span>
-                          {k}
-                          {origin?.source ? (
-                            <em className="bn-score-src"> · {origin.source}</em>
-                          ) : null}
-                        </span>
-                        <code>{formatRouteScore(k, v, origin)}</code>
-                      </li>
-                    );
-                  })}
-              </ul>
-              {scoreLedger.length > 0 ? (
-                <details className="bn-rules bn-ledger">
-                  <summary>Ledger · {scoreLedger.length}</summary>
-                  <ol className="bn-score-ledger">
-                    {scoreLedger.map((e, i) => (
-                      <li
-                        key={`led-${i}`}
-                        className={`bn-led-${e.op || "note"}`}
-                      >
-                        <strong>{e.op || "note"}</strong>
-                        <span>
-                          <code>{e.route}</code>
-                          {e.score != null
-                            ? ` = ${formatRouteScore(e.route, e.score, e)}`
-                            : ""}
-                          {e.source ? ` · ${e.source}` : ""}
-                          {e.why ? ` — ${e.why}` : ""}
-                        </span>
-                      </li>
-                    ))}
-                  </ol>
-                </details>
-              ) : null}
+          <p className="bn-rules-hint">
+            Detector awards for each rule (not RAG similarity). Highest on top;
+            winner feeds the router.
+          </p>
+          {scoreRows.length > 0 ? (
+            <ul className="bn-fact-list">
+              {scoreRows.map(([k, v]) => {
+                const origin =
+                  routing.score_origins?.[k] ||
+                  scoreLedger.filter((e) => e.route === k).slice(-1)[0];
+                const isTop = k === scoreRows[0][0];
+                return (
+                  <li key={k}>
+                    <span>
+                      {isTop ? "★ " : ""}
+                      {k}
+                      {origin?.source ? (
+                        <em className="bn-score-src"> · {origin.source}</em>
+                      ) : null}
+                    </span>
+                    <code>{formatRouteScore(k, v, origin)}</code>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <Skipped>No detector scores this turn.</Skipped>
+          )}
+          {scoreLedger.length > 0 ? (
+            <details className="bn-rules bn-ledger">
+              <summary>Ledger · {scoreLedger.length}</summary>
+              <ol className="bn-score-ledger">
+                {scoreLedger.map((e, i) => (
+                  <li
+                    key={`led-${i}`}
+                    className={`bn-led-${e.op || "note"}`}
+                  >
+                    <strong>{e.op || "note"}</strong>
+                    <span>
+                      <code>{e.route}</code>
+                      {e.score != null
+                        ? ` = ${formatRouteScore(e.route, e.score, e)}`
+                        : ""}
+                      {e.source ? ` · ${e.source}` : ""}
+                      {e.why ? ` — ${e.why}` : ""}
+                    </span>
+                  </li>
+                ))}
+              </ol>
             </details>
           ) : null}
-          {rulesEvaluated.length > 0 ? (
+          {rulesByScore.length > 0 ? (
             <ul className="bn-rule-list">
-              {rulesEvaluated.map((r) => (
+              {rulesByScore.map((r) => (
                 <RuleEvidence
                   key={r.id}
                   rule={r}
@@ -1047,6 +1140,7 @@ function NodeDetail({
           )}
         </>
       );
+    }
 
     case "arbiter": {
       const arbCalls = llmCalls.filter((c) => c.role === "intent_arbiter");
@@ -1115,7 +1209,13 @@ function NodeDetail({
             </li>
           </ul>
           <StageIO
-            request={{ route, grounding: grounding?.mode }}
+            request={{
+              route,
+              grounding:
+                grounding?.mode === "pure_rag"
+                  ? "rag"
+                  : grounding?.mode || null,
+            }}
             payload={{
               path: path || null,
               live: Boolean(liveOn),
@@ -1201,17 +1301,18 @@ function NodeDetail({
         return (
           <Skipped>
             RAG path not taken
-            {enrichMode ? " (FSM may still enrich via Chroma)." : "."}
+            {enrichMode ? " (FSM may still enrich via hybrid retrieve)." : "."}
           </Skipped>
         );
       }
       return (
         <>
           <p className="bn-rules-hint">
-            Retrieve → generate. Pass 1 uses <strong>hybrid RRF</strong>{" "}
-            (dense Chroma + BM25), then lexical keep <code>top_k</code>. Optional
-            pass-2 after grade/rewrite. Generation still sees the parent’s wording
-            + chat history.
+            Retrieve → generate. The flowchart expands hybrid as{" "}
+            <strong>Dense ∥ Sparse → RRF fuse → ranked pass 1</strong>, then
+            grade / optional rewrite → pass 2. Keep <code>top_k</code> after
+            lexical re-rank. Generation still sees the parent’s wording + chat
+            history.
           </p>
           <ul className="bn-fact-list">
             <li>
@@ -1321,6 +1422,121 @@ function NodeDetail({
         </>
       );
 
+    case "dense": {
+      const hy = rag?.hybrid;
+      const ran = path === "rag" || enrichMode || hy || hits.length;
+      if (!ran) return <Skipped>Dense retrieve did not run.</Skipped>;
+      return (
+        <ChannelPoolPanel
+          title="Dense channel · Chroma vector search (embeddings). Runs in parallel with BM25."
+          query={rag?.pass1_query || inbound}
+          rows={hy?.dense_top || []}
+          meta={{
+            Pool: hy?.dense_count ?? "—",
+            Index: rag?.index_size ?? "—",
+            Mode: rag?.embedding_mode || "—",
+          }}
+          emptyHint={
+            hy?.mode && hy.mode !== "hybrid_rrf"
+              ? `Dense-only / fallback: ${hy.reason || hy.mode}`
+              : "No dense pool rows in debug payload."
+          }
+        />
+      );
+    }
+
+    case "sparse": {
+      const hy = rag?.hybrid;
+      const ran = path === "rag" || enrichMode || hy || hits.length;
+      if (!ran) return <Skipped>Sparse retrieve did not run.</Skipped>;
+      return (
+        <ChannelPoolPanel
+          title="Sparse channel · in-process BM25 over the same KB rows. No cloud search service."
+          query={rag?.pass1_query || inbound}
+          rows={hy?.sparse_top || []}
+          meta={{
+            Pool: hy?.sparse_count ?? "—",
+            Index: rag?.sparse_index_size ?? "—",
+          }}
+          emptyHint={
+            hy?.mode && hy.mode !== "hybrid_rrf"
+              ? `BM25 skipped: ${hy.reason || hy.mode}`
+              : "No BM25 pool rows in debug payload."
+          }
+        />
+      );
+    }
+
+    case "fuse": {
+      const hy = rag?.hybrid;
+      const ran = path === "rag" || enrichMode || hy || hits.length;
+      if (!ran) return <Skipped>RRF fuse did not run.</Skipped>;
+      if (hy && hy.mode !== "hybrid_rrf") {
+        return (
+          <>
+            <p className="bn-rules-hint">
+              Hybrid RRF not used this turn — fell back to a single channel.
+            </p>
+            <ul className="bn-fact-list">
+              <li>
+                <span>Mode</span>
+                <code>{hy.mode || "—"}</code>
+              </li>
+              <li>
+                <span>Reason</span>
+                <code>{hy.reason || "—"}</code>
+              </li>
+            </ul>
+          </>
+        );
+      }
+      return (
+        <>
+          <p className="bn-rules-hint">
+            <strong>Reciprocal Rank Fusion</strong> merges dense + BM25 rank lists
+            (score = Σ 1/(k + rank)). Docs in both lists rise; then lexical
+            re-rank keeps <code>top_k</code> for pass 1.
+          </p>
+          <ul className="bn-fact-list">
+            <li>
+              <span>Mode</span>
+              <code>{hy?.mode || rag?.retrieve_mode || "hybrid_rrf"}</code>
+            </li>
+            <li>
+              <span>RRF k</span>
+              <code>{hy?.rrf_k ?? "—"}</code>
+            </li>
+            <li>
+              <span>Dense pool</span>
+              <code>{hy?.dense_count ?? "—"}</code>
+            </li>
+            <li>
+              <span>BM25 pool</span>
+              <code>{hy?.sparse_count ?? "—"}</code>
+            </li>
+            <li>
+              <span>Channels</span>
+              <code>
+                both {hy?.both ?? 0} · dense {hy?.dense_only ?? 0} · BM25{" "}
+                {hy?.sparse_only ?? 0}
+              </code>
+            </li>
+          </ul>
+          <StageIO
+            request={{
+              query: rag?.pass1_query || inbound,
+              rrf_k: hy?.rrf_k ?? null,
+            }}
+            payload={{
+              hybrid: hy || null,
+              kept_top_k: rag?.top_k ?? null,
+              pool_returned: rag?.pool_returned ?? null,
+            }}
+          />
+        </>
+      );
+    }
+
     case "chroma": {
       const pass1 = rag?.pass1_hits || hits;
       if (!(pass1.length || enrichMode || path === "rag")) {
@@ -1329,15 +1545,15 @@ function NodeDetail({
       return (
         <>
           <p className="bn-rules-hint">
-            Always first with the <strong>raw parent message</strong>: dense
-            Chroma + in-process BM25, fused by Reciprocal Rank Fusion (RRF), then
-            lexical re-rank. No extra cloud search service.
+            <strong>Ranked pass 1</strong> after RRF (+ lexical keep). Always
+            first with the <strong>raw parent message</strong> — grade sees these
+            chunks next.
           </p>
           <ChromaHitsPanel
             title={
               enrichMode
-                ? "Pass 1 · hybrid enrich retrieve"
-                : "Pass 1 · hybrid raw-query retrieve"
+                ? "Pass 1 · fused enrich hits"
+                : "Pass 1 · fused raw-query hits"
             }
             query={rag?.pass1_query || inbound}
             hits={pass1}
@@ -1429,18 +1645,29 @@ function NodeDetail({
         trace?.cancel?.cancelled ||
         trace?.cancel?.stage === "cancelled";
       if (!wrote) {
-        return <Skipped>No SheetPro / MailBox / CSV write.</Skipped>;
+        return (
+          <Skipped>
+            No staff-desk write this turn (SheetPro todo row / Mailbox message /
+            booking CSV).
+          </Skipped>
+        );
       }
       return (
-        <StageIO
-          request={{ route, session: trace.session_id }}
-          payload={{
-            admin_todo: adminTodo || null,
-            staff_message: staffMessage || null,
-            booking: trace?.booking?.booking || null,
-            cancel: trace?.cancel || null,
-          }}
-        />
+        <>
+          <p className="bn-rules-hint">
+            Staff desk side-effects: SheetPro admin todos, Mailbox / WhatsApp
+            staff notes, and booking/cancel CSV rows when a flow commits.
+          </p>
+          <StageIO
+            request={{ route, session: trace.session_id }}
+            payload={{
+              admin_todo: adminTodo || null,
+              staff_message: staffMessage || null,
+              booking: trace?.booking?.booking || null,
+              cancel: trace?.cancel || null,
+            }}
+          />
+        </>
       );
     }
 
@@ -1694,8 +1921,57 @@ export default function TurnPipeline({
         status: !hasTrace ? "idle" : liveOn ? "done" : "skipped",
       },
       {
+        id: "dense",
+        label: "Dense · Chroma",
+        kind: "store",
+        shape: "cylinder",
+        status: !hasTrace
+          ? "idle"
+          : !(path === "rag" || enrichMode || hits.length || rag?.hybrid)
+            ? "skipped"
+            : rag?.hybrid?.dense_count > 0 || (rag?.hybrid?.dense_top || []).length
+              ? "done"
+              : path === "rag" || enrichMode
+                ? "empty"
+                : "skipped",
+      },
+      {
+        id: "sparse",
+        label: "Sparse · BM25",
+        kind: "store",
+        shape: "cylinder",
+        status: !hasTrace
+          ? "idle"
+          : !(path === "rag" || enrichMode || hits.length || rag?.hybrid)
+            ? "skipped"
+            : rag?.hybrid?.sparse_count > 0 ||
+                (rag?.hybrid?.sparse_top || []).length
+              ? "done"
+              : path === "rag" || enrichMode
+                ? rag?.hybrid?.mode === "hybrid_rrf"
+                  ? "empty"
+                  : "skipped"
+                : "skipped",
+      },
+      {
+        id: "fuse",
+        label: "RRF fuse",
+        kind: "rag",
+        shape: "process",
+        status: !hasTrace
+          ? "idle"
+          : !(path === "rag" || enrichMode || hits.length || rag?.hybrid)
+            ? "skipped"
+            : rag?.hybrid?.mode === "hybrid_rrf" ||
+                (rag?.pass1_hits || hits).length
+              ? "done"
+              : path === "rag" || enrichMode
+                ? "empty"
+                : "skipped",
+      },
+      {
         id: "chroma",
-        label: "KB · pass 1",
+        label: "Ranked · pass 1",
         kind: "store",
         shape: "cylinder",
         status: !hasTrace
@@ -1743,7 +2019,7 @@ export default function TurnPipeline({
       },
       {
         id: "sheets",
-        label: "SheetPro · Mail",
+        label: "Staff desk · Sheet/Mail",
         kind: "store",
         shape: "cylinder",
         status: !hasTrace
@@ -1777,6 +2053,7 @@ export default function TurnPipeline({
     rag?.hit_count,
     rag?.query_rewrite,
     rag?.retrieval_grade,
+    rag?.hybrid,
     enrichMode,
     llmCalls,
     adminTodo,
@@ -1802,14 +2079,18 @@ export default function TurnPipeline({
     ]);
     if (history?.enabled === false) lit.delete("memory");
     if (arbiter?.called) lit.add("arbiter");
+    const lightHybrid = () => {
+      lit.add("dense");
+      lit.add("sparse");
+      lit.add("fuse");
+      lit.add("chroma");
+      lit.add("rewrite");
+      if (rag?.query_rewrite?.retried) lit.add("chroma2");
+    };
     if (path === "fsm") {
       lit.add("fsm");
       if (liveOn) lit.add("live");
-      if (hits.length || enrichMode) {
-        lit.add("chroma");
-        lit.add("rewrite");
-        if (rag?.query_rewrite?.retried) lit.add("chroma2");
-      }
+      if (hits.length || enrichMode) lightHybrid();
       if (
         adminTodo ||
         staffMessage ||
@@ -1820,9 +2101,7 @@ export default function TurnPipeline({
       }
     } else if (path === "rag") {
       lit.add("rag");
-      lit.add("chroma");
-      lit.add("rewrite");
-      if (rag?.query_rewrite?.retried) lit.add("chroma2");
+      lightHybrid();
       if (liveOn) lit.add("live");
       if (adminTodo) lit.add("sheets");
     }
@@ -1869,7 +2148,11 @@ export default function TurnPipeline({
     if (on("fsm") && on("live")) link("fsm", "live", "e-fsm-live");
     if (on("fsm") && on("llm")) link("fsm", "llm", "e-fsm-llm");
     if (on("fsm") && on("sheets")) link("fsm", "sheets", "e-fsm-sheets");
-    if (on("rag") && on("chroma")) link("rag", "chroma", "e-rag-chroma");
+    if (on("rag") && on("dense")) link("rag", "dense", "e-rag-dense");
+    if (on("rag") && on("sparse")) link("rag", "sparse", "e-rag-sparse");
+    if (on("dense") && on("fuse")) link("dense", "fuse", "e-dense-fuse");
+    if (on("sparse") && on("fuse")) link("sparse", "fuse", "e-sparse-fuse");
+    if (on("fuse") && on("chroma")) link("fuse", "chroma", "e-fuse-chroma");
     if (on("chroma") && on("rewrite")) {
       link("chroma", "rewrite", "e-chroma-rewrite");
     }
@@ -1880,8 +2163,8 @@ export default function TurnPipeline({
       link("rewrite", "llm", "e-rewrite-llm");
     }
     if (on("live") && on("llm")) link("live", "llm", "e-live-llm");
-    if (on("live") && on("chroma") && enrichMode) {
-      link("live", "chroma", "e-live-chroma");
+    if (on("live") && on("fuse") && enrichMode) {
+      link("live", "fuse", "e-live-fuse");
     }
     if (on("llm")) link("llm", "answer", "e-llm-answer");
     if (on("sheets")) link("sheets", "answer", "e-sheets-answer");
@@ -1916,15 +2199,22 @@ export default function TurnPipeline({
           }`
         : "";
     const pass1 = rag?.pass1_hits || hits;
+    const hy = rag?.hybrid;
     const labels = {
       "e-rules-router": pick ? `→ ${pick}` : "",
       "e-arb-path": arbiter?.called ? arbiter.action || "keep" : "",
       "e-path-fsm": path === "fsm" ? "FSM" : "",
       "e-path-rag": path === "rag" ? "RAG" : "",
-      "e-rag-chroma":
-        rag?.retrieve_mode === "hybrid_rrf" || rag?.hybrid?.mode === "hybrid_rrf"
-          ? "hybrid RRF"
-          : "raw query",
+      "e-rag-dense": "vectors",
+      "e-rag-sparse": "keywords",
+      "e-dense-fuse":
+        hy?.dense_count != null ? `${hy.dense_count} hits` : "dense",
+      "e-sparse-fuse":
+        hy?.sparse_count != null ? `${hy.sparse_count} hits` : "BM25",
+      "e-fuse-chroma":
+        hy?.mode === "hybrid_rrf" || rag?.retrieve_mode === "hybrid_rrf"
+          ? `RRF k=${hy?.rrf_k ?? "—"}`
+          : "fuse",
       "e-chroma-rewrite":
         (rag?.retrieval_grade?.grade
           ? String(rag.retrieval_grade.grade)
@@ -1938,9 +2228,10 @@ export default function TurnPipeline({
         rag?.query_rewrite?.retried && scoreLabel(rag?.pass2_hits?.[0]?.score)
           ? `sim ${scoreLabel(rag.pass2_hits[0].score)}`
           : "",
+      "e-live-fuse": enrichMode ? "enrich" : "",
     };
     return labels;
-  }, [routing, winningRuleId, route, arbiter, path, hits, rag]);
+  }, [routing, winningRuleId, route, arbiter, path, hits, rag, enrichMode]);
 
   const fitView = useCallback(() => {
     const el = viewportRef.current;

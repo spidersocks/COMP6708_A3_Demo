@@ -37,17 +37,17 @@ _GREETING_OPENER_RE = re.compile(
 _OFF_KB_REPLY = {
     "en": (
         "That’s outside what our BrightNest materials cover — we’re a kids’ learning centre "
-        "(programmes, fees, hours, booking, and centre policies), not a general science tutor.\n\n"
+        "(programmes, fees, hours, booking, and centre policies).\n\n"
         "Ask me about phonics, Mandarin, writing, trials, seats, or opening hours and I’ll help."
     ),
     "zh-HK": (
         "呢啲唔屬於亮巢學習中心資料可以回答嘅範圍——"
-        "我哋幫家長處理課程、學費、時間、預約同中心政策，唔係一般科學導師。\n\n"
+        "我哋幫家長處理課程、學費、時間、預約同中心政策。\n\n"
         "你可以問拼音、普通話、寫作、試堂、學位或營業時間。"
     ),
     "zh-CN": (
         "这不属于亮巢学习中心资料可以回答的范围——"
-        "我们协助家长处理课程、学费、时间、预约与中心政策，不是一般科学辅导。\n\n"
+        "我们协助家长处理课程、学费、时间、预约与中心政策。\n\n"
         "你可以问拼音、普通话、写作、试听、学位或营业时间。"
     ),
 }

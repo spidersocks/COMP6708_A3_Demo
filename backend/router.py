@@ -1394,7 +1394,7 @@ def chat(req: ChatRequest) -> ChatResponse:
     trace["route"] = "rag"
     trace["rag"] = rag_debug
     trace["grounding"] = {
-        "mode": "pure_rag",
+        "mode": "rag",
         "route": "rag",
         "structured_privileged": False,
         "rag_hit_count": int(rag_debug.get("hit_count") or 0),
