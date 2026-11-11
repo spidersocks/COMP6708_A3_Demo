@@ -36,6 +36,16 @@ def test_mandarin_classes_not_off_topic():
     assert not _off_topic("Tell me more about your Mandarin classes", hit)
 
 
+def test_location_ask_grounds_on_location_doc():
+    hit = _hit(
+        "Location",
+        "Address: 2/F, Harbourview Plaza, 88 Queen's Road Central, Central, Hong Kong",
+        "en/institution/location.md",
+    )
+    assert not _off_topic("Where are you located?", hit)
+    assert not _off_topic("What's your address?", hit)
+
+
 def test_fish_vs_hours_is_off_topic():
     hit = _hit(
         "Opening hours",

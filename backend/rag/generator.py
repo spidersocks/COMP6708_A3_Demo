@@ -169,8 +169,9 @@ def _build_prompt(
         f"{no_hello}"
         f"KB excerpts:\n{ctx}\n\n"
         f"Parent: {question}\n"
-        "Answer (excerpts only; off-KB → brief refuse + "
-        "[[ADMIN_GAP: off_topic — not in centre KB]] on its own last line):"
+        "Answer from the excerpts when they cover the ask. "
+        "Only if they do not: brief refuse + centre redirect, then "
+        "[[ADMIN_GAP: off_topic — not in centre KB]] on its own last line:"
     )
 
 

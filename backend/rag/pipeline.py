@@ -145,6 +145,14 @@ def _content_tokens(text: str) -> set[str]:
         if t in ("olds", "old"):
             out.add("old")
             continue
+        # "Where are you located?" must ground against Location.md
+        if t.startswith("locat"):
+            out.add("location")
+            continue
+        if t in ("address", "directions", "mtr"):
+            out.add(t)
+            out.add("location")
+            continue
         out.add(t)
     return out
 
