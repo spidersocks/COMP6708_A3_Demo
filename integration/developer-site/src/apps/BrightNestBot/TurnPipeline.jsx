@@ -1706,7 +1706,10 @@ function NodeDetail({
       return (
         <>
           <p className="bn-rules-hint">
-            <strong>How the final {rag?.top_k ?? pass1.length || 5} chunks are chosen</strong>
+            <strong>
+              How the final {rag?.top_k ?? (pass1.length || 5)} chunks are
+              chosen
+            </strong>
           </p>
           <ol className="bn-select-steps">
             {how.map((line, i) => (
