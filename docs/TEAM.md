@@ -418,11 +418,13 @@ Generation: DashScope chat with numbered excerpts; `enable_thinking: false`.
 
 Inspector shows hits when **pure RAG** owns the turn **or** when grounded enrich ran (`trace.grounding` / enrich mode). Structured tool citations alone must not look like KB chunks.
 
-### 5.4 Soft gaps & guards
+### 5.4 Soft gaps, off-KB refuse & guards
 
 After pure RAG generate:
 
-- Optional **gap polish** (`ARBITER_GAP_REWRITE`) rewrites empty/awkward soft refuses.
+- If retrieval is **off-topic** (low token overlap with top hit) or the model flags `[[ADMIN_GAP: off_topic…]]`, replace the answer with a short **off-KB refuse** — do not lecture from world knowledge (homework / general science). No SheetPro row.
+- Persona + system prompt: answer **only** from centre excerpts; refuse unrelated topics.
+- Optional **gap polish** (`ARBITER_GAP_REWRITE`) rewrites empty/awkward soft refuses for true centre gaps.
 - Soft gaps / unknown programmes write **SheetPro** rows (no final check).
 - **Outreach guard:** if the model promises a staff callback without a todo, force a SheetPro row.
 - Scrub accidental internal filenames (`admin_todos.csv`, etc.) from parent-facing copy.

@@ -1606,11 +1606,25 @@ def chat(req: ChatRequest) -> ChatResponse:
         steps.append(
             _step("admin_todo", "Flag for admin to-do", "skipped", "greeting")
         )
-    # Off-topic chit-chat already answered with a refuse — don't spam the staff sheet
-    if rag_debug.get("knowledge_gap") and (
-        rag_debug.get("gap_reason") or ""
-    ) == "off_topic_retrieval":
-        rag_debug = {**rag_debug, "knowledge_gap": False}
+    # Off-topic / ungrounded RAG — keep the refuse answer, never spam SheetPro
+    if (rag_debug.get("gap_reason") or "") == "off_topic_retrieval":
+        from rag.generator import _OFF_KB_REPLY
+
+        if "outside what our BrightNest materials cover" not in (answer or "").lower():
+            answer = _OFF_KB_REPLY.get(lang, _OFF_KB_REPLY["en"])
+        rag_debug = {
+            **rag_debug,
+            "knowledge_gap": False,
+            "off_topic_refused": True,
+        }
+        steps.append(
+            _step(
+                "off_kb",
+                "Off-KB refuse (low grounding)",
+                "done",
+                f"top_score={rag_debug.get('top_score')} · no SheetPro",
+            )
+        )
         steps.append(
             _step("admin_todo", "Flag for admin to-do", "skipped", "off_topic")
         )

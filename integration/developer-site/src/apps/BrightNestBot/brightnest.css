@@ -956,6 +956,104 @@ code,
   margin-top: 12px;
 }
 
+.bn-live-path {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(18, 169, 188, 0.28);
+  background: linear-gradient(180deg, #f4fbfc 0%, #ffffff 70%);
+}
+
+.bn-live-path-flow {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+}
+
+.bn-live-path-arrow {
+  text-align: center;
+  color: rgba(18, 169, 188, 0.55);
+  font-size: 0.75rem;
+  line-height: 1.1;
+  padding: 2px 0;
+}
+
+.bn-live-node {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1.5px solid rgba(18, 169, 188, 0.35);
+  background: #fff;
+  color: var(--teal-ink);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 0.82rem;
+  font-weight: 650;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.bn-live-node:hover {
+  border-color: rgba(18, 169, 188, 0.7);
+}
+
+.bn-live-node.is-active {
+  border-color: var(--teal-ink);
+  box-shadow: 0 0 0 2px rgba(18, 169, 188, 0.18);
+  background: rgba(18, 169, 188, 0.08);
+}
+
+.bn-live-node-rag {
+  border-color: rgba(212, 160, 40, 0.45);
+}
+.bn-live-node-compose {
+  border-color: rgba(80, 140, 200, 0.5);
+}
+.bn-live-node-hard {
+  border-color: rgba(180, 90, 90, 0.4);
+}
+.bn-live-node-llm {
+  border-color: rgba(120, 90, 180, 0.45);
+}
+.bn-live-node-skip {
+  opacity: 0.72;
+  font-weight: 550;
+}
+.bn-live-node-start,
+.bn-live-node-end {
+  border-style: dashed;
+}
+
+.bn-live-path-detail {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--cream-2, #f7f3ea);
+  font-size: 0.78rem;
+  color: #3d5156;
+  line-height: 1.4;
+}
+
+.bn-live-path-detail strong {
+  display: block;
+  color: var(--teal-ink);
+  margin-bottom: 2px;
+}
+
+.bn-live-path-hint {
+  margin: 8px 0 0;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.bn-grounding-one-liner {
+  margin: 0 0 10px;
+  font-size: 0.78rem;
+  color: #3d5156;
+  line-height: 1.4;
+}
+
 .bn-path-label {
   font-size: 0.72rem;
   font-weight: 700;

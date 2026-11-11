@@ -30,6 +30,7 @@ const DEMO_PROBES = [
   { label: "Cancel class", text: "Can I cancel Jason's class next Tuesday?" },
   { label: "Unknown ask", text: "Does BrightNest offer scuba diving for toddlers?" },
   { label: "Off-topic", text: "What's the weather in Tokyo tomorrow?" },
+  { label: "Off-KB science", text: "Are fish invertebrates?" },
   { label: "Talk to staff", text: "Can I speak to a real person please?" },
   { label: "Angry parent", text: "This is unacceptable — I'm furious about today's class!" },
   {
@@ -174,7 +175,7 @@ function MatchSummaryCard({ summary }) {
   if (!summary || (!summary.headline && !summary.query)) return null;
   return (
     <div className="bn-match-summary">
-      <div className="bn-match-summary-kicker">What matched in this query</div>
+      <div className="bn-match-summary-kicker">Match</div>
       <p className="bn-match-headline">{summary.headline}</p>
       <QueryHighlight
         segments={summary.segments}
@@ -183,23 +184,159 @@ function MatchSummaryCard({ summary }) {
       />
       {summary.cue ? (
         <p className="bn-match-cue-line">
-          Exact cue: <code>«{summary.cue}»</code>
-          {summary.rule_label ? (
+          Cue <code>«{summary.cue}»</code>
+          {summary.route ? (
             <>
               {" "}
-              → <strong>{summary.rule_label}</strong> (<code>{summary.route}</code>)
+              → <code>{summary.route}</code>
             </>
           ) : null}
         </p>
       ) : null}
-      {summary.explanation ? (
-        <p className="bn-match-explain">{summary.explanation}</p>
-      ) : null}
-      {summary.downstream ? (
-        <p className="bn-match-down">
-          Downstream: {summary.downstream}
-        </p>
-      ) : null}
+    </div>
+  );
+}
+
+/** Compact live flowchart of the turn (mermaid-style, no extra dependency). */
+function LiveRoutePath({
+  route,
+  decisionPath = [],
+  grounding,
+  steps = [],
+  winningRule,
+  arbiter,
+  finalCheck,
+}) {
+  const [active, setActive] = useState(null);
+  const nodes = useMemo(() => {
+    const out = [];
+    out.push({
+      id: "in",
+      label: "Parent message",
+      kind: "start",
+      detail: "Inbound WhatsApp-shaped turn",
+    });
+    out.push({
+      id: "router",
+      label: "Hybrid router",
+      kind: "router",
+      detail:
+        winningRule?.score != null
+          ? `Pick ${route || "—"} · score ${Number(winningRule.score).toFixed(2)}`
+          : `Pick ${route || "—"}`,
+    });
+    if (arbiter?.called) {
+      out.push({
+        id: "arbiter",
+        label: "Route arbiter",
+        kind: "llm",
+        detail: `${arbiter.action || "review"} · ${arbiter.reason || ""}`,
+      });
+    } else if (arbiter?.reason || winningRule?.arbiter_reason) {
+      out.push({
+        id: "arbiter-skip",
+        label: "Arbiter skipped",
+        kind: "skip",
+        detail: arbiter?.skip_detail || arbiter?.reason || winningRule?.arbiter_reason,
+      });
+    }
+    const gMode = grounding?.mode || (route === "rag" ? "pure_rag" : null);
+    if (gMode === "grounded_compose") {
+      out.push({
+        id: "compose",
+        label: "Grounded compose",
+        kind: "compose",
+        detail: grounding?.why || "Card/live doc privileged · KB may enrich",
+      });
+    } else if (gMode === "bypass" || (route && route !== "rag" && !gMode)) {
+      out.push({
+        id: "bypass",
+        label: "Hard path",
+        kind: "hard",
+        detail: grounding?.why || `Bypass retrieve · ${route}`,
+      });
+    } else if (route === "rag" || gMode === "pure_rag") {
+      out.push({
+        id: "rag",
+        label: "Pure RAG",
+        kind: "rag",
+        detail: "Retrieve → generate + citations",
+      });
+    }
+    const fc =
+      finalCheck ||
+      steps.find((s) => s.id === "final_check") ||
+      null;
+    if (fc) {
+      out.push({
+        id: "final",
+        label: "Final check",
+        kind: "llm",
+        detail:
+          typeof fc === "object" && fc.detail
+            ? fc.detail
+            : `${fc.action || fc.status || "ran"} · ${fc.reason || fc.label || ""}`,
+      });
+    }
+    if (decisionPath.length) {
+      // Attach path step summaries as clickable trail under router
+      decisionPath.slice(0, 6).forEach((p, i) => {
+        out.push({
+          id: `path-${i}`,
+          label: p.summary || p.step || `Step ${i + 1}`,
+          kind: "path",
+          detail: p.detail || "",
+        });
+      });
+    }
+    out.push({
+      id: "out",
+      label: "Answer + trace",
+      kind: "end",
+      detail: "Parent reply · inspector evidence",
+    });
+    // Dedupe: if decisionPath bloated the graph, prefer core nodes only
+    const core = out.filter((n) => n.kind !== "path");
+    return core.length >= 3 ? core : out;
+  }, [route, decisionPath, grounding, steps, winningRule, arbiter, finalCheck]);
+
+  useEffect(() => {
+    setActive(null);
+  }, [route, winningRule?.score, grounding?.mode]);
+
+  if (!route) {
+    return <p className="bn-empty">Send a message to light up the path.</p>;
+  }
+
+  const selected = nodes.find((n) => n.id === active) || null;
+
+  return (
+    <div className="bn-live-path">
+      <div className="bn-live-path-flow" role="list">
+        {nodes.map((n, i) => (
+          <React.Fragment key={n.id}>
+            {i > 0 ? <div className="bn-live-path-arrow" aria-hidden="true">↓</div> : null}
+            <button
+              type="button"
+              role="listitem"
+              className={`bn-live-node bn-live-node-${n.kind}${
+                active === n.id ? " is-active" : ""
+              }`}
+              onClick={() => setActive((cur) => (cur === n.id ? null : n.id))}
+            >
+              <span className="bn-live-node-label">{n.label}</span>
+            </button>
+          </React.Fragment>
+        ))}
+      </div>
+      {selected ? (
+        <div className="bn-live-path-detail">
+          <strong>{selected.label}</strong>
+          <p>{selected.detail || "—"}</p>
+        </div>
+      ) : (
+        <p className="bn-live-path-hint">Click a node for what happened.</p>
+      )}
     </div>
   );
 }
@@ -897,17 +1034,8 @@ export default function BrightNestBotDemo() {
   const winningRule = routing?.winning_rule || routing?.debug?.winning_rule || {};
   const matchSummary = routing?.match_summary || routing?.debug?.match_summary || {};
   const scoreLedger = routing?.score_ledger || routing?.debug?.score_ledger || [];
-  const scoreGuide =
-    routing?.score_source_guide || routing?.debug?.score_source_guide || [];
   const arbiter = routing?.debug?.arbiter || {};
   const winningRuleId = matchSummary?.rule_id || winningRule?.route || route;
-  const groundingSummary = grounding
-    ? grounding.mode === "grounded_compose"
-      ? `compose · ${grounding.rag_hit_count || 0} KB hits · card privileged`
-      : grounding.mode === "bypass"
-        ? `bypass · ${grounding.why ? "RAG skipped" : "tool"}`
-        : grounding.mode || "—"
-    : "—";
   const routerSummary = useMemo(() => {
     if (!route) return "Idle until a query";
     const arbReason = winningRule?.arbiter_reason || arbiter?.reason;
@@ -1519,150 +1647,82 @@ export default function BrightNestBotDemo() {
           <div className="bn-route-card">
             <div className="bn-route-main">
               <span className={`bn-pill bn-pill-${meta.tone}`}>{meta.label}</span>
-              {trace?.latency_ms != null && <span className="bn-latency">{trace.latency_ms} ms</span>}
+              {winningRule?.score != null && (
+                <span className="bn-latency">
+                  score {Number(winningRule.score).toFixed(2)}
+                </span>
+              )}
+              {trace?.latency_ms != null && (
+                <span className="bn-latency">{trace.latency_ms} ms</span>
+              )}
+              {grounding?.mode ? (
+                <span className="bn-latency">{grounding.mode}</span>
+              ) : null}
               {isLoading && <span className="bn-running">running…</span>}
             </div>
             {steps.length > 0 && (
               <ol className="bn-step-rail" aria-label="Pipeline steps">
-                {steps.map((s) => (
+                {steps
+                  .filter((s) => s.status !== "skipped" || s.id === "final_check")
+                  .map((s) => (
                   <li key={s.id} className={`bn-step-chip bn-step-${s.status || "idle"}`} title={s.detail}>
                     <span>{s.label}</span>
                   </li>
                 ))}
               </ol>
             )}
-            <p className="bn-hint">
-              Only the active path opens below. Expand others when you want the detail.
-            </p>
           </div>
 
           <Reveal
             key={`router-${turnKey}`}
-            title="Router decision"
+            title="Route path"
             summary={routerSummary}
             defaultOpen={Boolean(trace)}
           >
             {!trace ? (
-              <p className="bn-empty">Send a probe to see which rules fired and why.</p>
+              <p className="bn-empty">Send a probe to see the live path.</p>
             ) : (
               <>
+                <LiveRoutePath
+                  route={route}
+                  decisionPath={decisionPath}
+                  grounding={grounding}
+                  steps={steps}
+                  winningRule={winningRule}
+                  arbiter={arbiter}
+                  finalCheck={
+                    trace?.final_check ||
+                    trace?.debug?.final_check ||
+                    cancelTrace?.final_check ||
+                    dialogue?.final_check
+                  }
+                />
+
                 <MatchSummaryCard summary={matchSummary} />
 
                 {grounding ? (
-                  <div className="bn-grounding-card">
-                    <div className="bn-match-summary-kicker">Answer grounding</div>
-                    <p className="bn-match-headline">
-                      Mode <code>{grounding.mode}</code>
-                      {grounding.structured_privileged ? " · docs privileged" : ""}
-                      {grounding.live_doc ? " · live doc attached" : ""}
-                    </p>
-                    <p className="bn-match-explain">{grounding.why}</p>
-                    <p className="bn-match-down">
-                      Summary: {groundingSummary}
-                      {grounding.composed ? " · composed with KB" : ""}
-                      {grounding.ask_tool_ok
-                        ? grounding.invoke_tool === false
-                          ? " · tool gate SKIP (no seat cards)"
-                          : " · tool gate OK (seat cards exposed)"
-                        : ""}
-                    </p>
-                  </div>
+                  <p className="bn-grounding-one-liner">
+                    <strong>Grounding</strong> · <code>{grounding.mode}</code>
+                    {grounding.structured_privileged ? " · docs privileged" : ""}
+                    {grounding.live_doc ? " · live doc" : ""}
+                    {grounding.composed ? " · KB enrich" : ""}
+                  </p>
                 ) : null}
-
-                <ul className="bn-fact-list">
-                  <li>
-                    <span>Final route</span>
-                    <code>{route || "—"}</code>
-                  </li>
-                  <li>
-                    <span>Winning score</span>
-                    <code>
-                      {winningRule?.score != null
-                        ? Number(winningRule.score).toFixed(3)
-                        : "—"}
-                    </code>
-                  </li>
-                  <li>
-                    <span>Pre-arbiter pick</span>
-                    <code>{winningRule?.pre_arbiter_route || route || "—"}</code>
-                  </li>
-                  <li>
-                    <span>Cheap LLM review</span>
-                    <code>
-                      {arbiter?.called
-                        ? `${arbiter.action || "review"} · ${arbiter.reason || ""}`
-                        : `skipped · ${
-                            arbiter?.skip_detail ||
-                            arbiter?.reason ||
-                            winningRule?.arbiter_skip_detail ||
-                            "n/a"
-                          }`}
-                    </code>
-                  </li>
-                  {winningRule?.override ? (
-                    <li>
-                      <span>Arbiter override</span>
-                      <code>
-                        {winningRule.override.from} → {winningRule.override.to}
-                      </code>
-                    </li>
-                  ) : null}
-                  {trace?.adapt ? (
-                    <li>
-                      <span>Fact rewrite</span>
-                      <code>
-                        {trace.adapt.ran
-                          ? `yes · ${trace.adapt.model || "main LLM"}`
-                          : `no · ${trace.adapt.why || "passthrough"}`}
-                      </code>
-                    </li>
-                  ) : null}
-                  <li>
-                    <span>RAG this turn</span>
-                    <code>{route === "rag" ? "ran" : `skipped (${route})`}</code>
-                  </li>
-                </ul>
-
-                {trace?.adapt?.why ? (
-                  <p className="bn-note">{trace.adapt.why}</p>
-                ) : null}
-
-                {decisionPath.length > 0 && (
-                  <div className="bn-path">
-                    <div className="bn-path-label">Exact path taken</div>
-                    <ol>
-                      {decisionPath.map((p, i) => (
-                        <li key={`${p.step}-${i}`}>
-                          <strong>{p.summary}</strong>
-                          {p.detail ? <span>{p.detail}</span> : null}
-                        </li>
-                      ))}
-                    </ol>
-                  </div>
-                )}
 
                 {rulesEvaluated.length > 0 && (
-                  <details className="bn-rules" open={Boolean(route)}>
+                  <details className="bn-rules">
                     <summary>
-                      Rule map ·{" "}
-                      {rulesEvaluated.filter((r) => r.matched).length} fired /{" "}
-                      {rulesEvaluated.length} checked
-                      {matchSummary?.cue
-                        ? ` · winning cue «${matchSummary.cue}»`
-                        : ""}
+                      Rules · {rulesEvaluated.filter((r) => r.matched).length} fired /{" "}
+                      {rulesEvaluated.length}
+                      {matchSummary?.cue ? ` · «${matchSummary.cue}»` : ""}
                     </summary>
-                    <p className="bn-rules-hint">
-                      Click any rule to see the parent message with the exact
-                      matched substring highlighted, plus every check that
-                      passed or failed.
-                    </p>
                     <ul className="bn-rule-list">
                       {rulesEvaluated.map((r) => (
                         <RuleEvidence
                           key={r.id}
                           rule={r}
                           isWinner={r.id === winningRuleId && Boolean(r.matched)}
-                          defaultOpen={r.id === winningRuleId}
+                          defaultOpen={false}
                         />
                       ))}
                     </ul>
@@ -1670,30 +1730,14 @@ export default function BrightNestBotDemo() {
                 )}
 
                 {routing?.scores && Object.keys(routing.scores).length > 0 && (
-                  <details className="bn-rules" open>
+                  <details className="bn-rules">
                     <summary>
-                      Intent scores · where the numbers come from
+                      Scores · detector awards (not RAG sim)
                     </summary>
-                    <p className="bn-rules-hint">
-                      These are <strong>not</strong> RAG retrieval similarities.
-                      Hard detectors award fixed scores (e.g. allergy=0.95,
-                      fees=0.90). Soft prototypes may blend. Conflicts clear
-                      losers. RAG only gets a floor when nothing else owns the turn.
-                    </p>
-                    {scoreGuide.length > 0 && (
-                      <ul className="bn-score-guide">
-                        {scoreGuide.map((g) => (
-                          <li key={g.id}>
-                            <code>{g.id}</code>
-                            <strong>{g.label}</strong>
-                            <span>{g.meaning}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
                     <ul className="bn-fact-list">
                       {Object.entries(routing.scores)
                         .sort((a, b) => Number(b[1]) - Number(a[1]))
+                        .slice(0, 8)
                         .map(([k, v]) => {
                           const origin =
                             routing.score_origins?.[k] ||
@@ -1713,9 +1757,7 @@ export default function BrightNestBotDemo() {
                     </ul>
                     {scoreLedger.length > 0 && (
                       <details className="bn-rules bn-ledger">
-                        <summary>
-                          Score ledger · {scoreLedger.length} steps (award / blend / clear)
-                        </summary>
+                        <summary>Ledger · {scoreLedger.length} steps</summary>
                         <ol className="bn-score-ledger">
                           {scoreLedger.map((e, i) => (
                             <li key={`led-${i}`} className={`bn-led-${e.op || "note"}`}>
@@ -1723,13 +1765,9 @@ export default function BrightNestBotDemo() {
                               <span>
                                 <code>{e.route}</code>
                                 {e.score != null ? ` = ${Number(e.score).toFixed(3)}` : ""}
-                                {e.prev_score != null
-                                  ? ` (was ${Number(e.prev_score).toFixed(3)})`
-                                  : ""}
                                 {" · "}
                                 {e.source}
                                 {e.why ? ` — ${e.why}` : ""}
-                                {e.cue ? ` · cue «${e.cue}»` : ""}
                               </span>
                             </li>
                           ))}

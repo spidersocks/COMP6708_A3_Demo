@@ -453,8 +453,6 @@ def chat_with_rag(
     hits = _lexical_rerank(message, hits)[: SETTINGS.rag_top_k]
 
     top_hit = hits[0] if hits else None
-    # Demo bias: weak lexical overlap is an admin signal, not a parent soft-refusal.
-    # Awkward “I don’t have a solid answer” looks worse than a grounded LLM try.
     off_topic = bool(hits and top_hit is not None and _off_topic(message, top_hit))
 
     gen = generate_answer_meta(
@@ -493,13 +491,15 @@ def chat_with_rag(
     provider = gen.get("provider") or ""
     weak_cut = _WEAK_SCORE_LOCAL if provider == "local_fallback" else _WEAK_SCORE
     greeting_ok = is_greeting(message) and _is_greeting_hit(top_hit)
+    admin_note = (gen.get("admin_gap") or "") if isinstance(gen.get("admin_gap"), str) else ""
+    model_flagged_off = "off_topic" in admin_note.lower()
 
     if greeting_ok:
         gap_reason = None
     elif not hits:
         gap_reason = "no_retrieval"
-    elif off_topic:
-        # Keep the model answer for the parent; flag quietly for the demo inspector
+    elif off_topic or model_flagged_off:
+        # Unrelated to centre KB — refuse; do not lecture from world knowledge
         gap_reason = "off_topic_retrieval"
     elif top_score is not None and top_score < weak_cut and provider != "local_fallback":
         gap_reason = "weak_retrieval"
@@ -511,6 +511,18 @@ def chat_with_rag(
         not hits or (top_score is not None and top_score < 0.45)
     ):
         gap_reason = "generic_fallback"
+
+    # Hard refuse when retrieval clearly fails to ground a centre answer
+    ungrounded = gap_reason == "off_topic_retrieval" or (
+        gap_reason == "weak_retrieval"
+        and off_topic
+        and (top_score is None or top_score < weak_cut)
+    )
+    if ungrounded and not greeting_ok:
+        from rag.generator import _OFF_KB_REPLY  # noqa: PLC0415
+
+        answer = _OFF_KB_REPLY.get(lang, _OFF_KB_REPLY["en"])
+        gap_reason = "off_topic_retrieval"
 
     # Soft keyword cues — only on short replies (FAQ dumps often contain
     # “check with the teacher” example lines and must not spam admin to-dos)
