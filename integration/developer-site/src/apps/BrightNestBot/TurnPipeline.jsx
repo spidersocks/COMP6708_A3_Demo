@@ -374,12 +374,32 @@ function LlmCallCard({ call, defaultOpen = false }) {
   );
 }
 
+function fusionChannelLabel(hit) {
+  const ch =
+    hit?.channel ||
+    hit?.fusion?.channels ||
+    (hit?.fusion?.dense_rank && hit?.fusion?.sparse_rank
+      ? "both"
+      : hit?.fusion?.sparse_rank
+        ? "sparse"
+        : hit?.fusion?.dense_rank
+          ? "dense"
+          : null);
+  if (!ch) return null;
+  if (ch === "both") return "dense+BM25";
+  if (ch === "sparse") return "BM25 only";
+  if (ch === "dense") return "dense only";
+  return String(ch);
+}
+
 function RagHit({ hit, index }) {
   const [open, setOpen] = useState(false);
   const rank = hit.rank ?? index + 1;
   const body = hit.text || hit.snippet || "";
   const score = scoreLabel(hit.score);
   const why = hit.rerank?.why || null;
+  const channel = fusionChannelLabel(hit);
+  const rrf = hit.fusion?.rrf != null ? Number(hit.fusion.rrf).toFixed(4) : null;
   return (
     <li className={`bn-hit ${open ? "is-open" : ""}`}>
       <button
@@ -393,14 +413,26 @@ function RagHit({ hit, index }) {
             <span className="bn-hit-rank">#{rank}</span>{" "}
             {hit.title || hit.canonical || hit.source || `Hit ${rank}`}
           </strong>
-          {score && <code title="vector similarity (not sort key)">{score}</code>}
+          {score && <code title="vector / BM25 score">{score}</code>}
         </div>
         <span className="bn-hit-src">{hit.source}</span>
+        {channel ? (
+          <p className="bn-hit-snip bn-hit-why">
+            Retrieve: {channel}
+            {rrf != null ? ` · RRF ${rrf}` : ""}
+            {hit.fusion?.dense_rank != null
+              ? ` · dense #${hit.fusion.dense_rank}`
+              : ""}
+            {hit.fusion?.sparse_rank != null
+              ? ` · BM25 #${hit.fusion.sparse_rank}`
+              : ""}
+          </p>
+        ) : null}
         {why ? <p className="bn-hit-snip bn-hit-why">Order: {why}</p> : null}
         {!open && body ? <p className="bn-hit-snip">{body}</p> : null}
         {hit.char_count != null ? (
           <div className="bn-hit-meta">
-            {hit.char_count} chars · vector {score ?? "—"}
+            {hit.char_count} chars · score {score ?? "—"}
           </div>
         ) : null}
         <span className="bn-hit-expand-hint">
@@ -417,25 +449,18 @@ function ChromaHitsPanel({
   query,
   hits,
   rag,
+  hybrid,
   stripExtra,
   emptyHint,
 }) {
   const list = hits || [];
+  const hy = hybrid || rag?.hybrid || null;
+  const nums = list
+    .map((h) => Number(h.score))
+    .filter((n) => Number.isFinite(n));
   const stats = {
     rank1: scoreLabel(list[0]?.score),
-    max: scoreLabel(
-      list.reduce(
-        (m, h) =>
-          Math.max(m, Number.isFinite(Number(h.score)) ? Number(h.score) : m),
-        -Infinity
-      ) === -Infinity
-        ? null
-        : list.reduce(
-            (m, h) =>
-              Math.max(m, Number.isFinite(Number(h.score)) ? Number(h.score) : m),
-            -Infinity
-          )
-    ),
+    max: nums.length ? scoreLabel(Math.max(...nums)) : null,
   };
   return (
     <>
@@ -448,10 +473,47 @@ function ChromaHitsPanel({
           </li>
         </ul>
       ) : null}
+      {hy ? (
+        <ul className="bn-fact-list">
+          <li>
+            <span>Retrieve</span>
+            <code>{hy.mode || rag?.retrieve_mode || "—"}</code>
+          </li>
+          {hy.mode === "hybrid_rrf" ? (
+            <>
+              <li>
+                <span>Dense pool</span>
+                <code>{hy.dense_count ?? "—"}</code>
+              </li>
+              <li>
+                <span>BM25 pool</span>
+                <code>{hy.sparse_count ?? "—"}</code>
+              </li>
+              <li>
+                <span>RRF k</span>
+                <code>{hy.rrf_k ?? "—"}</code>
+              </li>
+              <li>
+                <span>Channels</span>
+                <code>
+                  both {hy.both ?? 0} · dense {hy.dense_only ?? 0} · BM25{" "}
+                  {hy.sparse_only ?? 0}
+                </code>
+              </li>
+            </>
+          ) : (
+            <li>
+              <span>Note</span>
+              <code>{hy.reason || "dense only"}</code>
+            </li>
+          )}
+        </ul>
+      ) : null}
       <div className="bn-rag-strip">
         <span>hits {list.length}</span>
         <span>#1 {stats.rank1 ?? "—"}</span>
         <span>max {stats.max ?? "—"}</span>
+        {hy?.mode ? <span>{hy.mode}</span> : null}
         {rag?.embedding_mode ? <span>{rag.embedding_mode}</span> : null}
         {stripExtra}
       </div>
@@ -460,14 +522,32 @@ function ChromaHitsPanel({
       ) : (
         <>
           <StageIO
-            request={{ query: query || null }}
-            payload={list.map((h) => ({
-              rank: h.rank,
-              source: h.source,
-              score: h.score,
-              title: h.title,
-              order: h.rerank?.why || null,
-            }))}
+            request={{
+              query: query || null,
+              hybrid: hy
+                ? {
+                    mode: hy.mode,
+                    rrf_k: hy.rrf_k,
+                    dense_count: hy.dense_count,
+                    sparse_count: hy.sparse_count,
+                  }
+                : null,
+            }}
+            payload={{
+              fused: list.map((h) => ({
+                rank: h.rank,
+                source: h.source,
+                score: h.score,
+                title: h.title,
+                channel: fusionChannelLabel(h),
+                rrf: h.fusion?.rrf ?? null,
+                dense_rank: h.fusion?.dense_rank ?? null,
+                sparse_rank: h.fusion?.sparse_rank ?? null,
+                order: h.rerank?.why || null,
+              })),
+              dense_top: hy?.dense_top || null,
+              sparse_top: hy?.sparse_top || null,
+            }}
           />
           <ul className="bn-hits">
             {list.map((h, i) => (
@@ -1128,11 +1208,18 @@ function NodeDetail({
       return (
         <>
           <p className="bn-rules-hint">
-            Retrieve → generate. Chroma is asked for a pool, then we keep up to{" "}
-            <code>top_k</code> after lexical re-rank (see Chroma KB). Generation
-            still sees the parent’s original wording plus chat history.
+            Retrieve → generate. Pass 1 uses <strong>hybrid RRF</strong>{" "}
+            (dense Chroma + BM25), then lexical keep <code>top_k</code>. Optional
+            pass-2 after grade/rewrite. Generation still sees the parent’s wording
+            + chat history.
           </p>
           <ul className="bn-fact-list">
+            <li>
+              <span>Retrieve mode</span>
+              <code>
+                {rag?.retrieve_mode || rag?.hybrid?.mode || "—"}
+              </code>
+            </li>
             <li>
               <span>Hits kept</span>
               <code>
@@ -1140,14 +1227,14 @@ function NodeDetail({
               </code>
             </li>
             <li>
-              <span>Rank #1 vector</span>
+              <span>Rank #1 score</span>
               <code>
                 {scoreLabel(rag?.rank1_score ?? rag?.top_score ?? hits[0]?.score) ??
                   "—"}
               </code>
             </li>
             <li>
-              <span>Best vector in set</span>
+              <span>Best score in set</span>
               <code>{scoreLabel(rag?.max_score) ?? "—"}</code>
             </li>
             <li>
@@ -1242,26 +1329,28 @@ function NodeDetail({
       return (
         <>
           <p className="bn-rules-hint">
-            Always runs first with the <strong>raw parent message</strong>.{" "}
-            {rag?.order_rule ||
-              "Order: age → keyword path → folder → token overlap → vector score."}
+            Always first with the <strong>raw parent message</strong>: dense
+            Chroma + in-process BM25, fused by Reciprocal Rank Fusion (RRF), then
+            lexical re-rank. No extra cloud search service.
           </p>
           <ChromaHitsPanel
             title={
               enrichMode
-                ? "Pass 1 · grounded enrich retrieve"
-                : "Pass 1 · raw-query retrieve"
+                ? "Pass 1 · hybrid enrich retrieve"
+                : "Pass 1 · hybrid raw-query retrieve"
             }
             query={rag?.pass1_query || inbound}
             hits={pass1}
             rag={rag}
+            hybrid={rag?.hybrid}
             stripExtra={
               <>
                 <span>
                   pool {rag?.pool_returned ?? "—"}/{rag?.pool_k ?? "—"}
                 </span>
                 <span>top_k {rag?.top_k ?? "—"}</span>
-                <span>index {rag?.index_size ?? "—"}</span>
+                <span>chroma {rag?.index_size ?? "—"}</span>
+                <span>BM25 {rag?.sparse_index_size ?? "—"}</span>
               </>
             }
             emptyHint="Pass 1 returned no chunks."
@@ -1292,10 +1381,11 @@ function NodeDetail({
             ).
           </p>
           <ChromaHitsPanel
-            title="Pass 2 · rewritten-query retrieve"
+            title="Pass 2 · hybrid rewritten-query retrieve"
             query={rag?.pass2_query || rag?.query_rewrite?.query}
             hits={pass2}
             rag={rag}
+            hybrid={rag?.hybrid}
             emptyHint="Pass 2 fired but returned no chunks."
           />
         </>
@@ -1831,7 +1921,10 @@ export default function TurnPipeline({
       "e-arb-path": arbiter?.called ? arbiter.action || "keep" : "",
       "e-path-fsm": path === "fsm" ? "FSM" : "",
       "e-path-rag": path === "rag" ? "RAG" : "",
-      "e-rag-chroma": "raw query",
+      "e-rag-chroma":
+        rag?.retrieve_mode === "hybrid_rrf" || rag?.hybrid?.mode === "hybrid_rrf"
+          ? "hybrid RRF"
+          : "raw query",
       "e-chroma-rewrite":
         (rag?.retrieval_grade?.grade
           ? String(rag.retrieval_grade.grade)

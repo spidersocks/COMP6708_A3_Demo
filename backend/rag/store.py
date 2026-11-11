@@ -107,6 +107,28 @@ class VectorStore:
             )
         return out
 
+    def export_rows(self) -> List[Dict[str, Any]]:
+        """All chunks for sparse-index rebuild (id / text / metadata)."""
+        if self.count <= 0:
+            return []
+        try:
+            res = self._collection.get(include=["documents", "metadatas"])
+        except Exception:
+            return []
+        ids = res.get("ids") or []
+        docs = res.get("documents") or []
+        metas = res.get("metadatas") or []
+        rows: List[Dict[str, Any]] = []
+        for i, doc_id in enumerate(ids):
+            rows.append(
+                {
+                    "id": doc_id,
+                    "text": docs[i] if i < len(docs) else "",
+                    "metadata": metas[i] if i < len(metas) else {},
+                }
+            )
+        return rows
+
 
 _STORE: Optional[VectorStore] = None
 

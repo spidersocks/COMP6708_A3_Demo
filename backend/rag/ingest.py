@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import SETTINGS
 from rag.chunking import build_chunks
 from rag.embeddings import embed_texts
+from rag.sparse import get_sparse_index
 from rag.store import get_store
 
 
@@ -23,17 +24,26 @@ def ingest(*, reset: bool = True) -> dict:
     store = get_store()
     if reset:
         store.reset()
+        get_sparse_index().clear()
     if not chunks:
         return {"chunks": 0, "mode": "empty", "content_dir": str(SETTINGS.content_dir)}
 
     print(f"[INGEST] Embedding {len(chunks)} chunks…", flush=True)
     embeddings = embed_texts([c.text for c in chunks])
     n = store.upsert_chunks(chunks, embeddings)
+    sparse_n = get_sparse_index().rebuild(
+        [{"id": c.id, "text": c.text, "metadata": c.metadata} for c in chunks]
+    )
     mode = "dashscope" if SETTINGS.has_dashscope else "local_hash"
-    print(f"[INGEST] Upserted {n} chunks ({mode}).", flush=True)
+    print(
+        f"[INGEST] Upserted {n} chunks ({mode}); BM25 sparse={sparse_n}.",
+        flush=True,
+    )
     return {
         "chunks": n,
         "mode": mode,
+        "sparse_chunks": sparse_n,
+        "hybrid": SETTINGS.rag_hybrid_enabled,
         "content_dir": str(SETTINGS.content_dir),
         "collection": SETTINGS.collection_name,
     }

@@ -52,6 +52,14 @@ class Settings:
     rag_chunk_size: int = int(os.environ.get("RAG_CHUNK_SIZE", "900"))
     rag_chunk_overlap: int = int(os.environ.get("RAG_CHUNK_OVERLAP", "120"))
     collection_name: str = os.environ.get("CHROMA_COLLECTION", "brightnest_kb")
+    # Hybrid retrieve: dense (Chroma) + sparse (in-process BM25) fused with RRF
+    rag_hybrid_enabled: bool = os.environ.get("RAG_HYBRID_ENABLED", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    rag_rrf_k: int = int(os.environ.get("RAG_RRF_K", "60"))
+    rag_sparse_pool_k: int = int(os.environ.get("RAG_SPARSE_POOL_K", "20"))
 
     # Generation
     # Keep short for live demo latency (thinking is also forced off in generation_parameters).

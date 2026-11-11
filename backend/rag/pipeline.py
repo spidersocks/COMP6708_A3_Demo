@@ -9,6 +9,7 @@ from rag.chunking import parse_markdown
 from rag.embeddings import embed_query
 from rag.generator import generate_answer_meta
 from rag.ingest import ingest
+from rag.sparse import get_sparse_index, rrf_fuse
 from rag.store import get_store
 
 # Cosine / distance scores from Chroma vary; treat very weak tops as gaps.
@@ -272,6 +273,13 @@ def ensure_index() -> None:
     if store.count == 0:
         print("[RAG] Empty index — running ingest…", flush=True)
         ingest(reset=True)
+        return
+    # Cold start: Chroma persisted but in-memory BM25 empty → rebuild sparse
+    sparse = get_sparse_index()
+    if SETTINGS.rag_hybrid_enabled and sparse.count == 0 and store.count > 0:
+        rows = store.export_rows()
+        n = sparse.rebuild(rows)
+        print(f"[RAG] Rebuilt BM25 sparse index from Chroma ({n} docs).", flush=True)
 
 
 def retrieve(
@@ -280,6 +288,7 @@ def retrieve(
     lang: Optional[str] = None,
     top_k: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
+    """Dense-only retrieve (used internally / tests). Prefer retrieve_hybrid."""
     ensure_index()
     emb = embed_query(question)
     return get_store().query(
@@ -287,6 +296,62 @@ def retrieve(
         top_k=top_k or SETTINGS.rag_top_k,
         language=lang,
     )
+
+
+def retrieve_hybrid(
+    question: str,
+    *,
+    lang: Optional[str] = None,
+    top_k: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Dense (Chroma) + sparse (BM25) → Reciprocal Rank Fusion.
+    Falls back to dense-only when hybrid disabled or sparse empty.
+    """
+    ensure_index()
+    k = int(top_k or SETTINGS.rag_top_k)
+    emb = embed_query(question)
+    dense_pool = max(k, SETTINGS.rag_sparse_pool_k, 12)
+    dense = get_store().query(emb, top_k=dense_pool, language=lang)
+    for h in dense:
+        h["channel"] = "dense"
+
+    if not SETTINGS.rag_hybrid_enabled:
+        return {
+            "hits": dense[:k],
+            "debug": {
+                "mode": "dense_only",
+                "reason": "hybrid_disabled",
+                "dense_count": len(dense),
+                "sparse_count": 0,
+                "fused_count": min(len(dense), k),
+            },
+        }
+
+    sparse = get_sparse_index().query(
+        question,
+        top_k=max(k, SETTINGS.rag_sparse_pool_k),
+        language=lang,
+    )
+    if not sparse:
+        return {
+            "hits": dense[:k],
+            "debug": {
+                "mode": "dense_only",
+                "reason": "sparse_empty",
+                "dense_count": len(dense),
+                "sparse_count": 0,
+                "fused_count": min(len(dense), k),
+            },
+        }
+
+    fused, fuse_dbg = rrf_fuse(
+        dense,
+        sparse,
+        rrf_k=SETTINGS.rag_rrf_k,
+        limit=max(k, dense_pool),
+    )
+    return {"hits": fused[: max(k, dense_pool)], "debug": fuse_dbg}
 
 
 def _query_age_digits(question: str) -> set[str]:
@@ -484,6 +549,8 @@ def _citation_from_hit(rank: int, h: Dict[str, Any]) -> Dict[str, Any]:
         "text": full_text,
         "char_count": len(full_text),
         "rerank": h.get("rerank"),
+        "fusion": h.get("fusion"),
+        "channel": (h.get("fusion") or {}).get("channels") or h.get("channel"),
     }
 
 
@@ -506,11 +573,15 @@ def _pool_and_keep(
     keep_k: int,
     pool_k: int,
 ) -> Dict[str, Any]:
-    """One Chroma retrieve + language fallback + age overlay + lexical keep."""
+    """Hybrid retrieve (dense+BM25→RRF) + language fallback + age overlay + lexical keep."""
     lang_fallback = False
-    hits = retrieve(query, lang=lang, top_k=pool_k)
+    pack = retrieve_hybrid(query, lang=lang, top_k=pool_k)
+    hits = pack.get("hits") or []
+    hybrid_debug = pack.get("debug") or {}
     if not hits and lang:
-        hits = retrieve(query, lang=None, top_k=pool_k)
+        pack = retrieve_hybrid(query, lang=None, top_k=pool_k)
+        hits = pack.get("hits") or []
+        hybrid_debug = pack.get("debug") or {}
         lang_fallback = True
     pool_returned = len(hits)
     hits = _merge_hits(hits, _age_faq_overlay(query, lang))
@@ -522,6 +593,7 @@ def _pool_and_keep(
         "pool_k": pool_k,
         "keep_k": keep_k,
         "query": query,
+        "hybrid": hybrid_debug,
     }
 
 
@@ -704,6 +776,10 @@ def _retrieval_debug_fields(corr: Dict[str, Any], *, message: str) -> Dict[str, 
     pass1_hits = _pack_citations(pass1)
     pass2_hits = _pack_citations(pass2) if pass2 else []
     final_hits = _pack_citations(pack)
+    # Prefer the retrieve pack that was kept for generation
+    hybrid = (pack.get("hybrid") if isinstance(pack, dict) else None) or pass1.get(
+        "hybrid"
+    )
     return {
         "pass1_query": message,
         "pass1_hits": pass1_hits,
@@ -718,6 +794,8 @@ def _retrieval_debug_fields(corr: Dict[str, Any], *, message: str) -> Dict[str, 
         "retrieval_query": pack.get("query") or message,
         "query_rewrite": rewrite,
         "retrieval_grade": corr["grade"],
+        "hybrid": hybrid,
+        "retrieve_mode": (hybrid or {}).get("mode") or "dense_only",
         "hits": final_hits,
     }
 
@@ -758,13 +836,15 @@ def retrieve_for_enrich(
             "pool_k": pool_k,
             "pool_returned": pack.get("pool_returned"),
             "order_rule": (
-                "lexical then vector score — age/path/folder/overlap beat raw similarity"
+                "Hybrid RRF (dense+BM25) pool, then lexical re-rank "
+                "(age → path → folder → overlap → score)."
             ),
             "keep_rule": (
-                f"Pass 1 always uses the raw parent message. "
-                f"Pass 2 only if grade ≠ Correct and a rewrite fires (pool_k={pool_k}, top_k={k})."
+                f"Pass 1: raw parent → dense+BM25→RRF (pool_k={pool_k}). "
+                f"Pass 2 only if grade ≠ Correct and a rewrite fires (top_k={k})."
             ),
             "embedding_mode": "dashscope" if SETTINGS.has_dashscope else "local_hash",
+            "sparse_index_size": get_sparse_index().count,
             "top_score": stats["rank1_score"],
             "rank1_score": stats["rank1_score"],
             "max_score": stats["max_score"],
@@ -868,16 +948,17 @@ def chat_with_rag(
         "pool_k": pool_k,
         "pool_returned": pool_returned,
         "keep_rule": (
-            f"Pass 1 always retrieves with the raw parent message "
+            f"Pass 1: raw parent → dense (Chroma) + BM25 → RRF "
             f"(pool_k={pool_k}, keep top_k={keep_k}). "
             "Pass 2 only after a failed grade + rewrite."
         ),
         "order_rule": (
-            "Not sorted by similarity alone. Order: age filename match → "
-            "path/keyword → preferred folder → token overlap → vector score."
+            "Hybrid RRF first (dense rank + sparse rank). Then lexical re-rank: "
+            "age filename → path/keyword → folder → token overlap → score."
         ),
         "history_chars": len(history_context or ""),
         "embedding_mode": "dashscope" if SETTINGS.has_dashscope else "local_hash",
+        "sparse_index_size": get_sparse_index().count,
         "top_score": top_score,
         "rank1_score": stats["rank1_score"],
         "max_score": stats["max_score"],
