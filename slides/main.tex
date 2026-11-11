@@ -18,10 +18,15 @@
 \newcommand{\complogo}{\includegraphics[height=0.55cm]{gallery/polyu-comp-logo.png}}
 
 \newcommand{\democue}[1]{%
-  \vspace{0.3em}%
-  \begin{block}{\textbf{\textcolor{maincolor}{$\blacktriangleright$\ LIVE}}}
-    \small #1
-  \end{block}%
+  \vspace{0.35em}%
+  \noindent
+  \begin{tikzpicture}
+    \node[
+      draw=maincolor, fill=maincolor!8, rounded corners=3pt,
+      inner xsep=8pt, inner ysep=5pt, text width=0.92\textwidth,
+      align=left, font=\small
+    ] {$\blacktriangleright$\ \textbf{\textcolor{maincolor}{LIVE}}\quad #1};
+  \end{tikzpicture}%
 }
 
 \newcommand{\pill}[1]{%
@@ -55,16 +60,16 @@
 {\normalsize COMP6708 Mini Demo · \textbf{Group~15}}}
 \author{%
   {\footnotesize
-  \textbf{FONTAINE} Sean Hsien-ming ·
+  \textbf{FONTAINE} Sean ·
   \textbf{JIANG} Junwei ·
   \textbf{MAO} Shiwei ·
-  \textbf{YAN} Xingzhuo}\\[0.15em]
+  \textbf{YAN} Xingzhuo}\\[0.2em]
   {\scriptsize\texttt{26071164r} · \texttt{26107939r} · \texttt{25038479r} · \texttt{25013043r}}%
 }
 \date{%
-  25 November 2026\\[0.25em]
-  {\footnotesize PolyU Department of Computing}\\[0.3em]
-  \complogo\\[0.25em]
+  25 November 2026\\[0.35em]
+  {\footnotesize PolyU Department of Computing}\\[0.4em]
+  \complogo\\[0.35em]
   {\scriptsize\bhref{https://seanfontaine.dev/COMP6708_A3_Demo}{seanfontaine.dev/COMP6708\_A3\_Demo}}%
 }
 
@@ -83,41 +88,42 @@
 % ============================================================================
 
 \begin{frame}{One sentence}{\thesection}
-  \vspace{0.8em}
-  \centerstate{%
-    {\Large\scshape A learning-centre assistant that}\\[0.55em]
-    {\LARGE\bfseries\color{maincolor} answers from centre truth,}\\[0.35em]
-    {\LARGE\bfseries\color{maincolor} acts with tools,}\\[0.35em]
-    {\LARGE\bfseries\color{maincolor} and hands off when humans must.}\\[1.1em]
-    {\normalsize Training-free · RAG · hybrid routing · live on the public web}
-  }
+  \vfill
+  \centering
+  {\Large\scshape A learning-centre assistant that}\\[0.65em]
+  {\LARGE\bfseries\color{maincolor} answers from centre truth,}\\[0.4em]
+  {\LARGE\bfseries\color{maincolor} acts with tools,}\\[0.4em]
+  {\LARGE\bfseries\color{maincolor} and hands off when humans must.}\\[1.2em]
+  {\normalsize\textcolor{darkgray}{Training-free · RAG · hybrid routing · live on the public web}}
+  \vfill
 \end{frame}
 
 \begin{frame}{The problem}{\thesection}
   \begin{columns}[T]
-    \begin{column}{0.62\textwidth}
+    \begin{column}{0.60\textwidth}
       \textbf{Imagine you run a tutoring centre.}
-      \vspace{0.35em}
-      \begin{itemize}
-        \item Parents message after hours: typhoons, fees, seats, trials, booking
+      \vspace{0.3em}
+      \begin{itemize}\setlength\itemsep{0.28em}
+        \item Parents message after hours: typhoons, fees, seats, trials
         \item Staff cannot live on WhatsApp 24/7
         \item A wrong fee or hours answer costs trust --- fast
       \end{itemize}
-      \vspace{0.45em}
+      \vspace{0.5em}
       \begin{alertblock}{So you hired Group 15}
-        A couple of weeks later we built \ctextbf{BrightNest}: grounded answers,
+        We built \ctextbf{BrightNest}: grounded answers,
         structured actions, honest hand-offs.
       \end{alertblock}
     \end{column}
-    \begin{column}{0.34\textwidth}
+    \begin{column}{0.36\textwidth}
       \centering
-      \bnlogo\\[0.35em]
-      {\scriptsize BrightNest}\\[0.7em]
+      \vspace{0.15em}
+      \bnlogo\\[0.4em]
+      {\small\bfseries BrightNest}\\[0.85em]
       \begin{tikzpicture}[font=\scriptsize, every node/.style={align=center}]
         \node[draw=maincolor, rounded corners=3pt, thick,
-          fill=maincolor!8, inner sep=6pt, text width=3.0cm] {
-          \textbf{Not} a chatbot that\\[0.2em]
-          invents tuition from\\[0.2em]
+          fill=maincolor!8, inner sep=7pt, text width=3.1cm] {
+          \textbf{Not} a chatbot that\\[0.25em]
+          invents tuition from\\[0.25em]
           thin air.
         };
       \end{tikzpicture}
@@ -127,96 +133,92 @@
 
 \begin{frame}{Technique: training-free RAG + tools}{\thesection}
   \textbf{Why training-free?} Centre docs change weekly $\Rightarrow$ fine-tuning is the wrong loop.
-  \vspace{0.35em}
+  \vspace{0.3em}
   \begin{columns}[T]
-    \begin{column}{0.54\textwidth}
+    \begin{column}{0.50\textwidth}
       \textbf{RAG (self-built)}
-      \begin{enumerate}\setlength\itemsep{0.15em}
+      \begin{enumerate}\setlength\itemsep{0.18em}
         \item Chunk markdown KB (\texttt{content/})
         \item Embed with DashScope
         \item Store / query in Chroma
         \item Lexical rerank $\rightarrow$ top-$k$
         \item Generate with Qwen + citations
       \end{enumerate}
-      \vspace{0.25em}
-      {\scriptsize Retrieval score $s(q,c)=\mathrm{sim}(E(q),E(c))$ · inspector shows rank, $s$, full chunk.}
+      \vspace{0.3em}
+      {\scriptsize Retrieval $s(q,c)=\mathrm{sim}(E(q),E(c))$ · inspector shows rank, $s$, chunk.}
     \end{column}
-    \begin{column}{0.44\textwidth}
+    \begin{column}{0.46\textwidth}
       \textbf{Hybrid router}
-      \begin{itemize}\setlength\itemsep{0.15em}
-        \item Scores are \textbf{fixed detector awards}, not RAG sim
+      \begin{itemize}\setlength\itemsep{0.16em}
+        \item Scores = \textbf{detector awards}, not RAG sim
         \item Soft FAQ: grounded compose (card $>$ KB)
-        \item Hard FSM (book / cancel / escalate) bypasses retrieve
-        \item Cheap arbiter only if low confidence
+        \item Hard paths \textbf{bypass retrieve}
+        \item Route arbiter if low confidence
+        \item \textbf{Final check} before book / escalate / refuse
       \end{itemize}
       \vspace{0.35em}
       \pill{card privileged}\quad\pill{KB may enrich}\\[0.25em]
-      \pill{score ledger in inspector}
+      \pill{proceed / clarify / abort}
     \end{column}
   \end{columns}
 \end{frame}
 
 \begin{frame}{Three answer tiers}{\thesection}
-  \renewcommand{\arraystretch}{1.15}
+  \renewcommand{\arraystretch}{1.32}
   {\small
-  \begin{tabular}{@{}p{0.22\textwidth}p{0.36\textwidth}p{0.34\textwidth}@{}}
+  \begin{tabular}{@{}p{0.26\textwidth}p{0.34\textwidth}p{0.32\textwidth}@{}}
     \toprule
-    \textbf{Tier} & \textbf{Examples} & \textbf{RAG role} \\
+    \textbf{Tier} & \textbf{Examples} & \textbf{LLM / RAG} \\
     \midrule
-    Hard FSM / hand-off & Book / cancel dialogue, escalate, refuse & Bypass \\
+    Hard FSM + final check & Book / cancel, escalate, refuse & Bypass retrieve · cheap go-ahead \\
     Grounded compose & Typhoon+HKO, seats, fees, allergy & Live doc + KB enrich \\
-    Pure RAG & Private 1:1, multi-topic narrative & Full generate \\
+    Pure RAG & Private 1:1, multi-topic narrative & Full retrieve $\rightarrow$ generate \\
     \bottomrule
   \end{tabular}}
   \vspace{0.55em}
-  {\small Intent score e.g.\ \texttt{fees=0.90} means ``fee regex fired'' --- open the inspector ledger to see every award / blend / clear.}
+  {\raggedright\small
+  Intent score e.g.\ \texttt{fees=0.90} = fee detector fired.\\
+  Final check returns \texttt{proceed} / \texttt{clarify} / \texttt{abort} (safety fail-opens).}
 \end{frame}
 
 \begin{frame}{Architecture}{\thesection}
   \centering
-  \vspace{-0.2em}
+  \vspace{-0.15em}
   \begin{tikzpicture}[
-    font=\footnotesize\sffamily,
-    node distance=0.55cm and 0.7cm,
+    font=\scriptsize\sffamily,
     box/.style={
-      draw=maincolor, line width=0.7pt, rounded corners=2.5pt,
-      align=center, inner xsep=7pt, inner ysep=5pt, fill=white,
-      minimum height=0.78cm, minimum width=2.55cm
+      draw=maincolor, line width=0.65pt, rounded corners=2.5pt,
+      align=center, inner xsep=4pt, inner ysep=3.5pt, fill=white,
+      minimum height=0.68cm, text width=2.28cm
     },
     soft/.style={box, fill=maincolor!9},
-    cloud/.style={box, fill=airforceblue!14, draw=airforceblue, minimum width=2.7cm},
-    arr/.style={-{Latex[length=2.2mm]}, thick, darkgray!70}
+    cloud/.style={box, fill=airforceblue!14, draw=airforceblue},
+    arr/.style={-{Latex[length=2mm]}, thick, darkgray!70}
   ]
-    % Row 1
-    \node[soft] (ui) {\textbf{React UI}\\{\scriptsize seanfontaine.dev}};
-    \node[soft, right=of ui] (api) {\textbf{FastAPI}\\{\scriptsize Alibaba SAE}};
-    \node[box, right=of api] (route) {\textbf{Hybrid router}\\{\scriptsize rules + arbiter}};
+    \node[soft] (ui) at (0,2.55) {\textbf{React UI}\\seanfontaine.dev};
+    \node[soft] (api) at (2.85,2.55) {\textbf{FastAPI}\\Alibaba SAE};
+    \node[box] (route) at (5.7,2.55) {\textbf{Hybrid router}\\rules + arbiter};
 
-    % Row 2 — three clear branches under router
-    \node[box, below left=0.7cm and 0.05cm of route] (tools)
-      {\textbf{Hard FSM}\\{\scriptsize book · cancel · escalate}};
-    \node[box, below=0.7cm of route] (compose)
-      {\textbf{Grounded compose}\\{\scriptsize card + KB enrich}};
-    \node[box, below right=0.7cm and 0.05cm of route] (rag)
-      {\textbf{Pure RAG}\\{\scriptsize retrieve $\rightarrow$ gen}};
+    \node[box] (tools) at (1.4,1.0) {\textbf{Hard FSM}\\book · cancel · escalate};
+    \node[box] (compose) at (4.0,1.0) {\textbf{Grounded compose}\\card + KB enrich};
+    \node[box] (rag) at (6.6,1.0) {\textbf{Pure RAG}\\retrieve $\rightarrow$ gen};
 
-    % Row 3
-    \node[cloud, below=0.55cm of tools] (adapt) {Tone adapt\\{\scriptsize bypass RAG}};
-    \node[cloud, below=0.55cm of compose] (ds) {Qwen compose\\{\scriptsize T8 · seats · fees}};
-    \node[cloud, below=0.55cm of rag] (gen) {Chroma + Qwen\\{\scriptsize citations}};
+    \node[cloud] (adapt) at (1.4,-0.65) {Final check\\proceed · clarify · abort};
+    \node[cloud] (ds) at (4.0,-0.65) {Qwen compose\\T8 · seats · fees};
+    \node[cloud] (gen) at (6.6,-0.65) {Chroma + Qwen\\citations};
 
     \draw[arr] (ui) -- (api);
     \draw[arr] (api) -- (route);
-    \draw[arr] (route) -- (tools);
-    \draw[arr] (route) -- (compose);
-    \draw[arr] (route) -- (rag);
+    \draw[arr] (route.south) -- (tools.north);
+    \draw[arr] (route.south) -- (compose.north);
+    \draw[arr] (route.south) -- (rag.north);
     \draw[arr] (tools) -- (adapt);
     \draw[arr] (compose) -- (ds);
     \draw[arr] (rag) -- (gen);
   \end{tikzpicture}
 
   \vspace{0.35em}
-  {\small Inspector: match cue · score ledger · grounding mode · enrich chunks · session memory}
+  {\small Inspector: match cue · score ledger · final check · grounding · RAG expand}
 \end{frame}
 
 % ============================================================================
@@ -227,51 +229,60 @@
   \begin{columns}[T]
     \begin{column}{0.48\textwidth}
       \textbf{Parent chat (WhatsApp-shaped)}
-      \begin{itemize}
+      \begin{itemize}\setlength\itemsep{0.22em}
         \item Messaging surface + probes
-        \item Chat only --- no booking form / Book buttons
+        \item Chat only --- no booking form
       \end{itemize}
-      \vspace{0.4em}
+      \vspace{0.55em}
       \textbf{System inspector}
-      \begin{itemize}
+      \begin{itemize}\setlength\itemsep{0.22em}
         \item Router decision + score ledger
-        \item Grounding mode · RAG expand
+        \item Final check · grounding · RAG expand
         \item Class register · session memory
       \end{itemize}
     \end{column}
     \begin{column}{0.48\textwidth}
       \textbf{Staff desk}
-      \begin{itemize}
+      \begin{itemize}\setlength\itemsep{0.22em}
         \item SheetPro follow-ups (gaps / assessment)
         \item MailBox urgent inbox
+        \item Drafted hand-off emails
       \end{itemize}
-      \vspace{0.5em}
-      \begin{block}{5-minute rule}
-        Slides cue. We \textbf{operate} the system.
-      \end{block}
+      \vspace{0.7em}
+      \begin{tikzpicture}
+        \node[
+          draw=maincolor, fill=maincolor, text=white, rounded corners=3pt,
+          inner xsep=9pt, inner ysep=7pt, text width=0.40\textwidth,
+          align=left, font=\small
+        ] {
+          \textbf{5-minute rule}\\[0.25em]
+          {\scriptsize Slides cue. We \mbox{\textbf{operate}} the system.}
+        };
+      \end{tikzpicture}
     \end{column}
   \end{columns}
-  \democue{Open \bhref{https://seanfontaine.dev/COMP6708_A3_Demo}{the live demo} fullscreen. Reset once.}
+  \vspace{0.15em}
+  \democue{Open the live demo fullscreen. Reset once.}
 \end{frame}
 
 \begin{frame}{Demo beats (cue card)}{\thesection}
-  \renewcommand{\arraystretch}{1.22}
+  \renewcommand{\arraystretch}{1.28}
   {\small
-  \begin{tabular}{@{}p{0.10\textwidth}p{0.40\textwidth}p{0.42\textwidth}@{}}
+  \begin{tabular}{@{}>{\bfseries}p{0.08\textwidth}p{0.36\textwidth}p{0.48\textwidth}@{}}
     \toprule
-    \textbf{Beat} & \textbf{Show} & \textbf{Point at} \\
+    Beat & \textbf{Show} & \textbf{Point at} \\
     \midrule
     1 & Typhoon & Score 1.0 · live/policy privileged \\
-    2a & Phonics fee & fees=0.90 ledger · grounded compose \\
-    2b & RAG · Private 1:1 & Pure retrieve · expand chunk \\
-    3 & Seats $\rightarrow$ Book Jason & Chat seats · register · assessment$\rightarrow$SheetPro \\
-    4 & Scuba (unknown) & Follow-up \textbf{SheetPro} row \\
-    5 & Safety allergy call & \textbf{MailBox} urgent mail \\
+    2a & Phonics fee & fees=0.90 · grounded compose \\
+    2b & RAG · Private 1:1 & Retrieve $\rightarrow$ expand chunk \\
+    3 & Seats $\rightarrow$ book Jason & Register · \textbf{final check} · SheetPro \\
+    4 & Scuba (unknown) & Honest gap · \textbf{SheetPro} row \\
+    5 & Safety allergy call & \textbf{MailBox} · safety fail-open \\
     \bottomrule
   \end{tabular}}
 
-  \vspace{0.45em}
-  \democue{Beats 1$\rightarrow$5 without reading bullets. Narrate the inspector.}
+  \vspace{0.5em}
+  \democue{Operate the live system. Narrate the inspector — do not read this table.}
 \end{frame}
 
 % ============================================================================
@@ -282,31 +293,31 @@
   \begin{columns}[T]
     \begin{column}{0.48\textwidth}
       \textbf{Impact}
-      \begin{itemize}
+      \begin{itemize}\setlength\itemsep{0.22em}
         \item 24/7 triage without inventing policy
         \item Tools for hours / fees / seats
         \item RAG for programme narrative
-        \item Humans when it matters
+        \item Humans only when stakes demand it
       \end{itemize}
-      \vspace{0.3em}
+      \vspace{0.4em}
       \textbf{Creativity}
-      \begin{itemize}
-        \item Hybrid router + confidence-gated review
+      \begin{itemize}\setlength\itemsep{0.22em}
+        \item Hybrid router + commit final check
         \item Staff desk = Sheets + Gmail clones
       \end{itemize}
     \end{column}
     \begin{column}{0.48\textwidth}
       \begin{block}{Correctness cues}
-        \begin{itemize}
-          \item Visible rule map + decision path
+        \begin{itemize}\setlength\itemsep{0.18em}
+          \item Score ledger + decision path
           \item Citations with retrieval scores
-          \item Urgent safety inbox + email draft
-          \item Off-topic refuse (no fake todo)
+          \item Final check before irreversible writes
+          \item Urgent MailBox + drafted email
         \end{itemize}
       \end{block}
-      \vspace{0.3em}
+      \vspace{0.4em}
       \begin{block}{Evaluation}
-        Live path correctness · visible RAG · latency feel.\\
+        Live path correctness · visible RAG · latency feel.\\[0.15em]
         {\scriptsize\textit{No formal user study required.}}
       \end{block}
     \end{column}
@@ -316,20 +327,22 @@
 {
 \setbeamertemplate{footline}{}
 \begin{frame}{Thank you}
-  \vspace{0.1em}
-  \centerstate{%
-    {\Large Grounded answers. Structured actions. Honest hand-offs.}\\[0.55em]
-    {\normalsize\bfseries RAG} · {\normalsize\bfseries tools} · {\normalsize\bfseries staff desk}\\[0.55em]
-    \complogo\\[0.35em]
-    {\small\bfseries Group 15}\\[0.25em]
-    {\scriptsize
-    \textbf{FONTAINE} Sean Hsien-ming \texttt{26071164r}\\[0.08em]
-    \textbf{JIANG} Junwei \texttt{26107939r}\\[0.08em]
-    \textbf{MAO} Shiwei \texttt{25038479r}\\[0.08em]
-    \textbf{YAN} Xingzhuo \texttt{25013043r}}\\[0.35em]
-    {\footnotesize PolyU Department of Computing · COMP6708}\\[0.25em]
-    {\small\bhref{https://seanfontaine.dev/COMP6708_A3_Demo}{seanfontaine.dev/COMP6708\_A3\_Demo}}
-  }
+  \vfill
+  \centering
+  {\Large Grounded answers. Structured actions. Honest hand-offs.}\\[0.6em]
+  {\normalsize\bfseries RAG} · {\normalsize\bfseries tools} · {\normalsize\bfseries staff desk}\\[0.7em]
+  \complogo\\[0.4em]
+  {\small\bfseries Group 15}\\[0.35em]
+  {\scriptsize
+  \begin{tabular}{@{}ll@{}}
+    \textbf{FONTAINE} Sean Hsien-ming & \texttt{26071164r}\\[0.12em]
+    \textbf{JIANG} Junwei & \texttt{26107939r}\\[0.12em]
+    \textbf{MAO} Shiwei & \texttt{25038479r}\\[0.12em]
+    \textbf{YAN} Xingzhuo & \texttt{25013043r}
+  \end{tabular}}\\[0.45em]
+  {\footnotesize PolyU Department of Computing · COMP6708}\\[0.3em]
+  {\small\bhref{https://seanfontaine.dev/COMP6708_A3_Demo}{seanfontaine.dev/COMP6708\_A3\_Demo}}
+  \vfill
 \end{frame}
 
 \QApage

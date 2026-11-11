@@ -722,7 +722,7 @@ def chat(req: ChatRequest) -> ChatResponse:
 
     # --- Deterministic / tool routes (scored intent) ---
     if route == "staff_escalation":
-        from services import staff_email
+        from services import final_check, staff_email
 
         esc = decision.debug.get("escalation") or escalation_svc.detect_escalation(message)
         # Soft prototypes can award this route without the hard detector — never 500
@@ -734,6 +734,68 @@ def chat(req: ChatRequest) -> ChatResponse:
             }
         todo_parent, todo_child = _family_names()
         topic = escalation_svc.topic_hint_from_message(message, esc["category"])
+        is_safety = (esc.get("category") or "") == "safety"
+        gate = final_check.review_commit(
+            kind="escalate",
+            message=message,
+            proposed_summary=(
+                f"Open staff inbox ({esc.get('category')}/{esc.get('priority')}) "
+                f"for {todo_parent or 'parent'} / {todo_child or 'child'}: "
+                f"{esc.get('summary') or topic}"
+            ),
+            context={
+                "category": esc.get("category"),
+                "priority": esc.get("priority"),
+                "topic": topic,
+                "force_proceed": is_safety,
+            },
+        )
+        steps.append(
+            _step(
+                "final_check",
+                "LLM final check · escalate",
+                "done" if gate.get("called") else "skipped",
+                f"{gate.get('action')} · {gate.get('reason') or 'n/a'}"
+                + (f" · {gate.get('model')}" if gate.get("model") else ""),
+            )
+        )
+        if gate.get("action") == "clarify" and not is_safety:
+            clarify = gate.get("clarify_prompt") or (
+                "I can put you through to our team — is that what you'd like, "
+                "or did you want a quick answer about programmes, fees, or hours first?"
+            )
+            return _fact_response(
+                route_name="staff_escalation",
+                answer=clarify,
+                citations=[],
+                provider="staff_escalation",
+                extra_step=_step(
+                    "staff_escalate",
+                    "Message centre boss",
+                    "skipped",
+                    "final_check=clarify",
+                ),
+                debug={"escalation": esc, "final_check": gate},
+                adapt=False,
+            )
+        if gate.get("action") == "abort" and not is_safety:
+            return _fact_response(
+                route_name="staff_escalation",
+                answer=(
+                    "Happy to help with BrightNest programmes, fees, hours, or booking. "
+                    "What would you like to know?"
+                ),
+                citations=[],
+                provider="staff_escalation",
+                extra_step=_step(
+                    "staff_escalate",
+                    "Message centre boss",
+                    "skipped",
+                    "final_check=abort",
+                ),
+                debug={"escalation": esc, "final_check": gate},
+                adapt=False,
+            )
         answer = escalation_svc.parent_reply(
             category=esc["category"], topic_hint=topic, lang=lang
         )
@@ -774,6 +836,7 @@ def chat(req: ChatRequest) -> ChatResponse:
         )
         # Inspector reads staff_message from trace
         trace["staff_message"] = staff_msg
+        trace["final_check"] = gate
         return _fact_response(
             route_name="staff_escalation",
             answer=answer,
@@ -785,7 +848,7 @@ def chat(req: ChatRequest) -> ChatResponse:
                 "done",
                 f"{esc['category']} · {staff_msg.get('id')}",
             ),
-            debug={"escalation": esc, "staff_message": staff_msg},
+            debug={"escalation": esc, "staff_message": staff_msg, "final_check": gate},
             adapt=False,
         )
 
@@ -799,45 +862,98 @@ def chat(req: ChatRequest) -> ChatResponse:
         )
 
     if route == "off_domain":
+        from services import final_check as final_check_svc
+
         low_msg = (message or "").lower()
         weatherish = bool(
             re.search(r"\b(weather|temperature|forecast|climate)\b", low_msg)
         )
-        off = {
-            "en": (
-                (
-                    "I’m BrightNest’s learning-centre assistant, so I don’t have weather "
-                    "forecasts for other cities. Ask about our Hong Kong severe-weather "
-                    "class arrangements, programmes, fees, hours, or booking — "
-                    "or ask to speak with our team."
-                )
-                if weatherish
-                else (
-                    "That’s outside what we can help with as BrightNest’s learning-centre assistant. "
-                    "Ask about programmes, fees, hours, location, trials, or booking — "
-                    "or ask to speak with our team."
-                )
+        refuse_gate = final_check_svc.review_commit(
+            kind="refuse",
+            message=message,
+            proposed_summary=(
+                "Hard refuse as out-of-scope for a Hong Kong learning-centre assistant"
+                + (" (other-city weather)" if weatherish else "")
             ),
-            "zh-HK": (
-                "呢啲唔屬於亮巢學習中心助理可以處理嘅範圍。"
-                "你可以問課程、學費、時間、地址、試堂或預約，或者要求同團隊傾。"
-            ),
-            "zh-CN": (
-                "这不属于亮巢学习中心助理可以处理的范围。"
-                "你可以问课程、学费、时间、地址、试听或预约，或要求与团队沟通。"
-            ),
-        }
-        L = (lang or "en").lower()
-        ans = off["zh-HK"] if L.startswith("zh-hk") else (
-            off["zh-CN"] if L.startswith("zh") else off["en"]
+            context={"weatherish": weatherish},
         )
-        return _fact_response(
-            route_name="off_domain",
-            answer=ans,
-            citations=[],
-            provider="off_domain",
-            extra_step=_step("off_domain", "Out-of-scope short-circuit", "done", "refuse"),
+        steps.append(
+            _step(
+                "final_check",
+                "LLM final check · refuse",
+                "done" if refuse_gate.get("called") else "skipped",
+                f"{refuse_gate.get('action')} · {refuse_gate.get('reason') or 'n/a'}"
+                + (f" · {refuse_gate.get('model')}" if refuse_gate.get("model") else ""),
+            )
         )
+        if refuse_gate.get("action") == "clarify":
+            return _fact_response(
+                route_name="off_domain",
+                answer=refuse_gate.get("clarify_prompt")
+                or (
+                    "Happy to stay on BrightNest topics (programmes, fees, hours, booking). "
+                    "What would you like help with?"
+                ),
+                citations=[],
+                provider="off_domain",
+                extra_step=_step(
+                    "off_domain", "Out-of-scope short-circuit", "skipped", "final_check=clarify"
+                ),
+                debug={"final_check": refuse_gate},
+                adapt=False,
+            )
+        if refuse_gate.get("action") == "abort":
+            # Likely on-domain misfire — fall through to RAG rather than a hard refuse
+            steps.append(
+                _step(
+                    "off_domain",
+                    "Out-of-scope short-circuit",
+                    "skipped",
+                    "final_check=abort → rag",
+                )
+            )
+            trace["final_check"] = refuse_gate
+            route = "rag"
+        else:
+            off = {
+                "en": (
+                    (
+                        "I’m BrightNest’s learning-centre assistant, so I don’t have weather "
+                        "forecasts for other cities. Ask about our Hong Kong severe-weather "
+                        "class arrangements, programmes, fees, hours, or booking — "
+                        "or ask to speak with our team."
+                    )
+                    if weatherish
+                    else (
+                        "That’s outside what we can help with as BrightNest’s learning-centre assistant. "
+                        "Ask about programmes, fees, hours, location, trials, or booking — "
+                        "or ask to speak with our team."
+                    )
+                ),
+                "zh-HK": (
+                    "呢啲唔屬於亮巢學習中心助理可以處理嘅範圍。"
+                    "你可以問課程、學費、時間、地址、試堂或預約，或者要求同團隊傾。"
+                ),
+                "zh-CN": (
+                    "这不属于亮巢学习中心助理可以处理的范围。"
+                    "你可以问课程、学费、时间、地址、试听或预约，或要求与团队沟通。"
+                ),
+            }
+            L = (lang or "en").lower()
+            ans = off["zh-HK"] if L.startswith("zh-hk") else (
+                off["zh-CN"] if L.startswith("zh") else off["en"]
+            )
+            return _fact_response(
+                route_name="off_domain",
+                answer=ans,
+                citations=[],
+                provider="off_domain",
+                extra_step=_step(
+                    "off_domain", "Out-of-scope short-circuit", "done", "refuse"
+                ),
+                debug={"final_check": refuse_gate},
+                adapt=False,
+            )
 
     if route == "thanks":
         thanks = {
@@ -1130,14 +1246,17 @@ def chat(req: ChatRequest) -> ChatResponse:
         if st.get("arbiter_pick") and "arbiter_pick" not in tc:
             tc["arbiter_pick"] = st["arbiter_pick"]
         pick = tc.get("arbiter_pick")
-        extra_steps = [
-            _step(
-                "cancel_dialogue",
-                "Cancel session dialogue",
-                "done",
-                tc.get("stage") or "turn",
+        gate = tc.get("final_check") or {}
+        if gate:
+            steps.append(
+                _step(
+                    "final_check",
+                    "LLM final check · cancel",
+                    "done" if gate.get("called") else "skipped",
+                    f"{gate.get('action')} · {gate.get('reason') or 'n/a'}"
+                    + (f" · {gate.get('model')}" if gate.get("model") else ""),
+                )
             )
-        ]
         if pick and pick.get("called"):
             steps.append(
                 _step(
@@ -1156,7 +1275,12 @@ def chat(req: ChatRequest) -> ChatResponse:
                 {"source": "services/cancellations", "title": "Cancellations sheet"},
             ],
             provider="cancel_dialogue",
-            extra_step=extra_steps[0],
+            extra_step=_step(
+                "cancel_dialogue",
+                "Cancel session dialogue",
+                "done",
+                tc.get("stage") or "turn",
+            ),
             debug={"cancel": tc},
             adapt=False,
         )
@@ -1188,6 +1312,17 @@ def chat(req: ChatRequest) -> ChatResponse:
             if st.get("arbiter_booking") and "arbiter_booking" not in tb:
                 tb["arbiter_booking"] = st["arbiter_booking"]
             hints = tb.get("arbiter_booking")
+            gate = tb.get("final_check") or {}
+            if gate:
+                steps.append(
+                    _step(
+                        "final_check",
+                        "LLM final check · book",
+                        "done" if gate.get("called") else "skipped",
+                        f"{gate.get('action')} · {gate.get('reason') or 'n/a'}"
+                        + (f" · {gate.get('model')}" if gate.get("model") else ""),
+                    )
+                )
             if hints and hints.get("called"):
                 if hints.get("ok"):
                     bp_status = "done"

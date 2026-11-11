@@ -684,6 +684,58 @@ def handle_turn(
     if state.get("stage") == "confirm_assessment":
         prog = state.get("programme_label") or course_label(state.get("course_key") or "phonics")
         if is_affirmative(text):
+            from services import final_check
+
+            summary = (
+                f"Queue diagnostic assessment for {child_name} toward {prog} "
+                f"(phone {state.get('phone') or 'demo'})."
+            )
+            gate = final_check.review_commit(
+                kind="book",
+                message=text,
+                proposed_summary=summary,
+                context={
+                    "child_name": child_name,
+                    "programme": prog,
+                    "stage": "confirm_assessment",
+                },
+            )
+            if gate.get("action") == "clarify":
+                save_state(session_id, {**state, "stage": "confirm_assessment"})
+                return {
+                    "answer": gate.get("clarify_prompt")
+                    or (
+                        f"Just to confirm — arrange a short diagnostic assessment for "
+                        f"**{child_name}** ({prog})? Reply **yes** to proceed."
+                    ),
+                    "slots": None,
+                    "provider": "booking_dialogue",
+                    "trace_booking": {
+                        "stage": "confirm_assessment",
+                        "child_name": child_name,
+                        "programme_label": prog,
+                        "final_check": gate,
+                        "steps": steps,
+                    },
+                    "state": {**state, "stage": "confirm_assessment"},
+                }
+            if gate.get("action") == "abort":
+                clear_state(session_id)
+                return {
+                    "answer": (
+                        "No problem — I won't queue an assessment. "
+                        "Tell me a day or teacher if you'd rather browse open seats, "
+                        "or ask about programmes and fees."
+                    ),
+                    "slots": None,
+                    "provider": "booking_dialogue",
+                    "trace_booking": {
+                        "stage": "aborted_final_check",
+                        "final_check": gate,
+                        "steps": steps,
+                    },
+                    "state": None,
+                }
             clear_state(session_id)
             answer = (
                 f"Great — we'll arrange a short **diagnostic assessment** for **{child_name}** "
@@ -715,6 +767,7 @@ def handle_turn(
                     "child_name": child_name,
                     "programme_label": prog,
                     "course_key": state.get("course_key"),
+                    "final_check": gate,
                     "steps": steps,
                 },
                 "state": None,
@@ -888,7 +941,9 @@ def handle_turn(
         lines.append(
             f"• {s['slot_display']} — {s.get('teacher_name')} · {s.get('room')} · {s['seats_left']} left"
         )
-    lines.append("\nTap **Book** on a slot, or tell me another day/teacher to refine.")
+    lines.append(
+        "\nReply with a time (e.g. **Tuesday 10:00**), or tell me another day/teacher to refine."
+    )
 
     return {
         "answer": "\n".join(lines),

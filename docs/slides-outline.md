@@ -1,26 +1,27 @@
 # Slides outline — Assignment3-Group15
 
 **Source:** `slides/main.tex`  
-**PDF:** `slides/Assignment3-Group15.pdf` (also `slides/main.pdf`)  
+**PDF:** `slides/Assignment3-Group15.pdf`  
 **Compile:** `pdflatex main.tex` twice from `slides/`
 
-Supporting material only — live demo is 70% of the grade.  
+Supporting material only — the live demo carries most of the grade.  
 Talk track: [demo-script.md](demo-script.md) · System truth: [TEAM.md](TEAM.md).
 
 | # | Slide | Purpose |
 |---|-------|---------|
-| 1 | Title | BrightNest · Group 15 · full names · COMP logo · clean bg |
+| 1 | Title | BrightNest · Group 15 · COMP mark |
 | 2 | One sentence | Pitch line |
-| 3 | Problem | Scenario + opportunity (WhatsApp after-hours) |
-| 4 | Technique | RAG + hybrid router (scores ≠ retrieval sim) |
-| 5 | Three answer tiers | Hard FSM / grounded compose / pure RAG |
-| 6 | Architecture | Router → three branches diagram |
-| 7 | What you will see live | Chat-only UI · inspector · Staff desk (SheetPro / MailBox) |
-| 8 | Demo beats | Cue card: Typhoon → fees → RAG → seats/Book Jason → scuba → safety |
-| 9 | Impact & why it works | Impact + creativity + evaluation |
-| 10 | Closing | Tagline + full team + COMP |
-| 11 | Q&A | Template end card |
+| 3 | Problem | After-hours WhatsApp pressure + opportunity |
+| 4 | Technique | RAG + hybrid router + **final check** |
+| 5 | Three answer tiers | FSM+check / grounded compose / pure RAG |
+| 6 | Architecture | Router → three branches → final check / compose / generate |
+| 7 | What you will see live | Chat-only · inspector · SheetPro / MailBox |
+| 8 | Demo beats | Cue card for the five live beats |
+| 9 | Impact & why it works | Impact · creativity · correctness · evaluation |
+| 10 | Closing | Tagline + team |
+| 11 | Q&A | End card |
 
-**Demo beat 3 (updated):** no Book buttons — chat seat counts + conversational booking; assessment Yes → SheetPro.
+**Beat 3:** chat seats + conversational booking; parent Yes → **LLM final check** → SheetPro.  
+**Beat 5:** safety escalate fail-opens so MailBox is never blocked on the model.
 
-Assets: `src/PolyU/title-bg-clean.jpg` (no campus building), `gallery/polyu-comp-logo.png`, PolyU mark on every slide.
+Assets: `src/PolyU/title-bg-clean.jpg`, `gallery/polyu-comp-logo.png`.

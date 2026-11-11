@@ -38,8 +38,23 @@ _CANCEL_SESSION_RE = re.compile(
     r")",
     re.I | re.S,
 )
-_ABORT_RE = re.compile(r"\b(never\s*mind|forget\s+it|stop|算了|唔使)\b", re.I)
-_CONFIRM_RE = re.compile(r"\b(yes|yeah|yep|confirm|please\s+cancel|ok|okay|sure|好|係|确定|確認)\b", re.I)
+_ABORT_RE = re.compile(
+    r"("
+    r"\b(never\s*mind|forget\s+it|stop(\s+cancel(ling)?)?|keep\s+(it|the\s+class)|"
+    r"don'?t(\s+cancel)?|do\s+not(\s+cancel)?|nope|nah|"
+    r"no\s+thanks|not\s+now|leave\s+it)\b|"
+    r"^\s*no\s*[!.。！？]*\s*$|"
+    r"算了|唔使|唔好|不要|别取消|別取消|不要取消|先唔好"
+    r")",
+    re.I,
+)
+_CONFIRM_RE = re.compile(
+    r"("
+    r"\b(yes|yeah|yep|yup|confirm|please\s+cancel|go\s+ahead|ok|okay|sure)\b|"
+    r"^\s*(好|係|是|可以|确定|確認|好的|好呀)\s*[!.。！？]*\s*$"
+    r")",
+    re.I,
+)
 _COURSE_HINTS = [
     (re.compile(r"phonic|拼音", re.I), "phonics"),
     (re.compile(r"mandarin|putonghua|普通話|普通话", re.I), "mandarin"),
@@ -379,7 +394,12 @@ def handle_turn(
     if parent_name:
         state["parent_name"] = parent_name
 
-    if _ABORT_RE.search(text) and not is_cancel_request(text):
+    # Global abort — but confirm-stage declines are handled below ("Kept as booked")
+    if (
+        state.get("stage") != "confirm"
+        and _ABORT_RE.search(text)
+        and not is_cancel_request(text)
+    ):
         clear_state(session_id)
         return {
             "answer": "Okay — I won't cancel anything. Say if you need help later.",
@@ -442,6 +462,129 @@ def handle_turn(
             "state": None,
         }
 
+    # Confirm path first — decline before affirm ("do not cancel" must not fire cancel verbs)
+    if state.get("stage") == "confirm" and state.get("selected"):
+        if _ABORT_RE.search(text):
+            clear_state(session_id)
+            return {
+                "answer": "Kept as booked — nothing was cancelled.",
+                "provider": "cancel_dialogue",
+                "trace_cancel": {"stage": "aborted_confirm"},
+                "state": None,
+            }
+        # Affirm only on clear yes / ok — bare "cancel" alone is too easy to misfire
+        if _CONFIRM_RE.search(text) or re.search(
+            r"\b(please\s+)?(go\s+ahead\s+and\s+)?cancel\s+(it|this|that|yes)\b",
+            text or "",
+            re.I,
+        ):
+            sel = state["selected"]
+            from services import final_check
+
+            summary = (
+                f"Cancel {child_name}'s {sel.get('course_label')} on "
+                f"{sel.get('slot_display')} with {sel.get('teacher_name')}."
+            )
+            gate = final_check.review_commit(
+                kind="cancel",
+                message=text,
+                proposed_summary=summary,
+                context={
+                    "child_name": child_name,
+                    "slot_display": sel.get("slot_display"),
+                    "course_label": sel.get("course_label"),
+                },
+            )
+            if gate.get("action") == "clarify":
+                save_state(session_id, state)
+                return {
+                    "answer": gate.get("clarify_prompt")
+                    or (
+                        f"Just to confirm — cancel **{child_name}**'s "
+                        f"**{sel.get('course_label')}** on **{sel.get('slot_display')}** "
+                        f"with {sel.get('teacher_name')}?\n\n"
+                        "Reply **yes** to confirm, or **no** to keep it booked."
+                    ),
+                    "provider": "cancel_dialogue",
+                    "trace_cancel": {
+                        "stage": "confirm",
+                        "child_name": child_name,
+                        "selected": sel,
+                        "final_check": gate,
+                        "reprompt": True,
+                    },
+                    "state": state,
+                }
+            if gate.get("action") == "abort":
+                clear_state(session_id)
+                return {
+                    "answer": "Kept as booked — nothing was cancelled.",
+                    "provider": "cancel_dialogue",
+                    "trace_cancel": {
+                        "stage": "aborted_final_check",
+                        "final_check": gate,
+                    },
+                    "state": None,
+                }
+            cid = f"cx-{datetime.now(HK_TZ).strftime('%H%M%S')}"
+            _append_cancellation(
+                {
+                    "id": cid,
+                    "created_at": datetime.now(HK_TZ).isoformat(),
+                    "phone": state.get("phone"),
+                    "parent_name": state.get("parent_name"),
+                    "child_name": child_name,
+                    "course_key": sel.get("course_key"),
+                    "slot_start": sel.get("slot_start"),
+                    "slot_display": sel.get("slot_display"),
+                    "teacher_id": sel.get("teacher_id"),
+                    "session_id": sel.get("session_id") or "",
+                    "source_kind": sel.get("kind"),
+                    "booking_id": sel.get("booking_id") or "",
+                    "notes": "Cancelled via parent chat",
+                }
+            )
+            if sel.get("kind") == "chat_booking" and sel.get("booking_id"):
+                _remove_chat_booking(sel["booking_id"])
+            clear_state(session_id)
+            return {
+                "answer": (
+                    f"Cancelled for **{child_name}**:\n"
+                    f"• {sel.get('slot_display')} — {sel.get('course_label')} "
+                    f"with {sel.get('teacher_name')}\n\n"
+                    "I've logged it on the cancellations sheet for admin. "
+                    "Say if you'd like to rebook another time."
+                ),
+                "provider": "cancel_dialogue",
+                "trace_cancel": {
+                    "stage": "cancelled",
+                    "child_name": child_name,
+                    "cancelled": sel,
+                    "cancellation_id": cid,
+                    "final_check": gate,
+                },
+                "state": None,
+            }
+        # Unclear confirm reply — ask again
+        sel = state["selected"]
+        save_state(session_id, state)
+        return {
+            "answer": (
+                f"Just to confirm — cancel **{child_name}**'s "
+                f"**{sel.get('course_label')}** on **{sel.get('slot_display')}** "
+                f"with {sel.get('teacher_name')}?\n\n"
+                "Reply **yes** to confirm, or **no** to keep it booked."
+            ),
+            "provider": "cancel_dialogue",
+            "trace_cancel": {
+                "stage": "confirm",
+                "child_name": child_name,
+                "selected": sel,
+                "reprompt": True,
+            },
+            "state": state,
+        }
+
     course = _detect_course(text)
     weekday = book_dlg._detect_weekday(text)  # noqa: SLF001
 
@@ -485,76 +628,6 @@ def handle_turn(
     refined = _has_refining_signal(text)
     idx = _detect_index(text, len(prior_pool or candidates or upcoming))
 
-    # Confirm path
-    if state.get("stage") == "confirm" and state.get("selected"):
-        if _CONFIRM_RE.search(text) or is_cancel_request(text):
-            sel = state["selected"]
-            cid = f"cx-{datetime.now(HK_TZ).strftime('%H%M%S')}"
-            _append_cancellation(
-                {
-                    "id": cid,
-                    "created_at": datetime.now(HK_TZ).isoformat(),
-                    "phone": state.get("phone"),
-                    "parent_name": state.get("parent_name"),
-                    "child_name": child_name,
-                    "course_key": sel.get("course_key"),
-                    "slot_start": sel.get("slot_start"),
-                    "slot_display": sel.get("slot_display"),
-                    "teacher_id": sel.get("teacher_id"),
-                    "session_id": sel.get("session_id") or "",
-                    "source_kind": sel.get("kind"),
-                    "booking_id": sel.get("booking_id") or "",
-                    "notes": "Cancelled via parent chat",
-                }
-            )
-            if sel.get("kind") == "chat_booking" and sel.get("booking_id"):
-                _remove_chat_booking(sel["booking_id"])
-            clear_state(session_id)
-            return {
-                "answer": (
-                    f"Cancelled for **{child_name}**:\n"
-                    f"• {sel.get('slot_display')} — {sel.get('course_label')} "
-                    f"with {sel.get('teacher_name')}\n\n"
-                    "I've logged it on the cancellations sheet for admin. "
-                    "Say if you'd like to rebook another time."
-                ),
-                "provider": "cancel_dialogue",
-                "trace_cancel": {
-                    "stage": "cancelled",
-                    "child_name": child_name,
-                    "cancelled": sel,
-                    "cancellation_id": cid,
-                },
-                "state": None,
-            }
-        if _ABORT_RE.search(text):
-            clear_state(session_id)
-            return {
-                "answer": "Kept as booked — nothing was cancelled.",
-                "provider": "cancel_dialogue",
-                "trace_cancel": {"stage": "aborted_confirm"},
-                "state": None,
-            }
-        # Unclear confirm reply — ask again
-        sel = state["selected"]
-        save_state(session_id, state)
-        return {
-            "answer": (
-                f"Just to confirm — cancel **{child_name}**'s "
-                f"**{sel.get('course_label')}** on **{sel.get('slot_display')}** "
-                f"with {sel.get('teacher_name')}?\n\n"
-                "Reply **yes** to confirm, or tell me a different class."
-            ),
-            "provider": "cancel_dialogue",
-            "trace_cancel": {
-                "stage": "confirm",
-                "child_name": child_name,
-                "selected": sel,
-                "reprompt": True,
-            },
-            "state": state,
-        }
-
     # Select by index from previous candidate list
     if prior_pool and idx is not None:
         if 0 <= idx < len(prior_pool):
@@ -587,7 +660,7 @@ def handle_turn(
                 f"Just to confirm — cancel **{child_name}**'s "
                 f"**{sel.get('course_label')}** on **{sel.get('slot_display')}** "
                 f"with {sel.get('teacher_name')}?\n\n"
-                "Reply **yes** to confirm, or tell me a different class."
+                "Reply **yes** to confirm, or **no** to keep it booked."
             ),
             "provider": "cancel_dialogue",
             "trace_cancel": {

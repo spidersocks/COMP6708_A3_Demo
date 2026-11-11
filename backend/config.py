@@ -91,6 +91,12 @@ class Settings:
         "true",
         "yes",
     )
+    # Final cheap-LLM gate before book / cancel / escalate / refuse commits
+    arbiter_final_check: bool = os.environ.get("ARBITER_FINAL_CHECK", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
     # Soft structured routes: retrieve KB chunks, then compose with the fact card
     # as privileged context (allergy, fees, teachers, …). Hard tools stay bypass.
