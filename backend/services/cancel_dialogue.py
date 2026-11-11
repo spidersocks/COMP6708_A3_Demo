@@ -580,19 +580,18 @@ def handle_turn(
     course = _detect_course(text)
     weekday = book_dlg._detect_weekday(text)  # noqa: SLF001
 
-    # If we're mid-clarify and the parent only said "yes"/vague, re-show the same list
+    # Bare "yes" with several classes still open — re-show the list.
+    # Anything referential ("the first one", a day, a teacher) falls through
+    # to the cancel picker instead of being treated as vague.
     if (
         state.get("stage") == "need_which"
         and state.get("candidates")
+        and _CONFIRM_RE.search(text or "")
         and not _has_refining_signal(text)
         and not is_cancel_request(text)
     ):
         pool = state["candidates"]
-        preface = (
-            f"Still need a pick for **{child_name}** — which of these?"
-            if _CONFIRM_RE.search(text)
-            else f"I can cancel for **{child_name}**. Which session?"
-        )
+        preface = f"Still need a pick for **{child_name}** — which of these?"
         save_state(session_id, state)
         return {
             "answer": _list_options_answer(child_name, pool, preface=preface),

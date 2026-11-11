@@ -1034,6 +1034,7 @@ def chat(req: ChatRequest) -> ChatResponse:
             parent_name=parent_name,
             child_name_hint=child_name,
             lang=lang,
+            history_preview=prior_context or "",
         )
         tb = result.get("trace_booking") or {}
         if result.get("yield_to_rag"):
@@ -1230,6 +1231,7 @@ def chat(req: ChatRequest) -> ChatResponse:
             parent_name=parent_name,
             child_name_hint=child_name,
             lang=lang,
+            history_preview=prior_context or "",
         )
         tb = result.get("trace_booking") or {}
         trace["booking"] = tb
@@ -1305,6 +1307,7 @@ def chat(req: ChatRequest) -> ChatResponse:
             parent_name=parent_name,
             child_name_hint=child_name,
             lang=lang,
+            history_preview=prior_context or "",
         )
         if rescued.get("answer") and not rescued.get("yield_to_rag"):
             tb = rescued.get("trace_booking") or {}

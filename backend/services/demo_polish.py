@@ -187,6 +187,7 @@ def track_booking_slots(
     *,
     prior: Optional[Dict[str, Any]] = None,
     missing: Optional[List[str]] = None,
+    history_preview: str = "",
 ) -> Dict[str, Any]:
     """
     Cheap-LLM Dialogue State Tracking for booking.
@@ -227,13 +228,16 @@ def track_booking_slots(
     }
     prompt = (
         "Dialogue state tracking for a kids' learning-centre booking chat.\n"
-        "Extract ONLY values clearly stated in the latest parent message. "
+        "Extract values from the latest parent message. "
+        "If it is a follow-up (\"book one\", \"that class\", \"yes this week\") "
+        "you may fill course_key or window from the recent chat, not from guesses. "
         "Do not invent names. Kinship words (my/kid/child/son) are NOT names — use null.\n"
         "course_key: phonics|mandarin|writing|playgroup|math|trial|null; "
         "weekday 0=Mon..6=Sun|null; window tomorrow|this_week|next_week|null.\n"
-        "Return null for any slot not supported by this utterance.\n"
+        "Return null for any slot the message and recent chat do not support.\n"
         f"Already known (do not clear): {prior_compact or '{}'}\n"
         f"Still missing (prefer filling these): {miss or ['any stated']}\n"
+        f"{('Recent chat:\n' + history_preview.strip()[-600:] + '\n') if (history_preview or '').strip() else ''}"
         'JSON: {"parent_name":..,"child_name":..,"course_key":..,"weekday":..,'
         '"window":..,"teacher_hint":..,"confidence":0-1,"notes":"short"}\n'
         f"Parent: {message}\n"

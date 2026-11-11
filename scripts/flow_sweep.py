@@ -261,7 +261,16 @@ def main() -> None:
             )
         )
     for msg in HOURS:
-        record(single("hours", msg, known_phone, "Demo Parent", "Jason Chan", ["opening_hours"]))
+        record(
+            single(
+                "hours",
+                msg,
+                known_phone,
+                "Demo Parent",
+                "Jason Chan",
+                ["opening_hours", "deterministic_opening_hours"],
+            )
+        )
     for msg in WEATHER:
         record(
             single("weather", msg, known_phone, "Demo Parent", "Jason Chan", ["severe_weather"])

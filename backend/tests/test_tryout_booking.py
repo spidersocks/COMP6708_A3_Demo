@@ -15,6 +15,26 @@ from services import booking_dialogue as bd  # noqa: E402
 from services.intent_router import decide_intent  # noqa: E402
 
 
+def test_fresh_holiday_signup_is_not_ejected():
+    """'holiday' inside a signup must not bounce a new turn to RAG."""
+    sid = "yield-" + uuid.uuid4().hex[:8]
+    assert bd.should_yield_to_rag(sid, "Sign us up for a holiday phonics brush-up") is False
+    bd.save_state(
+        sid,
+        {
+            "stage": "need_when_asked",
+            "phone": "+85290001111",
+            "parent_name": "A",
+            "child_name": "B",
+            "course_key": "phonics",
+            "when": {},
+            "child_schedule": [],
+        },
+    )
+    assert bd.should_yield_to_rag(sid, "How much is the holiday intensive?") is True
+    assert bd.should_yield_to_rag(sid, "Book the holiday class this week") is False
+
+
 def test_tryout_is_booking_request():
     assert bd.is_booking_request("Hello I want to try out phonics for my child")
     assert bd.is_tryout_request("I'd love to try a phonics class")

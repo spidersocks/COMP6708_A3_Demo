@@ -290,26 +290,25 @@ def _is_booking_refine(text: str) -> bool:
 
 
 def should_yield_to_rag(session_id: str, text: str) -> bool:
-    """Active booking must not swallow fee/FAQ/unknown-programme questions."""
+    """Active booking must not swallow fee/FAQ/unknown-programme questions.
+
+    A fresh turn is not ejected here. Detectors and the action policy already
+    chose booking; a word like "holiday" or "fee" inside that sentence must
+    not bounce it back to RAG. Keywords only interrupt a dialogue that is open.
+    """
     st = get_state(session_id)
     active = bool(st and st.get("stage") and st.get("stage") != "done")
-    if unknown_programme(text):
-        return True
-    if is_trial_policy_question(text):
-        return True
-    if _OFF_TOPIC_RE.search(text or ""):
-        return True
     if not active:
+        return bool(unknown_programme(text))
+    # Still a booking act — stay, even if the sentence also mentions fees/holiday.
+    if is_booking_request(text) or _is_booking_refine(text):
         return False
-    # Affirmative while waiting on assessment / slot confirm stays in booking
     if st.get("stage") in {"confirm_assessment", "confirm_slot"} and is_affirmative(text):
         return False
     if st.get("stage") in {"need_identity", "need_parent", "need_child"} and _parse_identity(text):
         return False
-    if _is_booking_refine(text):
-        return False
-    if is_booking_request(text) and _detect_course(text):
-        return False
+    if unknown_programme(text) or is_trial_policy_question(text) or _OFF_TOPIC_RE.search(text or ""):
+        return True
     # Active offer / clarify loop + unrelated question → leave booking
     if re.search(r"[?？]", text or "") or re.match(
         r"^(how|what|when|where|why|do|does|is|are|can|could|would)\b",
@@ -789,6 +788,7 @@ def handle_turn(
     parent_name: str = "",
     child_name_hint: str = "",
     lang: str = "en",
+    history_preview: str = "",
 ) -> Dict[str, Any]:
     """Process one conversational booking turn. Returns answer/slots/trace/state."""
     text = (message or "").strip()
@@ -929,7 +929,10 @@ def handle_turn(
                 "stage": state.get("stage") or "",
             }
             dst = demo_polish.track_booking_slots(
-                text, prior=prior_slots, missing=dst_missing
+                text,
+                prior=prior_slots,
+                missing=dst_missing,
+                history_preview=history_preview,
             )
             dst["regex_identity"] = regex_identity
             dst["regex_course"] = course
