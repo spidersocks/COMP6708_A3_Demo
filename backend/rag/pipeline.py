@@ -15,6 +15,36 @@ from rag.store import get_store
 # Local-hash embeddings often score ~0.25–0.40 even on off-topic FAQ hits.
 _WEAK_SCORE = 0.28
 _WEAK_SCORE_LOCAL = 0.42
+# Above this, trust Chroma even if lexical overlap looks thin (stopwords ate "lessons")
+_GROUNDED_RETRIEVAL_SCORE = 0.42
+_PROGRAMME_CUES = {
+    "phonic",
+    "phonics",
+    "mandarin",
+    "putonghua",
+    "writing",
+    "writ",
+    "math",
+    "maths",
+    "numeracy",
+    "playgroup",
+    "trial",
+    "assessment",
+    "tuition",
+    "fee",
+    "fees",
+    "teacher",
+    "teachers",
+    "booking",
+    "book",
+    "cancel",
+    "hours",
+    "holiday",
+    "typhoon",
+    "allergy",
+    "pickup",
+    "brightnest",
+}
 _STOP = {
     "a",
     "an",
@@ -136,12 +166,27 @@ def _overlap_count(question: str, hit_text: str) -> int:
 
 
 def _off_topic(question: str, hit: Dict[str, Any] | str) -> bool:
-    """True when the parent question is not grounded in the hit (need ≥2 token overlap)."""
+    """True when the parent question is not grounded in the hit.
+
+    One strong cue (programme name / long token) is enough — stopwords include
+    lesson/class, so \"phonics lessons\" must not look ungrounded against a
+    Phonics chunk.
+    """
     blob = _hit_blob(hit) if isinstance(hit, dict) else (hit or "")
     q = _content_tokens(question)
+    h = _content_tokens(blob)
+    if not q:
+        return True
+    shared = q & h
+    if len(shared) >= 2:
+        return False
+    if len(shared) == 1:
+        tok = next(iter(shared))
+        if len(tok) >= 5 or tok in _PROGRAMME_CUES or tok.startswith("phonic"):
+            return False
     if len(q) < 2:
-        return _overlap_count(question, blob) < 1
-    return _overlap_count(question, blob) < 2
+        return len(shared) < 1
+    return True
 
 
 _FOLDER_PRIORS = [
@@ -494,35 +539,32 @@ def chat_with_rag(
     admin_note = (gen.get("admin_gap") or "") if isinstance(gen.get("admin_gap"), str) else ""
     model_flagged_off = "off_topic" in admin_note.lower()
 
+    retrieval_strong = top_score is not None and top_score >= _GROUNDED_RETRIEVAL_SCORE
+
     if greeting_ok:
         gap_reason = None
     elif not hits:
         gap_reason = "no_retrieval"
-    elif off_topic or model_flagged_off:
+    elif (off_topic or model_flagged_off) and not retrieval_strong:
         # Unrelated to centre KB — refuse; do not lecture from world knowledge
         gap_reason = "off_topic_retrieval"
     elif top_score is not None and top_score < weak_cut and provider != "local_fallback":
         gap_reason = "weak_retrieval"
     elif gen.get("had_no_answer_token"):
         gap_reason = "model_no_answer"
-    elif gen.get("admin_gap"):
+    elif gen.get("admin_gap") and "off_topic" not in admin_note.lower():
         gap_reason = "model_admin_gap"
     elif gen.get("used_fallback") and (
         not hits or (top_score is not None and top_score < 0.45)
     ):
         gap_reason = "generic_fallback"
 
-    # Hard refuse when retrieval clearly fails to ground a centre answer
-    ungrounded = gap_reason == "off_topic_retrieval" or (
-        gap_reason == "weak_retrieval"
-        and off_topic
-        and (top_score is None or top_score < weak_cut)
-    )
-    if ungrounded and not greeting_ok:
+    # Hard refuse only when retrieval is weak *and* ungrounded — never when
+    # Chroma already found a solid centre chunk (e.g. phonics ask → Phonics.md).
+    if gap_reason == "off_topic_retrieval" and not greeting_ok and not retrieval_strong:
         from rag.generator import _OFF_KB_REPLY  # noqa: PLC0415
 
         answer = _OFF_KB_REPLY.get(lang, _OFF_KB_REPLY["en"])
-        gap_reason = "off_topic_retrieval"
 
     # Soft keyword cues — only on short replies (FAQ dumps often contain
     # “check with the teacher” example lines and must not spam admin to-dos)
