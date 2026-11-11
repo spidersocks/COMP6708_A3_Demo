@@ -1586,6 +1586,13 @@ def get_staff_messages(status: str = "open", limit: int = 50):
     }
 
 
+@router.get("/admin/families")
+def get_admin_families(days_ahead: int = 21):
+    """Staff desk: WhatsApp families + each child's upcoming register / chat bookings."""
+    days_ahead = max(1, min(int(days_ahead or 21), 60))
+    return families.list_all_families(days_ahead=days_ahead)
+
+
 @router.post("/admin/messages/{message_id}/ack")
 def ack_staff_message(message_id: str):
     row = staff_messages.acknowledge(message_id)

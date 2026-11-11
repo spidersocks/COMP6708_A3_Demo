@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import WaMarkdown from "./WaMarkdown.jsx";
+import MyCalendar from "./MyCalendar.jsx";
 import "./brightnest.css";
 
 // Prefer same-origin `/brightnest-api` (Vercel rewrite → SAE) so HTTPS pages
@@ -13,8 +14,29 @@ const API_BASE = (
 const LOGO_SRC = "/projects/brightnest/logo.png";
 const SHEETPRO_ICON = "/projects/brightnest/sheetpro.webp";
 const MAILBOX_ICON = "/projects/brightnest/mailbox.webp";
-/** How many calendar days the Class register loads (API max 21). */
+const FAMILIES_ICON = "/projects/brightnest/logo.png";
+/** How many calendar days MyCalendar loads (API max 21). */
 const SCHEDULE_DAYS = 14;
+
+/** Demo WhatsApp identities — Jason is on families.csv; New Parent is blank. */
+const PARENT_PROFILES = [
+  {
+    id: "jason",
+    label: "Demo Parent · Jason Chan",
+    short: "Jason family",
+    parentName: "Demo Parent",
+    childName: "Jason Chan",
+    phone: "+852 9000 0000",
+  },
+  {
+    id: "new",
+    label: "New parent (no records)",
+    short: "New parent",
+    parentName: "",
+    childName: "",
+    phone: "+852 9000 9999",
+  },
+];
 
 const DEMO_PROBES = [
   { label: "Hours", text: "What are your opening hours?" },
@@ -713,6 +735,7 @@ export default function BrightNestBotDemo() {
   const [chatHistory, setChatHistory] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [profileId, setProfileId] = useState("jason");
   const [parentName, setParentName] = useState("Demo Parent");
   const [childName, setChildName] = useState("Jason Chan");
   const [phone, setPhone] = useState("+852 9000 0000");
@@ -721,11 +744,14 @@ export default function BrightNestBotDemo() {
   const [apiOnline, setApiOnline] = useState(null);
   const [schedule, setSchedule] = useState(null);
   const [scheduleTeacherId, setScheduleTeacherId] = useState("all");
+  const [scheduleStudent, setScheduleStudent] = useState("all");
   const [adminTodos, setAdminTodos] = useState([]);
   const [staffMessages, setStaffMessages] = useState([]);
+  const [familiesRoster, setFamiliesRoster] = useState([]);
   const [rightView, setRightView] = useState("system"); // system | staff
-  const [staffTab, setStaffTab] = useState("sheet"); // sheet | mail
+  const [staffTab, setStaffTab] = useState("sheet"); // sheet | mail | families
   const [selectedMsgId, setSelectedMsgId] = useState(null);
+  const [selectedFamilyPhone, setSelectedFamilyPhone] = useState(null);
   const [readMailIds, setReadMailIds] = useState(() => new Set());
   const [sheetSel, setSheetSel] = useState({
     addr: "A1",
@@ -751,6 +777,7 @@ export default function BrightNestBotDemo() {
     refreshSchedule();
     refreshAdminTodos();
     refreshStaffMessages();
+    refreshFamilies();
   }, []);
 
   function refreshSchedule() {
@@ -772,6 +799,38 @@ export default function BrightNestBotDemo() {
       .then((r) => r.json())
       .then((d) => setStaffMessages(d.messages || []))
       .catch(() => setStaffMessages([]));
+  }
+
+  function refreshFamilies() {
+    fetch(`${API_BASE}/admin/families?days_ahead=21`)
+      .then((r) => r.json())
+      .then((d) => setFamiliesRoster(d.families || []))
+      .catch(() => setFamiliesRoster([]));
+  }
+
+  function switchParentProfile(nextId) {
+    const profile = PARENT_PROFILES.find((p) => p.id === nextId) || PARENT_PROFILES[0];
+    const sid = localStorage.getItem("bn_bot_session_id");
+    const apply = () => {
+      setProfileId(profile.id);
+      setParentName(profile.parentName);
+      setChildName(profile.childName);
+      setPhone(profile.phone);
+      setChatHistory([]);
+      setError(null);
+      setTrace(null);
+      localStorage.removeItem("bn_bot_session_id");
+      setSessionLabel(shortSessionLabel());
+      refreshFamilies();
+      refreshSchedule();
+    };
+    if (sid) {
+      fetch(`${API_BASE}/chat/history/${encodeURIComponent(sid)}`, { method: "DELETE" })
+        .catch(() => {})
+        .finally(apply);
+    } else {
+      apply();
+    }
   }
 
   async function markTodoDone(id) {
@@ -837,10 +896,13 @@ export default function BrightNestBotDemo() {
       setReadMailIds(new Set());
       setRightView("system");
       setStaffTab("sheet");
+      setSelectedFamilyPhone(null);
       localStorage.removeItem("bn_bot_session_id");
       setSessionLabel(shortSessionLabel());
       refreshAdminTodos();
       refreshStaffMessages();
+      refreshFamilies();
+      refreshSchedule();
     };
     if (sid) {
       fetch(`${API_BASE}/chat/history/${encodeURIComponent(sid)}`, {
@@ -926,7 +988,7 @@ export default function BrightNestBotDemo() {
           provider: data.provider,
         },
       ]);
-      // Dialogue bookings mutate chat_bookings.csv — keep the register in sync
+      // Dialogue bookings mutate chat_bookings.csv — keep MyCalendar + Families in sync
       if (
         data.booking ||
         nextTrace.route === "booking_dialogue" ||
@@ -934,6 +996,7 @@ export default function BrightNestBotDemo() {
         nextTrace.route === "cancel_dialogue"
       ) {
         refreshSchedule();
+        refreshFamilies();
       }
     } catch (err) {
       console.error(err);
@@ -980,24 +1043,16 @@ export default function BrightNestBotDemo() {
         }${dialogue.course_key ? ` · ${dialogue.course_key}` : ""}`
       : null;
   const teachers = schedule?.teachers || [];
-  const scheduleDays = useMemo(() => {
-    const days = schedule?.days || [];
-    if (scheduleTeacherId === "all") return days;
-    return days.map((day) => ({
-      ...day,
-      sessions: (day.sessions || []).filter((s) => s.teacher_id === scheduleTeacherId),
-    }));
-  }, [schedule, scheduleTeacherId]);
   const scheduleSummary = schedule
     ? (() => {
         const days = schedule.days || [];
         const first = days[0]?.label || "";
         const last = days[days.length - 1]?.label || "";
-        const n = scheduleDays.reduce((acc, d) => acc + (d.sessions?.length || 0), 0);
+        const n = days.reduce((acc, d) => acc + (d.sessions?.length || 0), 0);
         const span = first && last ? `${first} → ${last}` : `${days.length}d`;
-        return `${teachers.length} teachers · ${n} sessions · ${span}`;
+        return `${teachers.length} staff · ${n} sessions · ${span}`;
       })()
-    : "Synthetic admin register";
+    : "MyCalendar · class register";
 
   const hoursSummary = useMemo(() => {
     if (!facts) return "Idle until a date/hours query";
@@ -1119,6 +1174,26 @@ export default function BrightNestBotDemo() {
                 <strong>Parent chat</strong>
                 <small>messaging surface</small>
               </div>
+            </div>
+
+            <div className="bn-profile-bar" role="group" aria-label="Demo parent profile">
+              {PARENT_PROFILES.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  className={`bn-profile-chip ${profileId === p.id ? "active" : ""}`}
+                  onClick={() => switchParentProfile(p.id)}
+                  disabled={isLoading}
+                  title={`${p.parentName || "New parent"} · ${p.phone}`}
+                >
+                  {p.short}
+                </button>
+              ))}
+              <span className="bn-profile-meta">
+                {parentName || "New parent"}
+                {childName ? ` · ${childName}` : " · no child on file"}
+                <code>{phone}</code>
+              </span>
             </div>
 
             <div className="bn-messages" ref={chatWindowRef}>
@@ -1275,6 +1350,27 @@ export default function BrightNestBotDemo() {
                       <span className="bn-tab-count">{unreadMailCount}</span>
                     )}
                   </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={staffTab === "families"}
+                    className={`bn-browser-tab ${staffTab === "families" ? "active" : ""}`}
+                    onClick={() => {
+                      setStaffTab("families");
+                      refreshFamilies();
+                    }}
+                  >
+                    <img
+                      src={FAMILIES_ICON}
+                      alt=""
+                      className="bn-tab-ico bn-tab-ico-img"
+                      aria-hidden="true"
+                    />
+                    <span className="bn-browser-tab-label">Families</span>
+                    {familiesRoster.length > 0 && (
+                      <span className="bn-tab-count">{familiesRoster.length}</span>
+                    )}
+                  </button>
                 </div>
               </div>
               <div className="bn-browser-url">
@@ -1282,7 +1378,9 @@ export default function BrightNestBotDemo() {
                 <code>
                   {staffTab === "sheet"
                     ? "sheetpro.app/d/brightnest-followups"
-                    : "mailbox.app/u/0/#inbox"}
+                    : staffTab === "mail"
+                      ? "mailbox.app/u/0/#inbox"
+                      : "families.app/d/brightnest-roster"}
                 </code>
               </div>
 
@@ -1471,7 +1569,7 @@ export default function BrightNestBotDemo() {
                       </button>
                     </div>
                   </div>
-                ) : (
+                ) : staffTab === "mail" ? (
                   <div className="bn-mail">
                     <header className="bn-mail-top">
                       <button type="button" className="bn-mail-menu" aria-hidden="true">
@@ -1636,6 +1734,115 @@ export default function BrightNestBotDemo() {
                             </div>
                           </>
                         )}
+                      </article>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bn-families">
+                    <header className="bn-families-top">
+                      <div className="bn-families-brand">
+                        <img src={FAMILIES_ICON} alt="" className="bn-families-logo" />
+                        <div>
+                          <strong>Families</strong>
+                          <small>WhatsApp number → parent → kids → upcoming classes</small>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="bn-ghost"
+                        onClick={refreshFamilies}
+                      >
+                        Refresh
+                      </button>
+                    </header>
+                    <div className="bn-families-layout">
+                      <div className="bn-families-list" role="listbox" aria-label="Families">
+                        {familiesRoster.length === 0 ? (
+                          <p className="bn-empty">No families on the sheet yet.</p>
+                        ) : (
+                          familiesRoster.map((f) => {
+                            const active = selectedFamilyPhone === f.phone;
+                            const kids = (f.children || [])
+                              .map((c) => c.child_name)
+                              .filter(Boolean);
+                            return (
+                              <button
+                                key={f.phone}
+                                type="button"
+                                role="option"
+                                aria-selected={active}
+                                className={`bn-families-row ${active ? "active" : ""}`}
+                                onClick={() => setSelectedFamilyPhone(f.phone)}
+                              >
+                                <strong>{f.parent_name || "Unknown parent"}</strong>
+                                <span>{f.phone}</span>
+                                <em>
+                                  {kids.length
+                                    ? kids.join(", ")
+                                    : "No children listed"}
+                                </em>
+                              </button>
+                            );
+                          })
+                        )}
+                      </div>
+                      <article className="bn-families-detail">
+                        {(() => {
+                          const fam =
+                            familiesRoster.find((f) => f.phone === selectedFamilyPhone) ||
+                            familiesRoster[0];
+                          if (!fam) {
+                            return (
+                              <p className="bn-empty">Select a family to inspect records.</p>
+                            );
+                          }
+                          return (
+                            <>
+                              <h2>{fam.parent_name || "Unknown parent"}</h2>
+                              <p className="bn-families-phone">
+                                WhatsApp <code>{fam.phone}</code>
+                              </p>
+                              <p className="bn-note">
+                                Source: <code>families.csv</code> · upcoming from
+                                enrolments + chat bookings
+                              </p>
+                              {(fam.children || []).map((child) => (
+                                <div key={child.child_name} className="bn-families-child">
+                                  <h3>{child.child_name}</h3>
+                                  {child.preferred_courses?.length ? (
+                                    <p>
+                                      Preferred:{" "}
+                                      {child.preferred_courses.join(", ")}
+                                    </p>
+                                  ) : null}
+                                  {child.notes ? (
+                                    <p className="bn-muted">{child.notes}</p>
+                                  ) : null}
+                                  <h4>
+                                    Upcoming ({child.upcoming_count || 0})
+                                  </h4>
+                                  {(child.upcoming || []).length === 0 ? (
+                                    <p className="bn-empty">No upcoming classes on file.</p>
+                                  ) : (
+                                    <ul className="bn-families-upcoming">
+                                      {(child.upcoming || []).slice(0, 12).map((u, i) => (
+                                        <li key={`${child.child_name}-${u.slot_start}-${i}`}>
+                                          <strong>{u.course_label || u.course_key}</strong>
+                                          <span>{u.slot_display}</span>
+                                          <span>
+                                            {u.teacher_name || "—"}
+                                            {u.room ? ` · ${u.room}` : ""}
+                                            {u.kind === "chat_booking" ? " · chat" : ""}
+                                          </span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  )}
+                                </div>
+                              ))}
+                            </>
+                          );
+                        })()}
                       </article>
                     </div>
                   </div>
@@ -1920,104 +2127,28 @@ export default function BrightNestBotDemo() {
 
           <Reveal
             key={`register-${turnKey}`}
-            title="Class register"
+            title="MyCalendar"
             summary={scheduleSummary}
             defaultOpen={registerOpen}
           >
-            <p className="bn-note">
-              Backed by local CSV admin sheets (teachers, windows, sessions, enrolments,
-              trial_slots). Chat bookings append to <code>chat_bookings.csv</code> — same
-              idea as writing into a live spreadsheet, without Google OAuth.
-              {schedule?.sheets_dir ? (
-                <>
-                  {" "}
-                  <code className="bn-path">{schedule.sheets_dir}</code>
-                </>
-              ) : null}
-            </p>
-            {dialogueSummary ? (
-              <p className="bn-note">
-                Active WhatsApp dialogue: <strong>{dialogueSummary}</strong>
-                {dialogue?.child_schedule?.length
-                  ? ` · ${dialogue.child_schedule.length} upcoming on file`
-                  : ""}
-              </p>
-            ) : null}
-            <div className="bn-register-filters">
-              <label>
-                Teacher
-                <select
-                  value={scheduleTeacherId}
-                  onChange={(e) => setScheduleTeacherId(e.target.value)}
-                >
-                  <option value="all">All teachers</option>
-                  {teachers.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            {!schedule ? (
-              <p className="bn-empty">Schedule API offline — restart local backend to load.</p>
-            ) : (
-              <div className="bn-register">
-                {teachers.length > 0 && scheduleTeacherId === "all" && (
-                  <ul className="bn-teacher-windows">
-                    {teachers.map((t) => (
-                      <li key={t.id}>
-                        <strong>{t.name}</strong>
-                        <span>
-                          {t.role} · {t.courses.join(", ")}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {scheduleDays.map((day) =>
-                  day.sessions?.length ? (
-                    <div className="bn-reg-day" key={day.date}>
-                      <h4>{day.label}</h4>
-                      <ul>
-                        {day.sessions.map((s) => (
-                          <li key={`${s.session_id}-${s.slot_start}`}>
-                            <div className="bn-reg-line">
-                              <strong>
-                                {s.slot_display.split(", ").pop()} · {s.course_label}
-                              </strong>
-                              <code className={s.status === "open" ? "ok" : ""}>
-                                {s.seats_left}/{s.capacity}
-                              </code>
-                            </div>
-                            <span>
-                              {s.teacher_name}
-                              {s.room ? ` · ${s.room}` : ""}
-                              {s.kind === "trial" ? " · trial" : ""}
-                              {s.enrolled_count
-                                ? ` · ${s.enrolled_count} on register`
-                                : ""}
-                              {s.chat_bookings ? ` · +${s.chat_bookings} chat` : ""}
-                            </span>
-                            {s.enrolled?.length > 0 && (
-                              <em>
-                                {s.enrolled
-                                  .slice(0, 4)
-                                  .map((e) => e.child)
-                                  .join(", ")}
-                                {s.enrolled.length > 4
-                                  ? ` +${s.enrolled.length - 4}`
-                                  : ""}
-                              </em>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null
-                )}
-              </div>
-            )}
+            <MyCalendar
+              schedule={schedule}
+              teacherId={scheduleTeacherId}
+              studentName={scheduleStudent}
+              onTeacherChange={setScheduleTeacherId}
+              onStudentChange={setScheduleStudent}
+              summaryNote={
+                dialogueSummary
+                  ? `Active WhatsApp dialogue: ${dialogueSummary}${
+                      dialogue?.child_schedule?.length
+                        ? ` · ${dialogue.child_schedule.length} upcoming on file`
+                        : ""
+                    }`
+                  : schedule?.sheets_dir
+                    ? `CSV register · ${schedule.sheets_dir}`
+                    : "CSV teachers / sessions / enrolments + chat_bookings"
+              }
+            />
           </Reveal>
 
           <Reveal

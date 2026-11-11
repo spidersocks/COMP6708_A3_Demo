@@ -46,6 +46,56 @@ def list_family_by_phone(phone: str) -> Dict[str, Any]:
     }
 
 
+def list_all_families(*, days_ahead: int = 21) -> Dict[str, Any]:
+    """Staff-desk roster: every WhatsApp family + each child's upcoming classes."""
+    from services import booking_dialogue as dialogue_svc  # noqa: PLC0415
+
+    sheets.seed_sheets_if_needed()
+    rows = _read_families()
+    by_phone: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        phone = (r.get("phone") or "").strip()
+        key = _norm_phone(phone)
+        if not key:
+            continue
+        bucket = by_phone.get(key)
+        if not bucket:
+            bucket = {
+                "phone": phone,
+                "parent_name": (r.get("parent_name") or "").strip(),
+                "children": [],
+            }
+            by_phone[key] = bucket
+        child_name = (r.get("child_name") or "").strip()
+        if not child_name:
+            continue
+        upcoming = dialogue_svc.child_upcoming_sessions(
+            child_name, days_ahead=days_ahead
+        )
+        bucket["children"].append(
+            {
+                "child_name": child_name,
+                "preferred_courses": [
+                    c for c in (r.get("preferred_courses") or "").split("|") if c
+                ],
+                "notes": r.get("notes") or "",
+                "upcoming": upcoming,
+                "upcoming_count": len(upcoming),
+            }
+        )
+
+    families = sorted(
+        by_phone.values(),
+        key=lambda f: ((f.get("parent_name") or "").lower(), f.get("phone") or ""),
+    )
+    return {
+        "families": families,
+        "count": len(families),
+        "sheet": "families.csv",
+        "days_ahead": days_ahead,
+    }
+
+
 def resolve_child(
     *,
     phone: str,
