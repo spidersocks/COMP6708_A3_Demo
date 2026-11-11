@@ -1,10 +1,11 @@
 """Lean intent router: tools only + RAG default.
 
 Priority (high → low) when scores tie:
-  escalation > off_domain > weather > cancel > booking_dialogue >
+  escalation > weather > cancel > booking_dialogue >
   booking_tool > hours > rag
 
 Static FAQs (fees, address, payment, pickup, teachers, …) are plain RAG.
+Off-topic asks fall through to RAG (retrieve-only + refuse), not a keyword refuse.
 """
 from __future__ import annotations
 
@@ -32,26 +33,8 @@ _AVAIL_STRONG_RE = re.compile(
     r")",
     re.I,
 )
-_OFF_DOMAIN_RE = re.compile(
-    r"("
-    r"\b(politics|political|election|scrap(?:e|ing)|malware|hack(?:ing)?|"
-    r"system\s+prompt|admin\s+password|api\s*keys?|"
-    r"admin\s+to-?do|show\s+(me\s+)?(the\s+)?admin)\b|"
-    r"\b(admin_todos|staff_messages)(\.csv)?\b|"
-    r"\b(print|show|dump|reveal|export)\b.{0,40}\b(spreadsheet|csv|\.csv)\b|"
-    r"\b(weather|temperature|forecast|climate)\b.{0,50}\b("
-    r"tokyo|london|paris|beijing|shanghai|seoul|sydney|new\s+york|nyc|"
-    r"los\s+angeles"
-    r")\b|"
-    r"\b(bitcoin|crypto(?:currency)?|stock\s+price|nba|premier\s+league|world\s+cup)\b|"
-    r"香港政治|選舉|选举"
-    r")",
-    re.I,
-)
-
 _PRIORITY: List[str] = [
     "staff_escalation",
-    "off_domain",
     "severe_weather",
     "cancel_dialogue",
     "booking_dialogue",
@@ -146,16 +129,6 @@ def score_intents(
             cue=str(esc.get("summary") or esc.get("category") or ""),
         )
         debug["escalation"] = esc
-
-    if _OFF_DOMAIN_RE.search(message or ""):
-        span = _match_span(_OFF_DOMAIN_RE, message or "")
-        _award(
-            "off_domain",
-            0.98,
-            source="hard_regex",
-            why="Off-domain regex (politics / foreign weather / crypto…)",
-            cue=(span or {}).get("text") or "",
-        )
 
     if centre_facts.is_severe_weather_intent(message):
         _award(
@@ -565,19 +538,6 @@ def _build_rules_evaluated(
             downstream="Parent ack + staff_messages inbox row (+ optional email draft)",
         ),
         _regex_rule(
-            "off_domain",
-            "Off-domain refuse",
-            message=msg,
-            pattern=_OFF_DOMAIN_RE,
-            pattern_summary="politics / malware / non-HK city weather / crypto / sports…",
-            matched=bool(scores.get("off_domain")),
-            score=scores.get("off_domain"),
-            mechanism="Off-domain regex → 0.98 refuse.",
-            why_template="Off-domain cue «{span}».",
-            why_not="Stays in centre scope.",
-            downstream="Polite refuse",
-        ),
-        _regex_rule(
             "severe_weather",
             "Typhoon / Black Rain / severe weather policy",
             message=msg,
@@ -598,16 +558,26 @@ def _build_rules_evaluated(
             mechanism="Sticky cancel or fresh cancel request → 0.95.",
             pattern_summary="cancel / 取消",
             why=(
-                "Sticky cancel open."
+                "Cancel chat already open for this session."
                 if cancel_active
                 else "Cancel request detected."
                 if cancel_request
                 else ""
             ),
-            why_not="No cancel request / sticky state.",
+            why_not="No cancel ask, and cancel chat is not open.",
             checks=[
-                _check("Sticky cancel", cancel_active),
-                _check("Cancel request", cancel_request),
+                _check(
+                    "Cancel chat already open?",
+                    cancel_active,
+                    "yes — continue cancel FSM"
+                    if cancel_active
+                    else "no — not mid-cancel",
+                ),
+                _check(
+                    "This message asks to cancel?",
+                    cancel_request,
+                    "yes" if cancel_request else "no",
+                ),
             ],
             downstream="Cancel FSM",
         ),
@@ -619,20 +589,32 @@ def _build_rules_evaluated(
             mechanism="Sticky book or book/enrol verbs → 0.85.",
             pattern_summary="book / enrol / 預約",
             why=(
-                "Sticky booking open."
+                "Booking chat already open for this session."
                 if dialogue_active and not leave_booking
                 else "Booking verbs matched."
                 if scores.get("booking_dialogue")
                 else ""
             ),
             why_not=(
-                "Yielded sticky booking to another intent."
+                "Booking chat was open but this message leaves booking for RAG."
                 if leave_booking and dialogue_active
-                else "No booking request / sticky state."
+                else "No booking ask, and booking chat is not open."
             ),
             checks=[
-                _check("Sticky booking", dialogue_active),
-                _check("Yield to RAG", leave_booking),
+                _check(
+                    "Booking chat already open?",
+                    dialogue_active,
+                    "yes — continue book FSM"
+                    if dialogue_active
+                    else "no — not mid-booking",
+                ),
+                _check(
+                    "Leave booking for RAG?",
+                    leave_booking,
+                    "yes — yield sticky booking"
+                    if leave_booking
+                    else "no",
+                ),
             ],
             downstream="Booking FSM",
         ),

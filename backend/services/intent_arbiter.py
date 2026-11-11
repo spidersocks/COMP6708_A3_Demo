@@ -17,7 +17,6 @@ _REVIEWABLE: Set[str] = {
     "booking_tool",
     "booking_dialogue",
     "cancel_dialogue",
-    "off_domain",
 }
 
 # Never second-guess these mid-flight / safety paths.
@@ -34,7 +33,6 @@ _ROUTE_BLURBS: Dict[str, str] = {
     "cancel_dialogue": "Multi-turn cancel-a-class dialogue.",
     "rag": "Retrieve centre KB chunks and write a tailored answer.",
     "staff_escalation": "Hand off to a human / boss inbox.",
-    "off_domain": "Refuse off-topic asks — bad on false keyword hits.",
 }
 
 

@@ -85,7 +85,7 @@ def test_static_faqs_are_rag(msg: str):
         ("How many seats are left and how much is phonics?", "booking_tool"),
         ("星期六拼音班仲有冇位？", "booking_tool"),
         ("拼音班有冇位？", "booking_tool"),
-        ("What's the weather in Tokyo tomorrow?", "off_domain"),
+        ("What's the weather in Tokyo tomorrow?", "rag"),
         ("Please cancel my booking", "cancel_dialogue"),
     ],
 )

@@ -1014,14 +1014,9 @@ code,
   left: 0;
   right: 0;
   z-index: 4;
-  padding: 4px 2px 8px;
+  padding: 6px 4px 0;
   pointer-events: none;
-  background: linear-gradient(
-    180deg,
-    rgba(247, 252, 253, 0.96) 0%,
-    rgba(247, 252, 253, 0.72) 70%,
-    transparent 100%
-  );
+  background: none;
 }
 .bn-pipeline-head--float > * {
   pointer-events: auto;
@@ -1029,51 +1024,57 @@ code,
 .bn-pipeline-head strong {
   display: block;
   font-family: var(--font-display);
-  font-size: 1.02rem;
+  font-size: 0.92rem;
   font-weight: 600;
   color: var(--teal-ink);
   letter-spacing: -0.02em;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.85);
 }
 .bn-pipeline-head span {
   display: block;
-  margin-top: 2px;
-  font-size: 0.7rem;
+  margin-top: 1px;
+  font-size: 0.66rem;
   color: var(--muted);
   font-family: var(--font-mono);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.85);
 }
+/* Google Maps–style bare controls — no chrome tray */
 .bn-flow-controls {
   display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.88);
-  border: 1px solid rgba(18, 169, 188, 0.2);
-  box-shadow: 0 6px 18px rgba(10, 79, 90, 0.08);
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0;
+  background: none;
+  border: none;
+  box-shadow: none;
 }
 .bn-flow-controls button {
-  min-width: 30px;
-  height: 28px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--teal-ink);
+  min-width: 32px;
+  height: 32px;
+  border: 1px solid rgba(10, 79, 90, 0.18);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #1a1a1a;
   font: inherit;
-  font-size: 0.85rem;
-  font-weight: 650;
+  font-size: 1rem;
+  font-weight: 500;
+  line-height: 1;
   cursor: pointer;
-  padding: 0 8px;
+  padding: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
 }
 .bn-flow-controls button:hover {
-  background: rgba(18, 169, 188, 0.12);
+  background: #fff;
+}
+.bn-flow-controls button.bn-flow-fit {
+  font-size: 0.62rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 .bn-flow-zoom {
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  color: var(--muted);
-  padding: 0 6px;
-  min-width: 42px;
-  text-align: center;
+  display: none;
 }
 
 .bn-flow-viewport {

@@ -820,100 +820,6 @@ def chat(req: ChatRequest) -> ChatResponse:
             adapt=False,
         )
 
-    if route == "off_domain":
-        from services import final_check as final_check_svc
-
-        low_msg = (message or "").lower()
-        weatherish = bool(
-            re.search(r"\b(weather|temperature|forecast|climate)\b", low_msg)
-        )
-        refuse_gate = final_check_svc.review_commit(
-            kind="refuse",
-            message=message,
-            proposed_summary=(
-                "Hard refuse as out-of-scope for a Hong Kong learning-centre assistant"
-                + (" (other-city weather)" if weatherish else "")
-            ),
-            context={"weatherish": weatherish},
-        )
-        steps.append(
-            _step(
-                "final_check",
-                "LLM final check · refuse",
-                "done" if refuse_gate.get("called") else "skipped",
-                f"{refuse_gate.get('action')} · {refuse_gate.get('reason') or 'n/a'}"
-                + (f" · {refuse_gate.get('model')}" if refuse_gate.get("model") else ""),
-            )
-        )
-        if refuse_gate.get("action") == "clarify":
-            return _fact_response(
-                route_name="off_domain",
-                answer=refuse_gate.get("clarify_prompt")
-                or (
-                    "Happy to stay on BrightNest topics (programmes, fees, hours, booking). "
-                    "What would you like help with?"
-                ),
-                citations=[],
-                provider="off_domain",
-                extra_step=_step(
-                    "off_domain", "Out-of-scope short-circuit", "skipped", "final_check=clarify"
-                ),
-                debug={"final_check": refuse_gate},
-                adapt=False,
-            )
-        if refuse_gate.get("action") == "abort":
-            # Likely on-domain misfire — fall through to RAG rather than a hard refuse
-            steps.append(
-                _step(
-                    "off_domain",
-                    "Out-of-scope short-circuit",
-                    "skipped",
-                    "final_check=abort → rag",
-                )
-            )
-            trace["final_check"] = refuse_gate
-            route = "rag"
-        else:
-            off = {
-                "en": (
-                    (
-                        "I’m BrightNest’s learning-centre assistant, so I don’t have weather "
-                        "forecasts for other cities. Ask about our Hong Kong severe-weather "
-                        "class arrangements, programmes, fees, hours, or booking — "
-                        "or ask to speak with our team."
-                    )
-                    if weatherish
-                    else (
-                        "That’s outside what we can help with as BrightNest’s learning-centre assistant. "
-                        "Ask about programmes, fees, hours, location, trials, or booking — "
-                        "or ask to speak with our team."
-                    )
-                ),
-                "zh-HK": (
-                    "呢啲唔屬於亮巢學習中心助理可以處理嘅範圍。"
-                    "你可以問課程、學費、時間、地址、試堂或預約，或者要求同團隊傾。"
-                ),
-                "zh-CN": (
-                    "这不属于亮巢学习中心助理可以处理的范围。"
-                    "你可以问课程、学费、时间、地址、试听或预约，或要求与团队沟通。"
-                ),
-            }
-            L = (lang or "en").lower()
-            ans = off["zh-HK"] if L.startswith("zh-hk") else (
-                off["zh-CN"] if L.startswith("zh") else off["en"]
-            )
-            return _fact_response(
-                route_name="off_domain",
-                answer=ans,
-                citations=[],
-                provider="off_domain",
-                extra_step=_step(
-                    "off_domain", "Out-of-scope short-circuit", "done", "refuse"
-                ),
-                debug={"final_check": refuse_gate},
-                adapt=False,
-            )
-
     if route == "severe_weather":
         cached = answer_cache.get("severe_weather", message, lang)
         if cached:
@@ -997,7 +903,7 @@ def chat(req: ChatRequest) -> ChatResponse:
         return _fact_response(
             route_name="deterministic_opening_hours",
             answer=answer,
-            citations=[{"source": "institution/opening_hours", "title": "Opening Hours"}],
+            citations=[{"source": "centre/opening_hours", "title": "Opening Hours"}],
             provider="deterministic_opening_hours",
             debug={
                 "hours": (decision.debug or {}).get("hours_debug"),

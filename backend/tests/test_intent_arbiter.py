@@ -24,7 +24,7 @@ def test_should_review_skips_active_cancel(monkeypatch):
     assert ia.should_review("cancel_dialogue", debug={"cancel_active": True}) is False
     assert ia.should_review("booking_tool", debug={}) is True
     assert ia.should_review("opening_hours", debug={}) is True
-    assert ia.should_review("off_domain", debug={}) is True
+    assert ia.should_review("off_domain", debug={}) is False  # keyword refuse removed
     assert ia.should_review("teachers", debug={}) is False  # fact cards removed
 
 

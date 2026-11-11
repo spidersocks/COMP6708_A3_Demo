@@ -19,12 +19,6 @@ _KINDS = {
         "CLARIFY: mild FAQ a card could answer. "
         "ABORT: not a hand-off.",
     ),
-    "refuse": (
-        "Refuse as out-of-scope for a learning-centre assistant.",
-        "PROCEED: truly off-domain. "
-        "CLARIFY: might be programmes/fees/hours/booking. "
-        "ABORT: clearly on-domain.",
-    ),
 }
 
 
@@ -152,12 +146,8 @@ def review_commit(
 
 
 def _default_clarify(kind: str) -> str:
-    if kind == "escalate":
-        return (
-            "I can put you through to our team — is that what you'd like, "
-            "or did you want a quick answer about programmes, fees, or hours first?"
-        )
+    _ = kind
     return (
-        "Happy to stay on BrightNest topics (programmes, fees, hours, booking). "
-        "What would you like help with?"
+        "I can put you through to our team — is that what you'd like, "
+        "or did you want a quick answer about programmes, fees, or hours first?"
     )

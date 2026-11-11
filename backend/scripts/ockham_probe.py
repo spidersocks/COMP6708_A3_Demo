@@ -18,7 +18,7 @@ CASES = [
     ("I want to book a trial class", "booking_dialogue"),
     ("Please cancel my booking", "cancel_dialogue"),
     ("Can I speak to a real person?", "staff_escalation"),
-    ("What's the weather in Tokyo tomorrow?", "off_domain"),
+    ("What's the weather in Tokyo tomorrow?", "rag"),
     ("Hello", "rag"),
     ("Do you offer private 1:1 tutoring?", "rag"),
     ("FPS payment details?", "rag"),

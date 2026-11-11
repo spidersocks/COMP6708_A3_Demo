@@ -23,32 +23,32 @@ const LLM_ROLE_LABELS = {
 
 /**
  * Compact top-down layout (world px, origin at spine).
- * Spine: parent → language → memory → router → path → FSM|RAG → … → answer
- * Live data is a side arm (HKO / register), not a third answer tier.
+ * Spine: parent → language → memory → rules → router → path → FSM|RAG → …
+ * Scores before the route pick; live data is a side arm.
  */
 const LAYOUT = {
   parent: { x: 0, y: 0, w: 156, h: 42 },
-  lang: { x: 0, y: 72, w: 132, h: 42 },
+  lang: { x: 0, y: 72, w: 148, h: 42 },
   memory: { x: 0, y: 150, w: 132, h: 58 },
-  router: { x: 0, y: 240, w: 146, h: 46 },
-  rules: { x: -168, y: 320, w: 132, h: 46 },
-  arbiter: { x: 168, y: 320, w: 132, h: 46 },
-  path: { x: 0, y: 420, w: 112, h: 112 },
-  fsm: { x: -168, y: 550, w: 140, h: 46 },
-  rag: { x: 168, y: 550, w: 140, h: 46 },
-  live: { x: -168, y: 640, w: 140, h: 46 },
-  chroma: { x: 168, y: 640, w: 124, h: 58 },
-  sheets: { x: -168, y: 740, w: 132, h: 58 },
-  llm: { x: 40, y: 740, w: 146, h: 46 },
-  answer: { x: 0, y: 840, w: 156, h: 42 },
+  rules: { x: 0, y: 240, w: 146, h: 46 },
+  router: { x: 0, y: 330, w: 146, h: 46 },
+  arbiter: { x: 178, y: 330, w: 120, h: 46 },
+  path: { x: 0, y: 430, w: 112, h: 112 },
+  fsm: { x: -168, y: 560, w: 140, h: 46 },
+  rag: { x: 168, y: 560, w: 140, h: 46 },
+  live: { x: -168, y: 650, w: 140, h: 46 },
+  chroma: { x: 168, y: 650, w: 124, h: 58 },
+  sheets: { x: -168, y: 750, w: 132, h: 58 },
+  llm: { x: 40, y: 750, w: 156, h: 46 },
+  answer: { x: 0, y: 850, w: 156, h: 42 },
 };
 
 const EDGES = [
   { id: "e-parent-lang", from: "parent", to: "lang" },
   { id: "e-lang-mem", from: "lang", to: "memory" },
-  { id: "e-mem-router", from: "memory", to: "router" },
-  { id: "e-router-rules", from: "router", to: "rules" },
-  { id: "e-rules-path", from: "rules", to: "path" },
+  { id: "e-mem-rules", from: "memory", to: "rules" },
+  { id: "e-rules-router", from: "rules", to: "router" },
+  { id: "e-router-path", from: "router", to: "path" },
   { id: "e-router-arb", from: "router", to: "arbiter", dashed: true },
   { id: "e-arb-path", from: "arbiter", to: "path", dashed: true },
   { id: "e-path-fsm", from: "path", to: "fsm" },
@@ -215,15 +215,9 @@ function edgeGeometry(fromId, toId) {
   } else if (fromId === "path" && toId === "rag") {
     rawStart = nodeAnchor("path", "se");
     rawEnd = nodeAnchor(toId, "top");
-  } else if (fromId === "router" && toId === "rules") {
-    rawStart = nodeAnchor("router", "left");
-    rawEnd = nodeAnchor("rules", "top");
   } else if (fromId === "router" && toId === "arbiter") {
     rawStart = nodeAnchor("router", "right");
-    rawEnd = nodeAnchor("arbiter", "top");
-  } else if (fromId === "rules" && toId === "path") {
-    rawStart = nodeAnchor("rules", "bottom");
-    rawEnd = nodeAnchor("path", "left");
+    rawEnd = nodeAnchor("arbiter", "left");
   } else if (fromId === "arbiter" && toId === "path") {
     rawStart = nodeAnchor("arbiter", "bottom");
     rawEnd = nodeAnchor("path", "right");
@@ -248,8 +242,7 @@ function edgeGeometry(fromId, toId) {
     const midY = (start.y + end.y) / 2;
     d = `M ${start.x} ${start.y} L ${end.x} ${end.y}`;
     labelAt = { x: start.x + 10, y: midY };
-  } else if (fromId === "router" || toId === "path") {
-    // Orthogonal elbow for fan-ins/outs
+  } else if (fromId === "arbiter" || toId === "arbiter") {
     const midY = (start.y + end.y) / 2;
     d = `M ${start.x} ${start.y} L ${start.x} ${midY} L ${end.x} ${midY} L ${end.x} ${end.y}`;
     labelAt = { x: (start.x + end.x) / 2, y: midY - 6 };
@@ -497,7 +490,7 @@ function RuleEvidence({ rule, defaultOpen = false, isWinner = false }) {
                   key={`${rule.id}-chk-${i}`}
                   className={c.passed ? "pass" : "fail"}
                 >
-                  <strong>{c.passed ? "pass" : "fail"}</strong>
+                  <strong>{c.passed ? "yes" : "no"}</strong>
                   <span>
                     {c.label || c.id}
                     {c.detail ? ` — ${c.detail}` : ""}
@@ -586,7 +579,10 @@ function NodeDetail({
       return (
         <>
           <p className="bn-rules-hint">
-            Reply language + KB language filter for this turn.
+            Detects <code>en</code> / <code>zh-HK</code> / <code>zh-CN</code>{" "}
+            from the parent text (CJK ratio + traditional/simplified cues). That
+            code filters Chroma retrieve to matching chunks; if none hit, retrieve
+            retries without the language filter.
           </p>
           <ul className="bn-fact-list">
             <li>
@@ -594,13 +590,27 @@ function NodeDetail({
               <code>{trace.language || "—"}</code>
             </li>
             <li>
-              <span>KB fallback</span>
-              <code>{rag?.language_fallback ? "yes" : "no"}</code>
+              <span>KB language filter</span>
+              <code>{trace.language || "—"}</code>
+            </li>
+            <li>
+              <span>Filter fallback</span>
+              <code>
+                {rag?.language_fallback
+                  ? "retried without language filter"
+                  : "not needed"}
+              </code>
             </li>
           </ul>
           <StageIO
             request={inbound}
-            payload={{ language: trace.language || null }}
+            payload={{
+              language: trace.language || null,
+              chroma_where: trace.language
+                ? { language: trace.language }
+                : null,
+              language_fallback: Boolean(rag?.language_fallback),
+            }}
           />
         </>
       );
@@ -639,8 +649,8 @@ function NodeDetail({
       return (
         <>
           <p className="bn-rules-hint">
-            Sticky FSM state + detector pick → one route id. Scores are on{" "}
-            <em>Rules</em>; FSM vs RAG is on <em>Path</em>.
+            After scores (and optional arbiter): pick one route id. Path then
+            maps that route to FSM vs RAG.
           </p>
           <ul className="bn-fact-list">
             <li>
@@ -655,28 +665,27 @@ function NodeDetail({
             ) : null}
             {routing?.dialogue_active ? (
               <li>
-                <span>Booking sticky</span>
-                <code>active</code>
+                <span>Booking chat open</span>
+                <code>sticky</code>
               </li>
             ) : null}
             {routing?.cancel_active ? (
               <li>
-                <span>Cancel sticky</span>
-                <code>active</code>
+                <span>Cancel chat open</span>
+                <code>sticky</code>
               </li>
             ) : null}
           </ul>
           <StageIO
             request={{
-              message: inbound,
+              scores: routing?.scores || {},
               language: trace.language,
-              prior_turns: history?.turns_loaded ?? 0,
             }}
             payload={{
               route,
               sticky: {
-                booking: Boolean(routing?.dialogue_active),
-                cancel: Boolean(routing?.cancel_active),
+                booking_open: Boolean(routing?.dialogue_active),
+                cancel_open: Boolean(routing?.cancel_active),
               },
             }}
           />
@@ -1054,8 +1063,12 @@ function NodeDetail({
       const genCalls = llmCalls.filter((c) => c.role !== "intent_arbiter");
       return (
         <>
+          <p className="bn-rules-hint">
+            Main LLM calls via DashScope (Qwen). Arbiter calls live on the Arbiter
+            node.
+          </p>
           {genCalls.length === 0 ? (
-            <Skipped>No DashScope call (template / deterministic).</Skipped>
+            <Skipped>No LLM call (template / deterministic reply).</Skipped>
           ) : (
             <div className="bn-llm-calls">
               {genCalls.map((call, i) => (
@@ -1097,6 +1110,10 @@ function NodeDetail({
     case "answer":
       return (
         <>
+          <p className="bn-rules-hint">
+            What the parent sees after sanitize (gap tags stripped). Model I/O is
+            on <em>LLM (DashScope)</em>.
+          </p>
           <ul className="bn-fact-list">
             <li>
               <span>Provider</span>
@@ -1109,7 +1126,7 @@ function NodeDetail({
               </code>
             </li>
           </ul>
-          <StageIO request={{ route }} payload={answer || "(empty)"} />
+          <pre className="bn-pre bn-pre-tall">{answer || "(empty)"}</pre>
         </>
       );
 
@@ -1268,7 +1285,7 @@ export default function TurnPipeline({
       },
       {
         id: "lang",
-        label: "Language",
+        label: "Language detection",
         kind: "router",
         shape: "process",
         status: hasTrace ? "done" : "idle",
@@ -1287,13 +1304,6 @@ export default function TurnPipeline({
               : "empty",
       },
       {
-        id: "router",
-        label: "Hybrid router",
-        kind: "router",
-        shape: "process",
-        status: hasTrace ? "done" : "idle",
-      },
-      {
         id: "rules",
         label: "Rules · scores",
         kind: "rules",
@@ -1310,6 +1320,13 @@ export default function TurnPipeline({
         kind: "llm",
         shape: "process",
         status: !hasTrace ? "idle" : arbiter?.called ? "done" : "skipped",
+      },
+      {
+        id: "router",
+        label: "Hybrid router",
+        kind: "router",
+        shape: "process",
+        status: hasTrace ? "done" : "idle",
       },
       {
         id: "path",
@@ -1354,14 +1371,10 @@ export default function TurnPipeline({
       },
       {
         id: "llm",
-        label: genN ? `DashScope · ${genN}` : "DashScope",
+        label: "LLM (DashScope)",
         kind: "llm",
         shape: "process",
-        status: !hasTrace
-          ? "idle"
-          : genN
-            ? "done"
-            : "skipped",
+        status: !hasTrace ? "idle" : genN ? "done" : "skipped",
       },
       {
         id: "sheets",
@@ -1415,8 +1428,8 @@ export default function TurnPipeline({
       "parent",
       "lang",
       "memory",
-      "router",
       "rules",
+      "router",
       "path",
       "answer",
     ]);
@@ -1468,12 +1481,13 @@ export default function TurnPipeline({
     };
     link("parent", "lang", "e-parent-lang");
     link("lang", "memory", "e-lang-mem");
-    link("memory", "router", "e-mem-router");
-    link("router", "rules", "e-router-rules");
-    link("rules", "path", "e-rules-path");
+    link("memory", "rules", "e-mem-rules");
+    link("rules", "router", "e-rules-router");
     if (arbiter?.called) {
       link("router", "arbiter", "e-router-arb");
       link("arbiter", "path", "e-arb-path");
+    } else {
+      link("router", "path", "e-router-path");
     }
     if (path === "fsm") link("path", "fsm", "e-path-fsm");
     if (path === "rag") link("path", "rag", "e-path-rag");
@@ -1494,8 +1508,7 @@ export default function TurnPipeline({
   const edgeLabels = useMemo(() => {
     // Only scores / decisions — not narrative labels on every hop.
     const winScore =
-      routing?.scores?.[winningRuleId] ??
-      routing?.scores?.[route];
+      routing?.scores?.[winningRuleId] ?? routing?.scores?.[route];
     const winOrigin =
       routing?.score_origins?.[winningRuleId] ||
       routing?.score_origins?.[route];
@@ -1503,15 +1516,17 @@ export default function TurnPipeline({
       winningRuleId || route
         ? `${winningRuleId || route}${
             winScore != null
-              ? ` ${formatRouteScore(winningRuleId || route, winScore, winOrigin)}`
+              ? ` ${formatRouteScore(
+                  winningRuleId || route,
+                  winScore,
+                  winOrigin
+                )}`
               : ""
           }`
         : "";
     const labels = {
-      "e-rules-path": pick ? `→ ${pick}` : "",
-      "e-arb-path": arbiter?.called
-        ? arbiter.action || "keep"
-        : "",
+      "e-rules-router": pick ? `→ ${pick}` : "",
+      "e-arb-path": arbiter?.called ? arbiter.action || "keep" : "",
       "e-path-fsm": path === "fsm" ? "FSM" : "",
       "e-path-rag": path === "rag" ? "RAG" : "",
       "e-chroma-llm":
@@ -1520,14 +1535,7 @@ export default function TurnPipeline({
           : "",
     };
     return labels;
-  }, [
-    routing,
-    winningRuleId,
-    route,
-    arbiter,
-    path,
-    hits,
-  ]);
+  }, [routing, winningRuleId, route, arbiter, path, hits]);
 
   const fitView = useCallback(() => {
     const el = viewportRef.current;
@@ -1674,10 +1682,10 @@ export default function TurnPipeline({
   const metaLine = trace
     ? `${route || "—"} · ${
         trace.latency_ms != null ? `${trace.latency_ms} ms` : "—"
-      }${path ? ` · ${path === "rag" ? "RAG" : "FSM"}` : ""}${
+      }${trace.language ? ` · ${trace.language}` : ""}${
         liveOn ? " · live" : ""
-      }${trace.language ? ` · ${trace.language}` : ""}`
-    : "Idle — drag to pan · scroll to zoom · click a node";
+      }`
+    : "Drag to pan · scroll to zoom · click a node";
 
   return (
     <div className="bn-pipeline bn-pipeline--canvas">
@@ -1700,6 +1708,7 @@ export default function TurnPipeline({
               setZoom(next);
             }}
             title="Zoom in"
+            aria-label="Zoom in"
           >
             +
           </button>
@@ -1712,13 +1721,19 @@ export default function TurnPipeline({
               setZoom(next);
             }}
             title="Zoom out"
+            aria-label="Zoom out"
           >
             −
           </button>
-          <button type="button" onClick={fitView} title="Fit">
+          <button
+            type="button"
+            className="bn-flow-fit"
+            onClick={fitView}
+            title="Fit to view"
+            aria-label="Fit to view"
+          >
             Fit
           </button>
-          <span className="bn-flow-zoom">{Math.round(zoom * 100)}%</span>
         </div>
       </header>
 
