@@ -1,6 +1,11 @@
 """In-process BM25 sparse index + Reciprocal Rank Fusion with dense hits.
 
 No cloud search service — rebuilt on ingest / cold start from the same KB chunks.
+
+Tokenization follows standard Okapi-style IR practice: case-fold, split on
+non-alphanumerics, drop stopwords / 1-char Latin noise. Chinese uses character
+bigrams (unigram only when the query is a single CJK character) so a term like
+「拼」 does not flood every document.
 """
 from __future__ import annotations
 
@@ -12,15 +17,204 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 _WORD_RE = re.compile(r"[a-z0-9]+", re.I)
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
+# Classic IR stop list (Lucene / BM25 practice). Kept small and English-only —
+# CJK content words are never stopped here.
+_STOPWORDS = {
+    "a",
+    "an",
+    "the",
+    "and",
+    "or",
+    "but",
+    "if",
+    "then",
+    "else",
+    "when",
+    "at",
+    "by",
+    "for",
+    "with",
+    "about",
+    "against",
+    "between",
+    "into",
+    "through",
+    "during",
+    "before",
+    "after",
+    "above",
+    "below",
+    "to",
+    "from",
+    "up",
+    "down",
+    "in",
+    "out",
+    "on",
+    "off",
+    "over",
+    "under",
+    "again",
+    "further",
+    "once",
+    "here",
+    "there",
+    "all",
+    "any",
+    "both",
+    "each",
+    "few",
+    "more",
+    "most",
+    "other",
+    "some",
+    "such",
+    "no",
+    "nor",
+    "not",
+    "only",
+    "own",
+    "same",
+    "so",
+    "than",
+    "too",
+    "very",
+    "can",
+    "will",
+    "just",
+    "don",
+    "should",
+    "now",
+    "i",
+    "me",
+    "my",
+    "myself",
+    "we",
+    "our",
+    "ours",
+    "ourselves",
+    "you",
+    "your",
+    "yours",
+    "yourself",
+    "yourselves",
+    "he",
+    "him",
+    "his",
+    "himself",
+    "she",
+    "her",
+    "hers",
+    "herself",
+    "it",
+    "its",
+    "itself",
+    "they",
+    "them",
+    "their",
+    "theirs",
+    "themselves",
+    "what",
+    "which",
+    "who",
+    "whom",
+    "this",
+    "that",
+    "these",
+    "those",
+    "am",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "have",
+    "has",
+    "had",
+    "having",
+    "do",
+    "does",
+    "did",
+    "doing",
+    "would",
+    "could",
+    "ought",
+    "im",
+    "youre",
+    "hes",
+    "shes",
+    "its",
+    "were",
+    "theyre",
+    "ive",
+    "youve",
+    "weve",
+    "theyve",
+    "id",
+    "youd",
+    "hed",
+    "shed",
+    "wed",
+    "theyd",
+    "ill",
+    "youll",
+    "hell",
+    "shell",
+    "well",
+    "theyll",
+    "isnt",
+    "arent",
+    "wasnt",
+    "werent",
+    "hasnt",
+    "havent",
+    "hadnt",
+    "doesnt",
+    "dont",
+    "didnt",
+    "wont",
+    "wouldnt",
+    "shouldnt",
+    "cant",
+    "cannot",
+    "couldnt",
+    "mustnt",
+    "lets",
+    "thats",
+    "whos",
+    "whats",
+    "heres",
+    "theres",
+    "whens",
+    "wheres",
+    "whys",
+    "hows",
+    "please",
+    "also",
+    "as",
+    "of",
+    "via",
+}
+
 
 def tokenize(text: str) -> List[str]:
-    """English words + CJK unigrams/bigrams (BrightNest is multilingual)."""
+    """BM25 tokens: stopped Latin words (≥2 chars) + CJK character bigrams."""
     raw = text or ""
-    low = raw.lower()
-    toks = _WORD_RE.findall(low)
+    toks: List[str] = []
+    for w in _WORD_RE.findall(raw.lower()):
+        if len(w) < 2:
+            continue
+        if w in _STOPWORDS:
+            continue
+        toks.append(w)
     cjk = _CJK_RE.findall(raw)
-    toks.extend(cjk)
-    toks.extend(cjk[i] + cjk[i + 1] for i in range(len(cjk) - 1))
+    if len(cjk) == 1:
+        # Lone character query (rare) — keep the unigram
+        toks.append(cjk[0])
+    elif len(cjk) >= 2:
+        toks.extend(cjk[i] + cjk[i + 1] for i in range(len(cjk) - 1))
     return toks
 
 
@@ -233,7 +427,7 @@ def rrf_fuse(
         "both": sum(1 for h in out if (h.get("fusion") or {}).get("channels") == "both"),
         "how": [
             "Dense Chroma ranks chunks by embedding similarity.",
-            "BM25 ranks the same KB by keyword / CJK token overlap.",
+            "BM25 ranks the same KB by keyword / CJK bigram overlap (stopwords dropped).",
             f"RRF score = 1/({k}+dense_rank) + 1/({k}+BM25_rank); both-lists boost.",
             "Lexical re-rank sorts by age-file match → path keyword → folder prior → token overlap → vector score, then keep top_k.",
         ],

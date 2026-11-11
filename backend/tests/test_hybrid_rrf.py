@@ -14,7 +14,44 @@ from rag.sparse import SparseIndex, rrf_fuse, tokenize  # noqa: E402
 def test_tokenize_english_and_cjk():
     toks = tokenize("Math programmes 數學課程")
     assert "math" in toks
-    assert "數" in toks or "數學" in toks
+    assert "programmes" in toks
+    # CJK bigrams, not every unigram
+    assert "數學" in toks
+    assert "數" not in toks
+
+
+def test_tokenize_drops_stopwords_and_single_letters():
+    toks = tokenize("I want phonics with my child")
+    assert "i" not in toks
+    assert "with" not in toks
+    assert "my" not in toks
+    assert "phonics" in toks
+    assert "want" in toks
+    assert "child" in toks
+
+
+def test_bm25_does_not_rank_on_stopword_i():
+    idx = SparseIndex()
+    idx.rebuild(
+        [
+            {
+                "id": "noise",
+                "text": "I am with him. I think I will.",
+                "metadata": {"source": "noise.md", "language": "en"},
+            },
+            {
+                "id": "phonic",
+                "text": "Phonics programmes build early reading skills.",
+                "metadata": {"source": "phonics.md", "language": "en"},
+            },
+        ]
+    )
+    hits = idx.query("I want phonics", top_k=2, language="en")
+    assert hits
+    assert hits[0]["metadata"]["source"] == "phonics.md"
+    matched = set(tokenize("I want phonics")) & set(tokenize(hits[0]["text"]))
+    assert "i" not in matched
+    assert "phonics" in matched
 
 
 def test_bm25_prefers_keyword_doc():

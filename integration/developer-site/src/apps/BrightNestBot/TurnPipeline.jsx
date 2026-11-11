@@ -541,18 +541,22 @@ function RagHit({ hit, index }) {
   );
 }
 
-/** Highlight BM25 / query tokens inside chunk text (sparse channel). */
+/** Highlight BM25 tokens as whole terms — never substring "i" inside "with". */
 function highlightTokens(text, tokens) {
   const body = text || "";
   const toks = (tokens || [])
     .map((t) => String(t || "").trim())
-    .filter(Boolean)
+    .filter((t) => t && !(t.length === 1 && /[a-z0-9]/i.test(t)))
     .sort((a, b) => b.length - a.length);
   if (!body || !toks.length) return body;
-  const escaped = toks.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const re = new RegExp(`(${escaped.join("|")})`, "gi");
-  const parts = body.split(re);
-  return parts.map((part, i) =>
+  const parts = toks.map((t) => {
+    const esc = t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Latin / digits: word boundaries. CJK bigrams: literal run (no \b).
+    if (/^[\u4e00-\u9fff]+$/.test(t)) return esc;
+    return `\\b${esc}\\b`;
+  });
+  const re = new RegExp(`(${parts.join("|")})`, "gi");
+  return body.split(re).map((part, i) =>
     i % 2 === 1 ? (
       <mark key={`tok-${i}`} className="bn-tok-hit">
         {part}
