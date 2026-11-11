@@ -15,6 +15,7 @@ const LOGO_SRC = "/projects/brightnest/logo.png";
 const SHEETPRO_ICON = "/projects/brightnest/sheetpro.webp";
 const MAILBOX_ICON = "/projects/brightnest/mailbox.webp";
 const FAMILIES_ICON = "/projects/brightnest/logo.png";
+const MYCALENDAR_ICON = "/projects/brightnest/mycalendar.webp";
 /** How many calendar days MyCalendar loads (API max 21). */
 const SCHEDULE_DAYS = 14;
 
@@ -22,19 +23,23 @@ const SCHEDULE_DAYS = 14;
 const PARENT_PROFILES = [
   {
     id: "jason",
-    label: "Demo Parent · Jason Chan",
-    short: "Jason family",
+    label: "Demo Parent",
+    short: "Jason Chan",
+    blurb: "Known family · bookings on file",
     parentName: "Demo Parent",
     childName: "Jason Chan",
     phone: "+852 9000 0000",
+    initials: "JC",
   },
   {
     id: "new",
-    label: "New parent (no records)",
-    short: "New parent",
+    label: "New parent",
+    short: "No child yet",
+    blurb: "Blank WhatsApp · nothing on file",
     parentName: "",
     childName: "",
     phone: "+852 9000 9999",
+    initials: "NP",
   },
 ];
 
@@ -749,7 +754,7 @@ export default function BrightNestBotDemo() {
   const [staffMessages, setStaffMessages] = useState([]);
   const [familiesRoster, setFamiliesRoster] = useState([]);
   const [rightView, setRightView] = useState("system"); // system | staff
-  const [staffTab, setStaffTab] = useState("sheet"); // sheet | mail | families
+  const [staffTab, setStaffTab] = useState("calendar"); // calendar | sheet | mail | families
   const [selectedMsgId, setSelectedMsgId] = useState(null);
   const [selectedFamilyPhone, setSelectedFamilyPhone] = useState(null);
   const [readMailIds, setReadMailIds] = useState(() => new Set());
@@ -895,7 +900,7 @@ export default function BrightNestBotDemo() {
       setSelectedMsgId(null);
       setReadMailIds(new Set());
       setRightView("system");
-      setStaffTab("sheet");
+      setStaffTab("calendar");
       setSelectedFamilyPhone(null);
       localStorage.removeItem("bn_bot_session_id");
       setSessionLabel(shortSessionLabel());
@@ -997,6 +1002,10 @@ export default function BrightNestBotDemo() {
       ) {
         refreshSchedule();
         refreshFamilies();
+        if (!hitTodo && !hitBoss) {
+          setStaffTab("calendar");
+          setRightView("staff");
+        }
       }
     } catch (err) {
       console.error(err);
@@ -1029,31 +1038,8 @@ export default function BrightNestBotDemo() {
     route === "opening_hours" ||
     route === "severe_weather";
   const ragOpen = route === "rag" || Boolean(enrichMode);
-  const registerOpen =
-    route === "booking_tool" || route === "booking_dialogue" || route === "cancel_dialogue";
   const dialogue = trace?.booking;
   const cancelTrace = trace?.cancel;
-  const dialogueSummary = cancelTrace?.stage
-    ? `Cancel chat · ${cancelTrace.stage}${
-        cancelTrace.child_name ? ` · ${cancelTrace.child_name}` : ""
-      }`
-    : dialogue?.stage
-      ? `Booking chat · ${dialogue.stage}${
-          dialogue.child_name ? ` · ${dialogue.child_name}` : ""
-        }${dialogue.course_key ? ` · ${dialogue.course_key}` : ""}`
-      : null;
-  const teachers = schedule?.teachers || [];
-  const scheduleSummary = schedule
-    ? (() => {
-        const days = schedule.days || [];
-        const first = days[0]?.label || "";
-        const last = days[days.length - 1]?.label || "";
-        const n = days.reduce((acc, d) => acc + (d.sessions?.length || 0), 0);
-        const span = first && last ? `${first} → ${last}` : `${days.length}d`;
-        return `${teachers.length} staff · ${n} sessions · ${span}`;
-      })()
-    : "MyCalendar · class register";
-
   const hoursSummary = useMemo(() => {
     if (!facts) return "Idle until a date/hours query";
     const bits = [];
@@ -1176,24 +1162,28 @@ export default function BrightNestBotDemo() {
               </div>
             </div>
 
-            <div className="bn-profile-bar" role="group" aria-label="Demo parent profile">
+            <div className="bn-profile-switch" role="group" aria-label="Demo parent profile">
               {PARENT_PROFILES.map((p) => (
                 <button
                   key={p.id}
                   type="button"
-                  className={`bn-profile-chip ${profileId === p.id ? "active" : ""}`}
+                  className={`bn-profile-card ${profileId === p.id ? "active" : ""}`}
                   onClick={() => switchParentProfile(p.id)}
                   disabled={isLoading}
-                  title={`${p.parentName || "New parent"} · ${p.phone}`}
                 >
-                  {p.short}
+                  <span className="bn-profile-avatar" aria-hidden="true">
+                    {p.initials}
+                  </span>
+                  <span className="bn-profile-copy">
+                    <strong>{p.label}</strong>
+                    <small>{p.blurb}</small>
+                  </span>
                 </button>
               ))}
-              <span className="bn-profile-meta">
-                {parentName || "New parent"}
-                {childName ? ` · ${childName}` : " · no child on file"}
+              <div className="bn-profile-active">
+                <span>{childName || "No child on file"}</span>
                 <code>{phone}</code>
-              </span>
+              </div>
             </div>
 
             <div className="bn-messages" ref={chatWindowRef}>
@@ -1317,6 +1307,24 @@ export default function BrightNestBotDemo() {
                   <button
                     type="button"
                     role="tab"
+                    aria-selected={staffTab === "calendar"}
+                    className={`bn-browser-tab ${staffTab === "calendar" ? "active" : ""}`}
+                    onClick={() => {
+                      setStaffTab("calendar");
+                      refreshSchedule();
+                    }}
+                  >
+                    <img
+                      src={MYCALENDAR_ICON}
+                      alt=""
+                      className="bn-tab-ico bn-tab-ico-img"
+                      aria-hidden="true"
+                    />
+                    <span className="bn-browser-tab-label">MyCalendar</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
                     aria-selected={staffTab === "sheet"}
                     className={`bn-browser-tab ${staffTab === "sheet" ? "active" : ""}`}
                     onClick={() => setStaffTab("sheet")}
@@ -1376,16 +1384,26 @@ export default function BrightNestBotDemo() {
               <div className="bn-browser-url">
                 <span className="bn-browser-lock" aria-hidden="true" />
                 <code>
-                  {staffTab === "sheet"
-                    ? "sheetpro.app/d/brightnest-followups"
-                    : staffTab === "mail"
-                      ? "mailbox.app/u/0/#inbox"
-                      : "families.app/d/brightnest-roster"}
+                  {staffTab === "calendar"
+                    ? "calendar.google.com/calendar/u/0/r/week"
+                    : staffTab === "sheet"
+                      ? "sheetpro.app/d/brightnest-followups"
+                      : staffTab === "mail"
+                        ? "mailbox.app/u/0/#inbox"
+                        : "families.app/d/brightnest-roster"}
                 </code>
               </div>
 
               <div className="bn-browser-page">
-                {staffTab === "sheet" ? (
+                {staffTab === "calendar" ? (
+                  <MyCalendar
+                    schedule={schedule}
+                    teacherId={scheduleTeacherId}
+                    studentName={scheduleStudent}
+                    onTeacherChange={setScheduleTeacherId}
+                    onStudentChange={setScheduleStudent}
+                  />
+                ) : staffTab === "sheet" ? (
                   <div className="bn-sheet-widget">
                     <div className="bn-sheet-titlebar">
                       <div className="bn-sheet-doc">
@@ -2123,32 +2141,6 @@ export default function BrightNestBotDemo() {
                 </ul>
               </>
             )}
-          </Reveal>
-
-          <Reveal
-            key={`register-${turnKey}`}
-            title="MyCalendar"
-            summary={scheduleSummary}
-            defaultOpen={registerOpen}
-          >
-            <MyCalendar
-              schedule={schedule}
-              teacherId={scheduleTeacherId}
-              studentName={scheduleStudent}
-              onTeacherChange={setScheduleTeacherId}
-              onStudentChange={setScheduleStudent}
-              summaryNote={
-                dialogueSummary
-                  ? `Active WhatsApp dialogue: ${dialogueSummary}${
-                      dialogue?.child_schedule?.length
-                        ? ` · ${dialogue.child_schedule.length} upcoming on file`
-                        : ""
-                    }`
-                  : schedule?.sheets_dir
-                    ? `CSV register · ${schedule.sheets_dir}`
-                    : "CSV teachers / sessions / enrolments + chat_bookings"
-              }
-            />
           </Reveal>
 
           <Reveal

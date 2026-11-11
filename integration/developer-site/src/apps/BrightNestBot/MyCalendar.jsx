@@ -1,9 +1,9 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 const MYCALENDAR_ICON = "/projects/brightnest/mycalendar.webp";
 const DAY_START_H = 9;
 const DAY_END_H = 18;
-const HOUR_PX = 44;
+const HOUR_PX = 48;
 
 function parseSlot(iso) {
   if (!iso) return null;
@@ -21,7 +21,20 @@ function eventTop(iso) {
 
 function eventHeight(durationMin) {
   const h = ((Number(durationMin) || 60) / 60) * HOUR_PX;
-  return Math.max(22, h - 2);
+  return Math.max(20, h - 3);
+}
+
+function formatClock(iso) {
+  const d = parseSlot(iso);
+  if (!d) return "—";
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+function endClock(iso, durationMin) {
+  const d = parseSlot(iso);
+  if (!d) return "—";
+  const end = new Date(d.getTime() + (Number(durationMin) || 60) * 60000);
+  return end.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 function courseTone(courseKey) {
@@ -35,8 +48,21 @@ function courseTone(courseKey) {
   return "default";
 }
 
+function dayParts(label, dateIso) {
+  const d = dateIso ? new Date(`${dateIso}T12:00:00`) : null;
+  if (d && !Number.isNaN(d.getTime())) {
+    return {
+      weekday: d.toLocaleDateString(undefined, { weekday: "short" }),
+      dayNum: d.getDate(),
+      isToday: new Date().toDateString() === d.toDateString(),
+    };
+  }
+  const bits = String(label || "").split(/\s+/);
+  return { weekday: bits[0] || "", dayNum: bits[1] || "", isToday: false };
+}
+
 /**
- * Google-Calendar-style week board for the BrightNest class register.
+ * Staff-desk Google Calendar–style week board for the BrightNest register.
  */
 export default function MyCalendar({
   schedule,
@@ -44,9 +70,9 @@ export default function MyCalendar({
   studentName = "all",
   onTeacherChange,
   onStudentChange,
-  summaryNote,
 }) {
   const [weekIndex, setWeekIndex] = useState(0);
+  const [selected, setSelected] = useState(null);
   const teachers = schedule?.teachers || [];
   const allDays = schedule?.days || [];
 
@@ -83,10 +109,12 @@ export default function MyCalendar({
     }));
   }, [weekDays, teacherId, studentName]);
 
+  useEffect(() => {
+    setSelected(null);
+  }, [weekIndex, teacherId, studentName]);
+
   const hours = [];
-  for (let h = DAY_START_H; h < DAY_END_H; h += 1) {
-    hours.push(h);
-  }
+  for (let h = DAY_START_H; h < DAY_END_H; h += 1) hours.push(h);
   const gridH = (DAY_END_H - DAY_START_H) * HOUR_PX;
 
   const rangeLabel =
@@ -94,17 +122,32 @@ export default function MyCalendar({
       ? `${filteredDays[0].label} – ${filteredDays[filteredDays.length - 1].label}`
       : "No days loaded";
 
+  const monthTitle = (() => {
+    const first = filteredDays[0]?.date;
+    if (!first) return "MyCalendar";
+    const d = new Date(`${first}T12:00:00`);
+    if (Number.isNaN(d.getTime())) return "MyCalendar";
+    return d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  })();
+
   return (
-    <div className="bn-cal">
+    <div className="bn-cal bn-cal--staff">
       <div className="bn-cal-chrome">
         <div className="bn-cal-brand">
           <img src={MYCALENDAR_ICON} alt="" className="bn-cal-logo" />
           <div>
             <strong>MyCalendar</strong>
-            <small>BrightNest class register</small>
+            <small>{monthTitle}</small>
           </div>
         </div>
         <div className="bn-cal-nav">
+          <button
+            type="button"
+            className="bn-cal-today"
+            onClick={() => setWeekIndex(0)}
+          >
+            Today
+          </button>
           <button
             type="button"
             className="bn-cal-nav-btn"
@@ -114,7 +157,6 @@ export default function MyCalendar({
           >
             ‹
           </button>
-          <span className="bn-cal-range">{rangeLabel}</span>
           <button
             type="button"
             className="bn-cal-nav-btn"
@@ -124,22 +166,13 @@ export default function MyCalendar({
           >
             ›
           </button>
-          <button
-            type="button"
-            className="bn-cal-today"
-            onClick={() => setWeekIndex(0)}
-          >
-            Today
-          </button>
+          <span className="bn-cal-range">{rangeLabel}</span>
         </div>
-      </div>
-
-      <div className="bn-cal-filters">
-        <label>
-          Staff
+        <div className="bn-cal-filters">
           <select
             value={teacherId}
             onChange={(e) => onTeacherChange?.(e.target.value)}
+            aria-label="Filter by staff"
           >
             <option value="all">All staff</option>
             {teachers.map((t) => (
@@ -148,12 +181,10 @@ export default function MyCalendar({
               </option>
             ))}
           </select>
-        </label>
-        <label>
-          Student
           <select
             value={studentName}
             onChange={(e) => onStudentChange?.(e.target.value)}
+            aria-label="Filter by student"
           >
             <option value="all">All students</option>
             {students.map((n) => (
@@ -162,88 +193,165 @@ export default function MyCalendar({
               </option>
             ))}
           </select>
-        </label>
+        </div>
       </div>
-
-      {summaryNote ? <p className="bn-note bn-cal-note">{summaryNote}</p> : null}
 
       {!schedule ? (
         <p className="bn-empty">Schedule API offline — restart backend to load.</p>
       ) : filteredDays.length === 0 ? (
         <p className="bn-empty">No sessions in this window.</p>
       ) : (
-        <div className="bn-cal-board">
-          <div
-            className="bn-cal-head"
-            style={{ gridTemplateColumns: `48px repeat(${filteredDays.length}, minmax(0, 1fr))` }}
-          >
-            <div className="bn-cal-gutter-head" />
-            {filteredDays.map((day) => (
-              <div key={day.date} className="bn-cal-day-head">
-                <span>{day.label?.split(" ")[0]}</span>
-                <strong>{day.label?.replace(/^\w+\s*/, "") || day.date}</strong>
+        <div className="bn-cal-main">
+          <div className="bn-cal-board">
+            <div
+              className="bn-cal-head"
+              style={{
+                gridTemplateColumns: `56px repeat(${filteredDays.length}, minmax(0, 1fr))`,
+              }}
+            >
+              <div className="bn-cal-gutter-head" />
+              {filteredDays.map((day) => {
+                const parts = dayParts(day.label, day.date);
+                return (
+                  <div
+                    key={day.date}
+                    className={`bn-cal-day-head ${parts.isToday ? "is-today" : ""}`}
+                  >
+                    <span>{parts.weekday}</span>
+                    <strong>{parts.dayNum}</strong>
+                  </div>
+                );
+              })}
+            </div>
+            <div
+              className="bn-cal-body"
+              style={{
+                gridTemplateColumns: `56px repeat(${filteredDays.length}, minmax(0, 1fr))`,
+              }}
+            >
+              <div className="bn-cal-gutter" style={{ height: gridH }}>
+                {hours.map((h) => (
+                  <div key={h} className="bn-cal-hour" style={{ height: HOUR_PX }}>
+                    {h === DAY_START_H ? "" : `${String(h).padStart(2, "0")}:00`}
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-          <div
-            className="bn-cal-body"
-            style={{ gridTemplateColumns: `48px repeat(${filteredDays.length}, minmax(0, 1fr))` }}
-          >
-            <div className="bn-cal-gutter" style={{ height: gridH }}>
-              {hours.map((h) => (
-                <div key={h} className="bn-cal-hour" style={{ height: HOUR_PX }}>
-                  {String(h).padStart(2, "0")}:00
+              {filteredDays.map((day) => (
+                <div key={day.date} className="bn-cal-col" style={{ height: gridH }}>
+                  {hours.map((h) => (
+                    <div
+                      key={`${day.date}-${h}`}
+                      className="bn-cal-slot-line"
+                      style={{ top: (h - DAY_START_H) * HOUR_PX }}
+                    />
+                  ))}
+                  {(day.sessions || []).map((s) => {
+                    const selKey = `${s.session_id}|${s.slot_start}`;
+                    const active =
+                      selected &&
+                      selected.session_id === s.session_id &&
+                      selected.slot_start === s.slot_start;
+                    return (
+                      <button
+                        key={selKey}
+                        type="button"
+                        className={`bn-cal-event tone-${courseTone(s.course_key)} ${
+                          s.status === "full" ? "is-full" : ""
+                        } ${active ? "is-selected" : ""}`}
+                        style={{
+                          top: eventTop(s.slot_start),
+                          height: eventHeight(s.duration_min),
+                        }}
+                        onClick={() =>
+                          setSelected({
+                            ...s,
+                            dayLabel: day.label,
+                            dayDate: day.date,
+                          })
+                        }
+                      >
+                        <strong>{s.course_label}</strong>
+                        <span>
+                          {formatClock(s.slot_start)}
+                          {s.kind === "trial" ? " · trial" : ""}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               ))}
             </div>
-            {filteredDays.map((day) => (
-              <div key={day.date} className="bn-cal-col" style={{ height: gridH }}>
-                {hours.map((h) => (
-                  <div
-                    key={`${day.date}-${h}`}
-                    className="bn-cal-slot-line"
-                    style={{ top: (h - DAY_START_H) * HOUR_PX }}
-                  />
-                ))}
-                {(day.sessions || []).map((s) => {
-                  const kids = (s.enrolled || [])
-                    .map((e) => e.child)
-                    .filter(Boolean)
-                    .slice(0, 3);
-                  const extra = Math.max(0, (s.enrolled || []).length - kids.length);
-                  return (
-                    <div
-                      key={`${s.session_id}-${s.slot_start}`}
-                      className={`bn-cal-event tone-${courseTone(s.course_key)} ${
-                        s.status === "full" ? "is-full" : ""
-                      }`}
-                      style={{
-                        top: eventTop(s.slot_start),
-                        height: eventHeight(s.duration_min),
-                      }}
-                      title={`${s.course_label} · ${s.teacher_name} · ${s.seats_left}/${s.capacity} seats`}
-                    >
-                      <strong>{s.course_label}</strong>
-                      <span>
-                        {s.teacher_name}
-                        {s.room ? ` · ${s.room}` : ""}
-                      </span>
-                      <span className="bn-cal-seats">
-                        {s.seats_left}/{s.capacity}
-                        {s.kind === "trial" ? " · trial" : ""}
-                      </span>
-                      {kids.length > 0 ? (
-                        <em>
-                          {kids.join(", ")}
-                          {extra ? ` +${extra}` : ""}
-                        </em>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            ))}
           </div>
+
+          <aside className={`bn-cal-detail ${selected ? "open" : ""}`}>
+            {!selected ? (
+              <div className="bn-cal-detail-empty">
+                <img src={MYCALENDAR_ICON} alt="" />
+                <p>Select a class to see staff, room, seats, and enrolled students.</p>
+              </div>
+            ) : (
+              <>
+                <div className="bn-cal-detail-head">
+                  <span className={`bn-cal-dot tone-${courseTone(selected.course_key)}`} />
+                  <div>
+                    <h3>{selected.course_label}</h3>
+                    <p>
+                      {selected.dayLabel} · {formatClock(selected.slot_start)}–
+                      {endClock(selected.slot_start, selected.duration_min)}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="bn-cal-detail-close"
+                    onClick={() => setSelected(null)}
+                    aria-label="Close details"
+                  >
+                    ×
+                  </button>
+                </div>
+                <dl className="bn-cal-detail-grid">
+                  <div>
+                    <dt>Staff</dt>
+                    <dd>{selected.teacher_name || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Room</dt>
+                    <dd>{selected.room || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Seats</dt>
+                    <dd>
+                      {selected.seats_left}/{selected.capacity} left
+                      {selected.status === "full" ? " · full" : ""}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Type</dt>
+                    <dd>{selected.kind === "trial" ? "Trial assessment" : "Regular class"}</dd>
+                  </div>
+                </dl>
+                <h4>Enrolled ({selected.enrolled_count || 0})</h4>
+                {(selected.enrolled || []).length === 0 ? (
+                  <p className="bn-empty">No students on the register for this slot.</p>
+                ) : (
+                  <ul className="bn-cal-roster">
+                    {(selected.enrolled || []).map((e, i) => (
+                      <li key={`${e.child}-${i}`}>
+                        <strong>{e.child}</strong>
+                        <span>{e.parent || "—"}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {selected.chat_bookings ? (
+                  <p className="bn-cal-chat-note">
+                    +{selected.chat_bookings} chat booking
+                    {selected.chat_bookings === 1 ? "" : "s"} counted in seats
+                  </p>
+                ) : null}
+              </>
+            )}
+          </aside>
         </div>
       )}
     </div>

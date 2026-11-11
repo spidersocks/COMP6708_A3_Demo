@@ -176,52 +176,107 @@ def seed_sheets_if_needed(*, force: bool = False) -> Path:
         "wr-fri-1530": [("Olivia Fong", "Mrs Fong"), ("Lucas Kwan", "Mr Kwan"), ("Ella Sit", "Ms Sit")],
         "wr-sat-1300": [("Nathan Yu", "Mrs Yu"), ("Sara Pang", "Ms Pang")],
         "wr-mon-1430": [("Theo Pak", "Mr Pak"), ("Mila On", "Ms On"), ("Hugo Yan", "Mrs Yan")],
-        "pg-mon-0930": [("Baby A", "Mrs A"), ("Baby B", "Mr B"), ("Baby C", "Ms C"), ("Baby D", "Mrs D"), ("Baby E", "Mrs E")],
-        "pg-thu-0930": [("Baby A", "Mrs A"), ("Baby B", "Mr B"), ("Baby C", "Ms C"), ("Baby F", "Mrs F"), ("Baby G", "Ms G"), ("Baby H", "Mr H"), ("Baby I", "Mrs I")],
-        "pg-sat-0930": [("Baby D", "Mrs D"), ("Baby E", "Mrs E"), ("Baby J", "Ms J")],
-        "pg-tue-0930": [("Baby K", "Mrs K"), ("Baby L", "Mr L"), ("Baby M", "Ms M"), ("Baby N", "Mrs N")],
-        "pg-fri-0930": [("Baby K", "Mrs K"), ("Baby L", "Mr L"), ("Baby O", "Ms O")],
-        "pg-sat-1100s": [("Baby P", "Mrs P"), ("Baby Q", "Mr Q")],
-        "ma-mon-1530": [("Sam U", "Mrs U"), ("Tess V", "Mr V"), ("Will X", "Ms X")],
-        "ma-wed-1000": [("Sam U", "Mrs U"), ("Tess V", "Mr V"), ("Will X", "Ms X"), ("Yuki Z", "Mrs Z"), ("Jason Chan", "Demo Parent")],
-        "ma-fri-1530": [("Sam U", "Mrs U"), ("Yuki Z", "Mrs Z")],
-        "ma-sat-1030": [("Tess V", "Mr V"), ("Will X", "Ms X"), ("Cora Qi", "Ms Qi"), ("Dean Xu", "Mr Xu")],
+        "pg-mon-0930": [
+            ("Mia Chan", "Demo Parent"),
+            ("Ollie Bevan", "Mrs Bevan"),
+            ("Poppy Cheung", "Ms Cheung"),
+            ("Rex Dai", "Mrs Dai"),
+            ("Sienna Eng", "Mrs Eng"),
+        ],
+        "pg-thu-0930": [
+            ("Mia Chan", "Demo Parent"),
+            ("Ollie Bevan", "Mrs Bevan"),
+            ("Poppy Cheung", "Ms Cheung"),
+            ("Uma Fok", "Mrs Fok"),
+            ("Vince Gao", "Ms Gao"),
+            ("Willa Hsu", "Mr Hsu"),
+            ("Yara Ip", "Mrs Ip"),
+        ],
+        "pg-sat-0930": [
+            ("Rex Dai", "Mrs Dai"),
+            ("Sienna Eng", "Mrs Eng"),
+            ("Zara Jung", "Ms Jung"),
+        ],
+        "pg-tue-0930": [
+            ("Cody Kwok", "Mrs Kwok"),
+            ("Daisy Lai", "Mr Lai"),
+            ("Ellie Ma", "Ms Ma"),
+            ("Finn Ng", "Mrs Ng"),
+        ],
+        "pg-fri-0930": [
+            ("Cody Kwok", "Mrs Kwok"),
+            ("Daisy Lai", "Mr Lai"),
+            ("Gigi Or", "Ms Or"),
+        ],
+        "pg-sat-1100s": [("Hugo Pang", "Mrs Pang"), ("Iris Qiu", "Mr Qiu")],
+        "ma-mon-1530": [
+            ("Sam Ueda", "Mrs Ueda"),
+            ("Tess Varma", "Mr Varma"),
+            ("Will Xu", "Ms Xu"),
+        ],
+        "ma-wed-1000": [
+            ("Sam Ueda", "Mrs Ueda"),
+            ("Tess Varma", "Mr Varma"),
+            ("Will Xu", "Ms Xu"),
+            ("Yuki Zhou", "Mrs Zhou"),
+            ("Jason Chan", "Demo Parent"),
+        ],
+        "ma-fri-1530": [("Sam Ueda", "Mrs Ueda"), ("Yuki Zhou", "Mrs Zhou")],
+        "ma-sat-1030": [
+            ("Tess Varma", "Mr Varma"),
+            ("Will Xu", "Ms Xu"),
+            ("Cora Qi", "Ms Qi"),
+            ("Dean Xu", "Mr Xu"),
+        ],
     }
     enrolments = []
     for sid, kids in enrol_seed.items():
         for child, parent in kids:
             enrolments.append({"session_id": sid, "child": child, "parent": parent})
 
-    families = [
-        {
-            "phone": "+852 9000 0000",
-            "parent_name": "Demo Parent",
-            "child_name": "Jason Chan",
-            "preferred_courses": "phonics|math",
-            "notes": "Primary demo WhatsApp family",
-        },
-        {
-            "phone": "+852 9000 0000",
-            "parent_name": "Demo Parent",
-            "child_name": "Mia Chan",
-            "preferred_courses": "playgroup",
-            "notes": "Sibling on same number",
-        },
-        {
-            "phone": "+852 9123 4567",
-            "parent_name": "Mrs Wong",
-            "child_name": "Emma Wong",
-            "preferred_courses": "phonics",
-            "notes": "",
-        },
-        {
-            "phone": "+852 9555 1212",
-            "parent_name": "Mrs Cheng",
-            "child_name": "Katie Cheng",
-            "preferred_courses": "mandarin",
-            "notes": "",
-        },
-    ]
+    # Families sheet is derived from enrolments so Staff desk matches MyCalendar.
+    course_by_session = {s["id"]: s["course_key"] for s in sessions}
+    preferred: dict[tuple[str, str], set[str]] = {}
+    for sid, kids in enrol_seed.items():
+        course = course_by_session.get(sid) or ""
+        for child, parent in kids:
+            preferred.setdefault((parent, child), set())
+            if course:
+                preferred[(parent, child)].add(course)
+
+    # Stable demo numbers for the WhatsApp profile switcher / probes
+    phone_by_parent = {
+        "Demo Parent": "+852 9000 0000",
+        "Mrs Wong": "+852 9123 4567",
+        "Mrs Cheng": "+852 9555 1212",
+    }
+    next_phone = 90002001
+    for parent, _child in preferred:
+        if parent not in phone_by_parent:
+            digits = str(next_phone)
+            phone_by_parent[parent] = f"+852 {digits[:4]} {digits[4:]}"
+            next_phone += 1
+
+    notes_by_child = {
+        ("Demo Parent", "Jason Chan"): "Primary demo WhatsApp family",
+        ("Demo Parent", "Mia Chan"): "Sibling on same number · playgroup",
+        ("Mrs Wong", "Emma Wong"): "Centre WhatsApp · phonics regular",
+        ("Mrs Cheng", "Katie Cheng"): "Mandarin pathway",
+    }
+
+    families = []
+    for (parent, child), courses in sorted(
+        preferred.items(), key=lambda kv: (kv[0][0].lower(), kv[0][1].lower())
+    ):
+        families.append(
+            {
+                "phone": phone_by_parent[parent],
+                "parent_name": parent,
+                "child_name": child,
+                "preferred_courses": "|".join(sorted(courses)),
+                "notes": notes_by_child.get((parent, child), ""),
+            }
+        )
 
     trial_slots = [
         {"id": "tr-mon-1200", "teacher_id": "wei", "weekday": 0, "start": "12:00", "duration_min": 45, "capacity": 1, "room": "Room B"},
