@@ -16,15 +16,44 @@ const LLM_ROLE_LABELS = {
   rag_generate: "RAG generate (main)",
   gap_polish: "Gap polish (cheap)",
   cancel_pick: "Cancel pick (cheap)",
-  booking_parse: "Booking DST (cheap)",
-  booking_dst: "Booking DST (cheap)",
-  cancel_dst: "Cancel DST (cheap)",
+  booking_parse: "Booking DST (cheap JSON)",
+  booking_dst: "Booking DST (cheap JSON)",
+  cancel_dst: "Cancel DST (cheap JSON)",
   query_rewrite: "Query rewrite (cheap)",
   staff_email: "Staff email draft (cheap)",
   main_generate: "Main generate",
   cheap_llm: "Cheap LLM",
   cheap_json: "Cheap JSON",
 };
+
+/** Parent-facing main generate — the DashScope LLM node only. */
+const MAIN_LLM_ROLES = new Set([
+  "rag_generate",
+  "grounded_compose",
+  "fact_adapt",
+  "main_generate",
+  "gap_polish",
+  "staff_email",
+]);
+
+/** Slot-DST / pick JSON — shown on the DST node, never the final LLM node. */
+const DST_LLM_ROLES = new Set([
+  "booking_dst",
+  "booking_parse",
+  "cancel_dst",
+  "cancel_pick",
+]);
+
+function isMainLlmCall(call) {
+  const role = String(call?.role || "");
+  if (MAIN_LLM_ROLES.has(role)) return true;
+  if (DST_LLM_ROLES.has(role)) return false;
+  if (role === "intent_arbiter" || role === "query_rewrite") return false;
+  if (role === "action_policy" || role === "commit_audit") return false;
+  if (role.startsWith("final_check")) return false;
+  // Unknown roles: only treat as main if they look like free-text generate
+  return Boolean(call?.response) && !String(call?.response || "").trim().startsWith("{");
+}
 
 /**
  * Compact top-down layout (world px, origin at spine).
@@ -41,7 +70,7 @@ const LAYOUT = {
   arbiter: { x: 210, y: 380, w: 120, h: 46 },
   fsm: { x: -280, y: 560, w: 140, h: 46 },
   rag: { x: 280, y: 560, w: 140, h: 46 },
-  dst: { x: -280, y: 660, w: 152, h: 46 },
+  dst: { x: -280, y: 660, w: 168, h: 46 },
   live: { x: -280, y: 760, w: 140, h: 46 },
   // Hybrid retrieve — further right so FSM→LLM corridor stays clear
   dense: { x: 200, y: 680, w: 136, h: 76 },
@@ -71,7 +100,9 @@ const EDGES = [
   { id: "e-dst-live", from: "dst", to: "live", dashed: true },
   { id: "e-fsm-live", from: "fsm", to: "live", dashed: true },
   { id: "e-dst-llm", from: "dst", to: "llm", dashed: true },
+  { id: "e-dst-answer", from: "dst", to: "answer", dashed: true },
   { id: "e-fsm-llm", from: "fsm", to: "llm" },
+  { id: "e-fsm-answer", from: "fsm", to: "answer", dashed: true },
   { id: "e-fsm-sheets", from: "fsm", to: "sheets" },
   { id: "e-rag-dense", from: "rag", to: "dense" },
   { id: "e-rag-sparse", from: "rag", to: "sparse" },
@@ -132,7 +163,7 @@ function scoreLabel(score) {
   return Number(score).toFixed(3);
 }
 
-/** Label the channel score still on a hit after RRF (dense cosine or BM25). */
+/** Label the channel score on a packed hit (dense cosine or BM25). */
 function channelScoreKind(hit) {
   if (!hit) return null;
   const kind =
@@ -153,16 +184,20 @@ function labeledChannelScore(hit) {
   return `${kind} ${score}`;
 }
 
-/** Edge / summary: RRF when fused, else labeled channel score. */
+/** Edge / summary: pack slot + labeled channel score. */
 function rankedPassLabel(hit) {
   if (!hit) return null;
   const parts = [];
-  if (hit.fusion?.rrf != null && !Number.isNaN(Number(hit.fusion.rrf))) {
-    parts.push(`RRF ${Number(hit.fusion.rrf).toFixed(4)}`);
-  }
+  const slot = hit.pack?.slot || null;
+  if (slot) parts.push(String(slot).replace(/_/g, " "));
   const ch = labeledChannelScore(hit);
   if (ch) parts.push(ch);
   return parts.length ? parts.join(" · ") : null;
+}
+
+function isChannelPack(hy, rag) {
+  const mode = hy?.mode || rag?.retrieve_mode;
+  return mode === "channel_pack" || mode === "hybrid_rrf";
 }
 
 function clip(text, n = 120) {
@@ -335,6 +370,17 @@ function edgeGeometry(fromId, toId) {
     // Left corridor — clear of dense/chroma on the right and sheets on the far left
     rawStart = nodeAnchor(fromId, "right");
     rawEnd = nodeAnchor("llm", "left");
+    elbow = [
+      { x: FSM_LLM_X, y: a.y },
+      { x: FSM_LLM_X, y: b.y },
+    ];
+  } else if (
+    (fromId === "fsm" || fromId === "dst") &&
+    toId === "answer"
+  ) {
+    // Template booking/cancel: DST/FSM → parent answer (no DashScope generate)
+    rawStart = nodeAnchor(fromId, "right");
+    rawEnd = nodeAnchor("answer", "left");
     elbow = [
       { x: FSM_LLM_X, y: a.y },
       { x: FSM_LLM_X, y: b.y },
@@ -544,7 +590,7 @@ function RagHit({ hit, index }) {
             {hit.title || hit.canonical || hit.source || `Hit ${rank}`}
           </strong>
           {passLabel && (
-            <code title="RRF fusion score and/or labeled channel score">
+            <code title="Pack slot and labeled channel score">
               {passLabel}
             </code>
           )}
@@ -795,7 +841,7 @@ function ChromaHitsPanel({
             <span>Retrieve</span>
             <code>{hy.mode || rag?.retrieve_mode || "—"}</code>
           </li>
-          {hy.mode === "hybrid_rrf" ? (
+          {isChannelPack(hy) ? (
             <>
               <li>
                 <span>Dense pool</span>
@@ -806,8 +852,11 @@ function ChromaHitsPanel({
                 <code>{hy.sparse_count ?? "—"}</code>
               </li>
               <li>
-                <span>RRF k</span>
-                <code>{hy.rrf_k ?? "—"}</code>
+                <span>Pack</span>
+                <code>
+                  dense {hy.dense_kept ?? hy.dense_n ?? "—"} + BM25{" "}
+                  {hy.sparse_added ?? "—"} → {hy.packed_count ?? hy.keep_k ?? "—"}
+                </code>
               </li>
               <li>
                 <span>Channels</span>
@@ -843,20 +892,21 @@ function ChromaHitsPanel({
               hybrid: hy
                 ? {
                     mode: hy.mode,
-                    rrf_k: hy.rrf_k,
+                    dense_n: hy.dense_n,
+                    keep_k: hy.keep_k,
                     dense_count: hy.dense_count,
                     sparse_count: hy.sparse_count,
                   }
                 : null,
             }}
             payload={{
-              fused: list.map((h) => ({
+              packed: list.map((h) => ({
                 rank: h.rank,
                 source: h.source,
                 score: h.score,
                 title: h.title,
                 channel: fusionChannelLabel(h),
-                rrf: h.fusion?.rrf ?? null,
+                slot: h.pack?.slot ?? null,
                 dense_rank: h.fusion?.dense_rank ?? null,
                 sparse_rank: h.fusion?.sparse_rank ?? null,
                 order: h.rerank?.why || null,
@@ -1526,9 +1576,11 @@ function NodeDetail({
       return (
         <>
           <p className="bn-rules-hint">
-            <strong>Dialogue State Tracking</strong> — schema-constrained cheap
-            LLM JSON after regex. Merges only supported slots; FSM still asks
-            for gaps and commits books/cancels.
+            <strong>Preliminary · Dialogue State Tracking</strong> — cheap
+            schema JSON after regex (not the parent-facing DashScope generate).
+            Merges only supported slots; FSM templates still ask for gaps and
+            commit books/cancels. Open the cards below for the JSON prompt /
+            response.
           </p>
           {bookingDst?.called ? (
             <SlotDstCard
@@ -1541,11 +1593,7 @@ function NodeDetail({
             <SlotDstCard title="Cancel DST" dst={cancelDst} />
           ) : null}
           {llmCalls
-            .filter((c) =>
-              ["booking_dst", "booking_parse", "cancel_dst", "cancel_pick"].includes(
-                c.role
-              )
-            )
+            .filter((c) => DST_LLM_ROLES.has(c.role))
             .map((c, i) => (
               <LlmCallCard
                 key={`dst-llm-${i}`}
@@ -1570,10 +1618,9 @@ function NodeDetail({
         <>
           <p className="bn-rules-hint">
             Retrieve → generate. The flowchart expands hybrid as{" "}
-            <strong>Dense ∥ Sparse → RRF fuse → ranked pass 1</strong>, then
-            grade / optional rewrite → pass 2. Keep <code>top_k</code> after
-            lexical re-rank. Generation still sees the parent’s wording + chat
-            history.
+            <strong>Dense ∥ Sparse → channel pack (3+2) → ranked pass 1</strong>,
+            then grade / optional rewrite → pass 2. Generation still sees the
+            parent’s wording + chat history.
           </p>
           <ul className="bn-fact-list">
             <li>
@@ -1705,7 +1752,7 @@ function NodeDetail({
             Mode: rag?.embedding_mode || "—",
           }}
           emptyHint={
-            hy?.mode && hy.mode !== "hybrid_rrf"
+            hy?.mode && !isChannelPack(hy)
               ? `Dense-only / fallback: ${hy.reason || hy.mode}`
               : "No dense pool rows in debug payload."
           }
@@ -1728,7 +1775,7 @@ function NodeDetail({
           }}
           highlightTokens
           emptyHint={
-            hy?.mode && hy.mode !== "hybrid_rrf"
+            hy?.mode && !isChannelPack(hy)
               ? `BM25 skipped: ${hy.reason || hy.mode}`
               : "No BM25 pool rows in debug payload."
           }
@@ -1740,12 +1787,12 @@ function NodeDetail({
       const hy = rag?.hybrid;
       const ran = path === "rag" || enrichMode || hy || hits.length;
       const pass1 = rag?.pass1_hits || hits;
-      if (!ran) return <Skipped>RRF fuse did not run.</Skipped>;
-      if (hy && hy.mode !== "hybrid_rrf") {
+      if (!ran) return <Skipped>Channel pack did not run.</Skipped>;
+      if (hy && !isChannelPack(hy)) {
         return (
           <>
             <p className="bn-rules-hint">
-              Hybrid RRF not used this turn — fell back to a single channel.
+              Channel pack not used this turn — fell back to a single channel.
             </p>
             <ul className="bn-fact-list">
               <li>
@@ -1763,11 +1810,12 @@ function NodeDetail({
       const how =
         hy?.how ||
         [
-          "Dense Chroma ranks by embedding similarity.",
-          "BM25 ranks by keyword / CJK token overlap.",
-          `RRF = 1/(k+dense_rank) + 1/(k+BM25_rank) with k=${hy?.rrf_k ?? 60}.`,
-          `Lexical re-rank then keep top_k=${rag?.top_k ?? 5} for the LLM.`,
+          "Dense Chroma ranks by embedding similarity (paraphrase).",
+          "BM25 ranks by keyword / CJK token overlap (exact terms).",
+          `Pack keep_k=${rag?.top_k ?? hy?.keep_k ?? 5}: take dense ranks 1–${hy?.dense_n ?? 3}, then fill from BM25 (skip duplicates).`,
+          "Age-band files may still be injected when the parent names an age.",
         ];
+      const preview = hy?.packed_preview || hy?.fused_preview || [];
       return (
         <>
           <p className="bn-rules-hint">
@@ -1782,55 +1830,22 @@ function NodeDetail({
             ))}
           </ol>
           <p className="bn-rules-hint">
-            <strong>Lexical re-rank</strong> (after RRF) — truthful mechanics.
-            The KB is already split on disk (
-            <code>content/…/age_bands/age_*.md</code>, <code>fees/</code>,{" "}
-            <code>programmes/</code>, …). This step only re-orders the fused
-            pool; there is no separate query-type classifier. Sort key, highest
-            first:
+            <strong>Channel pack</strong> — dense primary for paraphrase, BM25
+            supplements for exact centre terms. No multi-flag lexical sort.
           </p>
           <ul className="bn-fact-list">
             <li>
-              <span>age</span>
+              <span>Dense slots</span>
               <code>
-                Query has age digits AND chunk source path looks like an age
-                band file (age_bands/ or age_*) with overlapping digits
+                ranks 1–{hy?.dense_n ?? 3} (kept {hy?.dense_kept ?? "—"})
               </code>
             </li>
             <li>
-              <span>path / stem</span>
+              <span>BM25 fill</span>
               <code>
-                Fixed stem list (phonics, fees, trial, …): stem in the query AND
-                in the chunk path or body
+                remaining slots · added {hy?.sparse_added ?? "—"} · dupes skipped{" "}
+                {hy?.skipped_dupes ?? "—"}
               </code>
-            </li>
-            <li>
-              <span>folder</span>
-              <code>
-                First matching folder prior from cue regexes (fees, programmes,
-                age_bands, …) vs metadata.folder or a path segment — heuristic,
-                not a learned “query type”
-              </code>
-            </li>
-            <li>
-              <span>overlap</span>
-              <code>
-                Count of shared content tokens between the query and the chunk
-                text (more = higher)
-              </code>
-            </li>
-            <li>
-              <span>tie-break</span>
-              <code>
-                RRF when hybrid fused; otherwise the labeled channel score
-                (dense cosine or BM25)
-              </code>
-            </li>
-          </ul>
-          <ul className="bn-fact-list">
-            <li>
-              <span>RRF k</span>
-              <code>{hy?.rrf_k ?? "—"}</code>
             </li>
             <li>
               <span>Pools</span>
@@ -1839,7 +1854,7 @@ function NodeDetail({
               </code>
             </li>
             <li>
-              <span>Channels in fuse</span>
+              <span>In pack</span>
               <code>
                 both {hy?.both ?? 0} · dense {hy?.dense_only ?? 0} · BM25{" "}
                 {hy?.sparse_only ?? 0}
@@ -1848,22 +1863,23 @@ function NodeDetail({
             <li>
               <span>Keep</span>
               <code>
-                top_k {rag?.top_k ?? "—"} after lexical · pool{" "}
+                top_k {rag?.top_k ?? hy?.keep_k ?? "—"} · packed{" "}
+                {hy?.packed_count ?? "—"} · pool{" "}
                 {rag?.pool_returned ?? "—"}/{rag?.pool_k ?? "—"}
               </code>
             </li>
           </ul>
-          {(hy?.fused_preview || []).length ? (
+          {preview.length ? (
             <>
-              <p className="bn-rules-hint">RRF order (before lexical keep)</p>
+              <p className="bn-rules-hint">Packed keep order</p>
               <ul className="bn-fact-list">
-                {hy.fused_preview.slice(0, 8).map((row) => (
+                {preview.slice(0, 8).map((row) => (
                   <li key={`fp-${row.rank}-${row.source}`}>
                     <span>
                       #{row.rank} {row.title || row.source || "chunk"}
                     </span>
                     <code>
-                      RRF {row.rrf ?? "—"}
+                      {row.slot || "slot"}
                       {row.dense_rank != null ? ` · d#${row.dense_rank}` : ""}
                       {row.sparse_rank != null ? ` · s#${row.sparse_rank}` : ""}
                       {row.channels ? ` · ${row.channels}` : ""}
@@ -1876,7 +1892,7 @@ function NodeDetail({
           {pass1.length ? (
             <>
               <p className="bn-rules-hint">
-                Kept for pass 1 (after lexical) — why each row won
+                Kept for pass 1 — why each row is in the pack
               </p>
               <ul className="bn-fact-list">
                 {pass1.map((h, i) => (
@@ -1885,15 +1901,13 @@ function NodeDetail({
                       #{h.rank ?? i + 1} {h.title || h.source || "hit"}
                     </span>
                     <code>
+                      {h.pack?.slot || h.rerank?.why || "packed"}
                       {h.fusion?.dense_rank != null
-                        ? `d#${h.fusion.dense_rank}`
-                        : "d—"}
-                      {" · "}
+                        ? ` · d#${h.fusion.dense_rank}`
+                        : ""}
                       {h.fusion?.sparse_rank != null
-                        ? `s#${h.fusion.sparse_rank}`
-                        : "s—"}
-                      {h.fusion?.rrf != null ? ` · RRF ${h.fusion.rrf}` : ""}
-                      {h.rerank?.why ? ` → ${h.rerank.why}` : ""}
+                        ? ` · s#${h.fusion.sparse_rank}`
+                        : ""}
                     </code>
                   </li>
                 ))}
@@ -1903,7 +1917,8 @@ function NodeDetail({
           <StageIO
             request={{
               query: rag?.pass1_query || inbound,
-              rrf_k: hy?.rrf_k ?? null,
+              dense_n: hy?.dense_n ?? 3,
+              keep_k: hy?.keep_k ?? rag?.top_k ?? null,
             }}
             payload={{
               hybrid: hy || null,
@@ -1912,9 +1927,9 @@ function NodeDetail({
               kept: pass1.map((h) => ({
                 rank: h.rank,
                 source: h.source,
+                slot: h.pack?.slot ?? null,
                 dense_rank: h.fusion?.dense_rank ?? null,
                 sparse_rank: h.fusion?.sparse_rank ?? null,
-                rrf: h.fusion?.rrf ?? null,
                 order: h.rerank?.why || null,
               })),
             }}
@@ -1931,9 +1946,9 @@ function NodeDetail({
       return (
         <>
           <p className="bn-rules-hint">
-            <strong>Ranked pass 1</strong> after RRF (+ lexical keep). Always
-            first with the <strong>raw parent message</strong> — grade sees these
-            chunks next.
+            <strong>Ranked pass 1</strong> after channel pack (3 dense + BM25
+            fill). Always first with the <strong>raw parent message</strong> —
+            grade sees these chunks next.
           </p>
           <ChromaHitsPanel
             title={
@@ -1995,19 +2010,23 @@ function NodeDetail({
     }
 
     case "llm": {
-      const genCalls = llmCalls.filter(
-        (c) =>
-          c.role !== "intent_arbiter" &&
-          c.role !== "query_rewrite" &&
-          !String(c.role || "").startsWith("final_check")
-      );
+      const genCalls = llmCalls.filter((c) => isMainLlmCall(c));
+      const dstOnly =
+        path === "fsm" &&
+        llmCalls.some((c) => DST_LLM_ROLES.has(c.role)) &&
+        genCalls.length === 0;
       return (
         <>
           <p className="bn-rules-hint">
-            Main LLM calls via DashScope (Qwen).
+            Parent-facing generate via DashScope (Qwen). Slot-DST JSON lives on{" "}
+            <em>DST · cheap JSON</em> — not here.
           </p>
           {genCalls.length === 0 ? (
-            <Skipped>No LLM call (template / deterministic reply).</Skipped>
+            <Skipped>
+              {dstOnly
+                ? "No parent-facing LLM this turn — booking/cancel used FSM templates after DST JSON. Open the DST node for the preliminary cheap call."
+                : "No LLM call (template / deterministic reply)."}
+            </Skipped>
           ) : (
             <div className="bn-llm-calls">
               {genCalls.map((call, i) => (
@@ -2061,8 +2080,9 @@ function NodeDetail({
       return (
         <>
           <p className="bn-rules-hint">
-            What the parent sees after sanitize (gap tags stripped). Model I/O is
-            on <em>LLM (DashScope)</em>.
+            What the parent sees after sanitize (gap tags stripped). Free-text
+            model I/O is on <em>LLM (DashScope)</em>; booking/cancel slot JSON is
+            on <em>DST · cheap JSON</em>.
           </p>
           <ul className="bn-fact-list">
             <li>
@@ -2224,7 +2244,7 @@ export default function TurnPipeline({
   const nodes = useMemo(() => {
     const hasTrace = Boolean(trace);
     const memLoaded = Number(history?.turns_loaded || 0) > 0;
-    const genN = llmCalls.filter((c) => c.role !== "intent_arbiter").length;
+    const genN = llmCalls.filter((c) => isMainLlmCall(c)).length;
     return [
       {
         id: "parent",
@@ -2287,7 +2307,7 @@ export default function TurnPipeline({
       },
       {
         id: "dst",
-        label: "Slot fill · DST",
+        label: "DST · cheap JSON",
         kind: "llm",
         shape: "process",
         status: !hasTrace
@@ -2349,21 +2369,21 @@ export default function TurnPipeline({
                 (rag?.hybrid?.sparse_top || []).length
               ? "done"
               : path === "rag" || enrichMode
-                ? rag?.hybrid?.mode === "hybrid_rrf"
+                ? isChannelPack(rag?.hybrid, rag)
                   ? "empty"
                   : "skipped"
                 : "skipped",
       },
       {
         id: "fuse",
-        label: "RRF fuse",
+        label: "Pack · 3+2",
         kind: "rag",
         shape: "process",
         status: !hasTrace
           ? "idle"
           : !(path === "rag" || enrichMode || hits.length || rag?.hybrid)
             ? "skipped"
-            : rag?.hybrid?.mode === "hybrid_rrf" ||
+            : isChannelPack(rag?.hybrid, rag) ||
                 (rag?.pass1_hits || hits).length
               ? "done"
               : path === "rag" || enrichMode
@@ -2511,7 +2531,7 @@ export default function TurnPipeline({
       if (liveOn) lit.add("live");
       if (adminTodo) lit.add("sheets");
     }
-    if (llmCalls.some((c) => c.role !== "intent_arbiter")) lit.add("llm");
+    if (llmCalls.some((c) => isMainLlmCall(c))) lit.add("llm");
     return lit;
   }, [
     trace,
@@ -2554,6 +2574,10 @@ export default function TurnPipeline({
     else if (on("fsm") && on("live")) link("fsm", "live", "e-fsm-live");
     if (on("dst") && on("llm")) link("dst", "llm", "e-dst-llm");
     else if (on("fsm") && on("llm")) link("fsm", "llm", "e-fsm-llm");
+    // Booking/cancel often end on FSM templates — no parent-facing DashScope call.
+    if (on("dst") && on("answer") && !on("llm")) link("dst", "answer", "e-dst-answer");
+    else if (on("fsm") && on("answer") && !on("llm") && !on("sheets"))
+      link("fsm", "answer", "e-fsm-answer");
     if (on("fsm") && on("sheets")) link("fsm", "sheets", "e-fsm-sheets");
     if (on("rag") && on("dense")) link("rag", "dense", "e-rag-dense");
     if (on("rag") && on("sparse")) link("rag", "sparse", "e-rag-sparse");
@@ -2617,17 +2641,16 @@ export default function TurnPipeline({
         trace?.cancel?.cancel_dst?.called
           ? "slot DST"
           : "slots",
-      "e-dst-llm": "merge → ask",
+      "e-dst-llm": "slots → generate",
+      "e-dst-answer": "slots → template",
+      "e-fsm-answer": "FSM template",
       "e-rag-dense": "vectors",
       "e-rag-sparse": "keywords",
       "e-dense-fuse":
         hy?.dense_count != null ? `${hy.dense_count} hits` : "dense",
       "e-sparse-fuse":
         hy?.sparse_count != null ? `${hy.sparse_count} hits` : "BM25",
-      "e-fuse-chroma":
-        hy?.mode === "hybrid_rrf" || rag?.retrieve_mode === "hybrid_rrf"
-          ? `RRF k=${hy?.rrf_k ?? "—"}`
-          : "fuse",
+      "e-fuse-chroma": isChannelPack(hy, rag) ? "3+2 pack" : "fuse",
       "e-chroma-rewrite":
         (rag?.retrieval_grade?.grade
           ? String(rag.retrieval_grade.grade)

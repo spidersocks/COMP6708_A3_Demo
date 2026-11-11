@@ -345,107 +345,163 @@ def _channel_preview(
     return preview
 
 
-def rrf_fuse(
+def _hit_key(h: Dict[str, Any]) -> str:
+    meta = h.get("metadata") or {}
+    return str(h.get("id") or meta.get("source") or "")
+
+
+def channel_pack(
     dense: Sequence[Dict[str, Any]],
     sparse: Sequence[Dict[str, Any]],
     *,
-    rrf_k: int = 60,
-    limit: int = 20,
+    dense_n: int = 3,
+    keep_k: int = 5,
     question: str = "",
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
-    Reciprocal Rank Fusion: score(d) = Σ 1/(k + rank_i).
-    Prefer denser body when merging duplicates; annotate fusion for the inspector.
+    Dense primary + BM25 supplements (no RRF, no multi-flag lexical sort).
+
+    Keep policy: take dense ranks 1..dense_n, then fill remaining slots from
+    BM25 (skip duplicates). If still short, continue down the dense list.
     """
-    k = max(1, int(rrf_k))
-    fused_score: Dict[str, float] = {}
-    by_id: Dict[str, Dict[str, Any]] = {}
+    keep = max(1, int(keep_k))
+    take_dense = max(0, min(int(dense_n), keep))
     dense_rank: Dict[str, int] = {}
     sparse_rank: Dict[str, int] = {}
-
-    def _key(h: Dict[str, Any]) -> str:
-        meta = h.get("metadata") or {}
-        return str(h.get("id") or meta.get("source") or "")
-
     for rank, h in enumerate(dense, start=1):
-        kid = _key(h)
-        if not kid:
-            continue
-        dense_rank[kid] = rank
-        fused_score[kid] = fused_score.get(kid, 0.0) + 1.0 / (k + rank)
-        row = dict(h)
-        row["channel"] = "dense"
-        by_id[kid] = row
-
+        kid = _hit_key(h)
+        if kid:
+            dense_rank[kid] = rank
     for rank, h in enumerate(sparse, start=1):
-        kid = _key(h)
-        if not kid:
-            continue
-        sparse_rank[kid] = rank
-        fused_score[kid] = fused_score.get(kid, 0.0) + 1.0 / (k + rank)
-        if kid in by_id:
-            # Keep denser text/meta; mark both channels
-            by_id[kid]["channel"] = "both"
-            by_id[kid]["sparse_score"] = h.get("score")
-        else:
-            row = dict(h)
-            row["channel"] = "sparse"
-            by_id[kid] = row
+        kid = _hit_key(h)
+        if kid:
+            sparse_rank[kid] = rank
 
-    ordered = sorted(fused_score.items(), key=lambda kv: kv[1], reverse=True)
     out: List[Dict[str, Any]] = []
-    for kid, rrf in ordered[: max(1, limit)]:
-        h = dict(by_id[kid])
-        channels = h.get("channel") or "dense"
-        h["fusion"] = {
-            "rrf": round(float(rrf), 6),
+    seen: set[str] = set()
+    dense_kept = 0
+    sparse_added = 0
+    skipped_dupes = 0
+
+    def _append(h: Dict[str, Any], *, slot: str, kind: str) -> bool:
+        nonlocal dense_kept, sparse_added, skipped_dupes
+        kid = _hit_key(h)
+        if not kid:
+            return False
+        if kid in seen:
+            skipped_dupes += 1
+            return False
+        seen.add(kid)
+        in_dense = kid in dense_rank
+        in_sparse = kid in sparse_rank
+        channels = (
+            "both"
+            if in_dense and in_sparse
+            else ("sparse" if in_sparse and not in_dense else "dense")
+        )
+        row = dict(h)
+        row["channel"] = channels
+        row["score_kind"] = kind
+        bits = [slot.replace("_", " ")]
+        if in_dense:
+            bits.append(f"dense #{dense_rank[kid]}")
+        if in_sparse:
+            bits.append(f"BM25 #{sparse_rank[kid]}")
+        row["pack"] = {
+            "slot": slot,
             "dense_rank": dense_rank.get(kid),
             "sparse_rank": sparse_rank.get(kid),
-            "channels": channels,
-            "contrib": {
-                "dense": round(1.0 / (k + dense_rank[kid]), 6)
-                if kid in dense_rank
-                else 0.0,
-                "sparse": round(1.0 / (k + sparse_rank[kid]), 6)
-                if kid in sparse_rank
-                else 0.0,
-            },
+            "in_both_pools": bool(in_dense and in_sparse),
         }
-        # Keep vector score when present; else leave BM25 score
-        if channels == "sparse" and "score" in h:
-            h["sparse_score"] = h.get("score")
-        out.append(h)
+        # Keep fusion-shaped fields so the inspector channel labels still work.
+        row["fusion"] = {
+            "channels": channels,
+            "dense_rank": dense_rank.get(kid),
+            "sparse_rank": sparse_rank.get(kid),
+        }
+        row["rerank"] = {
+            "why": " · ".join(bits),
+            "score_kind": kind,
+            "score": h.get("score"),
+        }
+        out.append(row)
+        if slot == "dense":
+            dense_kept += 1
+        else:
+            sparse_added += 1
+        return True
+
+    for h in list(dense)[:take_dense]:
+        if len(out) >= keep:
+            break
+        _append(h, slot="dense", kind="dense")
+
+    if len(out) < keep:
+        for h in sparse:
+            if len(out) >= keep:
+                break
+            _append(h, slot="sparse_supplement", kind="BM25")
+
+    if len(out) < keep:
+        for h in list(dense)[take_dense:]:
+            if len(out) >= keep:
+                break
+            _append(h, slot="dense_fill", kind="dense")
 
     debug = {
-        "mode": "hybrid_rrf",
-        "rrf_k": k,
+        "mode": "channel_pack",
+        "dense_n": take_dense,
+        "keep_k": keep,
         "dense_count": len(dense),
         "sparse_count": len(sparse),
-        "fused_count": len(out),
-        "dense_only": sum(1 for h in out if (h.get("fusion") or {}).get("channels") == "dense"),
-        "sparse_only": sum(1 for h in out if (h.get("fusion") or {}).get("channels") == "sparse"),
-        "both": sum(1 for h in out if (h.get("fusion") or {}).get("channels") == "both"),
+        "packed_count": len(out),
+        "dense_kept": dense_kept,
+        "sparse_added": sparse_added,
+        "skipped_dupes": skipped_dupes,
+        "dense_only": sum(
+            1 for h in out if (h.get("fusion") or {}).get("channels") == "dense"
+        ),
+        "sparse_only": sum(
+            1 for h in out if (h.get("fusion") or {}).get("channels") == "sparse"
+        ),
+        "both": sum(
+            1 for h in out if (h.get("fusion") or {}).get("channels") == "both"
+        ),
         "how": [
-            "Dense Chroma ranks chunks by embedding similarity.",
-            "BM25 ranks the same KB by keyword / CJK bigram overlap (stopwords dropped).",
-            f"RRF score = 1/({k}+dense_rank) + 1/({k}+BM25_rank); both-lists boost.",
-            "Lexical re-rank re-orders that pool using age_bands paths, stem hits, folder priors, token overlap, then RRF/channel score.",
+            "Dense Chroma ranks chunks by embedding similarity (paraphrase).",
+            "BM25 ranks the same KB by keyword / CJK bigram overlap (exact terms).",
+            f"Pack keep_k={keep}: take dense ranks 1–{take_dense}, then fill from BM25 (skip duplicates).",
+            "Age-band files may still be injected when the parent names an age.",
         ],
         "dense_top": _channel_preview(dense, channel="dense", question=question),
         "sparse_top": _channel_preview(sparse, channel="sparse", question=question),
+        "packed_preview": [
+            {
+                "rank": i + 1,
+                "source": (h.get("metadata") or {}).get("source"),
+                "title": (h.get("metadata") or {}).get("title")
+                or (h.get("metadata") or {}).get("canonical"),
+                "slot": (h.get("pack") or {}).get("slot"),
+                "dense_rank": (h.get("fusion") or {}).get("dense_rank"),
+                "sparse_rank": (h.get("fusion") or {}).get("sparse_rank"),
+                "channels": (h.get("fusion") or {}).get("channels"),
+                "why": (h.get("rerank") or {}).get("why"),
+            }
+            for i, h in enumerate(out)
+        ],
+        # Alias for older inspector code that looked for fused_preview
         "fused_preview": [
             {
                 "rank": i + 1,
                 "source": (h.get("metadata") or {}).get("source"),
                 "title": (h.get("metadata") or {}).get("title")
                 or (h.get("metadata") or {}).get("canonical"),
-                "rrf": (h.get("fusion") or {}).get("rrf"),
+                "slot": (h.get("pack") or {}).get("slot"),
                 "dense_rank": (h.get("fusion") or {}).get("dense_rank"),
                 "sparse_rank": (h.get("fusion") or {}).get("sparse_rank"),
                 "channels": (h.get("fusion") or {}).get("channels"),
-                "contrib": (h.get("fusion") or {}).get("contrib"),
             }
-            for i, h in enumerate(out[:12])
+            for i, h in enumerate(out)
         ],
     }
     return out, debug

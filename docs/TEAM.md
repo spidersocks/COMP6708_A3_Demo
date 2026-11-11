@@ -393,8 +393,8 @@ embed(query)
   → Chroma query (pool_k = top_k, or ≥20 when age digits present)
   → optional language-filter retry
   → age FAQ overlay merge
-  → lexical rerank (path/alias boost, folder prior, token overlap, vector score)
-  → truncate to rag_top_k (default 5)
+  → channel pack: dense ranks 1–3, then BM25 supplements (skip duplicates)
+  → truncate to rag_top_k (default 5); age_bands overlay when age digits present
   → generate_answer_meta(contexts, history_context)
   → citations[{rank, score, snippet, text, source, title, char_count}]
   → gap heuristics (weak_score, off_topic, NO_ANSWER, soft hand-off)

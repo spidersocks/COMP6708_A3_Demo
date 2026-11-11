@@ -9,7 +9,7 @@ from rag.chunking import parse_markdown
 from rag.embeddings import embed_query
 from rag.generator import generate_answer_meta
 from rag.ingest import ingest
-from rag.sparse import get_sparse_index, rrf_fuse
+from rag.sparse import channel_pack, get_sparse_index
 from rag.store import get_store
 
 # Cosine / distance scores from Chroma vary; treat very weak tops as gaps.
@@ -198,50 +198,14 @@ def _off_topic(question: str, hit: Dict[str, Any] | str) -> bool:
     return True
 
 
-_FOLDER_PRIORS = [
-    (re.compile(r"\b(teachers?|tutors?|qualifications?)\b|老師|老师|教师", re.I), "centre"),
-    (re.compile(r"\b(pick[\s-]?up|drop[\s-]?off)\b|接送", re.I), "attendance"),
-    (re.compile(r"\b(wait(?:ing)?\s*list|waitlist|class\s+full)\b|候補|候补|滿班", re.I), "admissions"),
-    (re.compile(r"\b(sibling|family\s+discount)\b|兄弟姊妹|兄弟姐妹", re.I), "fees"),
-    (re.compile(r"\b(make[\s-]?up|absence|reschedul)\b|補課|补课", re.I), "attendance"),
-    (re.compile(r"\b(address|location|mtr|directions?)\b|地址|港鐵|喺邊", re.I), "centre"),
-    (re.compile(r"\b(allerg|peanut|nut)\b|過敏|过敏", re.I), "policies"),
-    (re.compile(r"\b(fee|tuition|price|cost|discount)\b|學費", re.I), "fees"),
-    (re.compile(r"\b(bilingual|classroom\s+language)\b|雙語|双语", re.I), "classroom"),
-    (re.compile(r"\b(christmas|cny|holiday\s+hours|term\s+break)\b|聖誕|平安夜|農曆", re.I), "centre"),
-    (re.compile(r"\b(pets?|dogs?|cats?)\b|寵物|宠物", re.I), "policies"),
-    (re.compile(r"\b(trial|assessment|enrol|enroll|placement)\b|試堂|評估|报名|報名", re.I), "admissions"),
-    (
-        re.compile(
-            r"\b(phonics|mandarin|pinyin|playgroup|writing|math|clevercal|alludio|"
-            r"smart\s*spell|sound\s*explorers?)\b|拼音|拼音班|語音|數學|游戏",
-            re.I,
-        ),
-        "programmes",
-    ),
-    (
-        re.compile(
-            r"\b\d{1,2}\s*(?:-\s*\d{1,2}\s*)?(?:year|yr)s?\s*old|"
-            r"\b(?:for|age[d]?)\s+\d{1,2}\b|"
-            r"\b(?:K[1-3]|PN|P[1-6])\b|歲|岁",
-            re.I,
-        ),
-        "age_bands",
-    ),
-]
 _AGE_QUERY_RE = re.compile(
     r"\b(\d{1,2})\s*(?:-\s*\d{1,2}\s*)?(?:year|yr)s?\s*old|"
     r"\b(?:for|age[d]?)\s+(\d{1,2})\b|"
     r"(\d{1,2})\s*(?:year|yr)s?\b",
     re.I,
 )
-
-
-def _preferred_folder(question: str) -> Optional[str]:
-    for pat, folder in _FOLDER_PRIORS:
-        if pat.search(question or ""):
-            return folder
-    return None
+# Dense primary slots in the channel pack (remainder filled from BM25).
+_PACK_DENSE_N = 3
 
 
 def is_greeting(text: str) -> bool:
@@ -303,56 +267,61 @@ def retrieve_hybrid(
     *,
     lang: Optional[str] = None,
     top_k: Optional[int] = None,
+    pool_k: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
-    Dense (Chroma) + sparse (BM25) → Reciprocal Rank Fusion.
+    Dense (Chroma) ∥ BM25 → channel pack (dense primary + sparse supplements).
     Falls back to dense-only when hybrid disabled or sparse empty.
     """
     ensure_index()
-    k = int(top_k or SETTINGS.rag_top_k)
+    keep = int(top_k or SETTINGS.rag_top_k)
+    pool = int(
+        pool_k
+        if pool_k is not None
+        else max(keep, SETTINGS.rag_sparse_pool_k)
+    )
     emb = embed_query(question)
-    dense_pool = max(k, SETTINGS.rag_sparse_pool_k)
-    dense = get_store().query(emb, top_k=dense_pool, language=lang)
+    dense = get_store().query(emb, top_k=pool, language=lang)
     for h in dense:
         h["channel"] = "dense"
 
     if not SETTINGS.rag_hybrid_enabled:
         return {
-            "hits": dense[:k],
+            "hits": dense[:keep],
             "debug": {
                 "mode": "dense_only",
                 "reason": "hybrid_disabled",
                 "dense_count": len(dense),
                 "sparse_count": 0,
-                "fused_count": min(len(dense), k),
+                "packed_count": min(len(dense), keep),
             },
         }
 
     sparse = get_sparse_index().query(
         question,
-        top_k=max(k, SETTINGS.rag_sparse_pool_k),
+        top_k=pool,
         language=lang,
     )
     if not sparse:
         return {
-            "hits": dense[:k],
+            "hits": dense[:keep],
             "debug": {
                 "mode": "dense_only",
                 "reason": "sparse_empty",
                 "dense_count": len(dense),
                 "sparse_count": 0,
-                "fused_count": min(len(dense), k),
+                "packed_count": min(len(dense), keep),
             },
         }
 
-    fused, fuse_dbg = rrf_fuse(
+    packed, pack_dbg = channel_pack(
         dense,
         sparse,
-        rrf_k=SETTINGS.rag_rrf_k,
-        limit=max(k, dense_pool),
+        dense_n=_PACK_DENSE_N,
+        keep_k=keep,
         question=question,
     )
-    return {"hits": fused[: max(k, dense_pool)], "debug": fuse_dbg}
+    return {"hits": packed, "debug": pack_dbg}
 
 
 def _query_age_digits(question: str) -> set[str]:
@@ -360,127 +329,6 @@ def _query_age_digits(question: str) -> set[str]:
     for m in _AGE_QUERY_RE.finditer(question or ""):
         digits.update(g for g in m.groups() if g)
     return digits
-
-
-def _channel_score_label(h: Dict[str, Any]) -> tuple[str, float]:
-    """Return (kind, value) for the score still hanging on the hit after fuse."""
-    fusion = h.get("fusion") or {}
-    channels = fusion.get("channels") or h.get("channel") or ""
-    try:
-        score = float(h.get("score") or 0)
-    except (TypeError, ValueError):
-        score = 0.0
-    if channels == "sparse":
-        return "BM25", score
-    if channels == "both":
-        return "dense", score  # fuse keeps the dense body/score when both hit
-    if channels == "dense":
-        return "dense", score
-    # Dense-only retrieve (no hybrid)
-    return "dense", score
-
-
-def _lexical_rerank(question: str, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Re-order the fused pool using KB layout signals already on disk.
-
-    Does not invent files. Age bands live under content/*/age_bands/age_*.md;
-    other topics live under fees/, programmes/, policies/, … Folder priors are
-    cue→folder heuristics (not a learned query-type classifier). Path stems are
-    a fixed keyword list matched against query + source/body.
-    """
-    q = _content_tokens(question)
-    if not hits:
-        return hits
-    prefer = _preferred_folder(question)
-    q_low = (question or "").lower()
-    age_digits = _query_age_digits(question)
-
-    annotated: List[Dict[str, Any]] = []
-    for h in hits:
-        meta = h.get("metadata") or {}
-        source = str(meta.get("source") or "").replace("\\", "/").lower()
-        folder = str(meta.get("folder") or "")
-        blob = _hit_blob(h)
-        blob_low = blob.lower()
-        overlap = len(q & _content_tokens(blob)) if q else 0
-        path_hit = 0
-        path_stem = ""
-        for stem in (
-            "sibling",
-            "waiting",
-            "waitlist",
-            "teachers",
-            "pickup",
-            "dropoff",
-            "allergy",
-            "fees",
-            "bilingual",
-            "term_break",
-            "pets",
-            "trial",
-            "phonics",
-            "pinyin",
-            "clevercal",
-        ):
-            if stem in q_low.replace(" ", "") or stem in q_low:
-                if stem in source or stem in blob_low:
-                    path_hit = 1
-                    path_stem = stem
-                    break
-        age_hit = 0
-        if age_digits and ("/age/" in source or "age_" in source or "/age_bands/" in source):
-            src_digits = set(re.findall(r"\d{1,2}", source))
-            if age_digits & src_digits:
-                age_hit = 1
-        folder_hit = 0
-        if prefer and (prefer in source or prefer == folder):
-            folder_hit = 1
-        kind, score = _channel_score_label(h)
-        fusion = h.get("fusion") or {}
-        try:
-            rrf = float(fusion["rrf"]) if fusion.get("rrf") is not None else None
-        except (TypeError, ValueError):
-            rrf = None
-        # Tie-break on RRF when hybrid fused; else the channel score
-        tie = float(rrf) if rrf is not None else score
-        why_bits = []
-        if age_hit:
-            why_bits.append("age path digits")
-        if path_hit:
-            why_bits.append(f"stem “{path_stem}” in path/body")
-        if folder_hit:
-            why_bits.append(f"folder prior “{prefer}”")
-        if overlap:
-            why_bits.append(f"{overlap} token overlap")
-        if rrf is not None:
-            why_bits.append(f"RRF {rrf:.4f}")
-        why_bits.append(f"{kind} {score:.3f}")
-        row = dict(h)
-        row["rerank"] = {
-            "age_hit": age_hit,
-            "path_hit": path_hit,
-            "folder_hit": folder_hit,
-            "overlap": overlap,
-            "score": score,
-            "score_kind": kind,
-            "rrf": rrf,
-            "tie": tie,
-            "why": " · ".join(why_bits),
-        }
-        annotated.append(row)
-
-    def key(h: Dict[str, Any]) -> tuple:
-        r = h.get("rerank") or {}
-        return (
-            int(r.get("age_hit") or 0),
-            int(r.get("path_hit") or 0),
-            int(r.get("folder_hit") or 0),
-            int(r.get("overlap") or 0),
-            float(r.get("tie") or 0),
-        )
-
-    return sorted(annotated, key=key, reverse=True)
 
 
 def _age_path_digits(stem: str) -> set[str]:
@@ -546,6 +394,9 @@ def _age_faq_overlay(question: str, lang: str) -> List[Dict[str, Any]]:
                 },
                 # Strong enough to clear local weak-score / citation theatre
                 "score": 0.62,
+                "score_kind": "dense",
+                "channel": "age_overlay",
+                "rerank": {"why": "age_bands overlay", "score_kind": "dense"},
             }
         )
     return out
@@ -609,19 +460,22 @@ def _pool_and_keep(
     keep_k: int,
     pool_k: int,
 ) -> Dict[str, Any]:
-    """Hybrid retrieve (dense+BM25→RRF) + language fallback + age overlay + lexical keep."""
+    """Dense∥BM25 channel pack + language fallback + age overlay."""
     lang_fallback = False
-    pack = retrieve_hybrid(query, lang=lang, top_k=pool_k)
+    pack = retrieve_hybrid(query, lang=lang, top_k=keep_k, pool_k=pool_k)
     hits = pack.get("hits") or []
     hybrid_debug = pack.get("debug") or {}
     if not hits and lang:
-        pack = retrieve_hybrid(query, lang=None, top_k=pool_k)
+        pack = retrieve_hybrid(query, lang=None, top_k=keep_k, pool_k=pool_k)
         hits = pack.get("hits") or []
         hybrid_debug = pack.get("debug") or {}
         lang_fallback = True
-    pool_returned = len(hits)
-    hits = _merge_hits(hits, _age_faq_overlay(query, lang))
-    hits = _lexical_rerank(query, hits)[:keep_k]
+    pool_returned = int(
+        hybrid_debug.get("packed_count")
+        or hybrid_debug.get("dense_count")
+        or len(hits)
+    )
+    hits = _merge_hits(hits, _age_faq_overlay(query, lang))[:keep_k]
     return {
         "hits": hits,
         "lang_fallback": lang_fallback,
@@ -872,12 +726,13 @@ def retrieve_for_enrich(
             "pool_k": pool_k,
             "pool_returned": pack.get("pool_returned"),
             "order_rule": (
-                "Hybrid RRF (dense+BM25) pool, then lexical re-rank "
-                "(age → path → folder → overlap → score)."
+                f"Channel pack: dense ranks 1–{_PACK_DENSE_N}, then BM25 "
+                "supplements (skip duplicates). Age overlay when age digits present."
             ),
             "keep_rule": (
-                f"Pass 1: raw parent → dense+BM25→RRF (pool_k={pool_k}). "
-                f"Pass 2 only if grade ≠ Correct and a rewrite fires (top_k={k})."
+                f"Pass 1: raw parent → dense∥BM25 pack "
+                f"(pool_k={pool_k}, keep top_k={k}). "
+                f"Pass 2 only if grade ≠ Correct and a rewrite fires."
             ),
             "embedding_mode": "dashscope" if SETTINGS.has_dashscope else "local_hash",
             "sparse_index_size": get_sparse_index().count,
@@ -984,13 +839,13 @@ def chat_with_rag(
         "pool_k": pool_k,
         "pool_returned": pool_returned,
         "keep_rule": (
-            f"Pass 1: raw parent → dense (Chroma) + BM25 → RRF "
-            f"(pool_k={pool_k}, keep top_k={keep_k}). "
+            f"Pass 1: raw parent → dense∥BM25 channel pack "
+            f"(pool_k={pool_k}, keep top_k={keep_k}, dense_n={_PACK_DENSE_N}). "
             "Pass 2 only after a failed grade + rewrite."
         ),
         "order_rule": (
-            "Hybrid RRF first (dense rank + sparse rank). Then lexical re-rank: "
-            "age filename → path/keyword → folder → token overlap → score."
+            f"Channel pack: take dense ranks 1–{_PACK_DENSE_N}, fill from BM25 "
+            "(skip duplicates); age_bands overlay when the parent names an age."
         ),
         "history_chars": len(history_context or ""),
         "embedding_mode": "dashscope" if SETTINGS.has_dashscope else "local_hash",

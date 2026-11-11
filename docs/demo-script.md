@@ -44,7 +44,7 @@
 ### 0:40–1:20 · Technique (Technique / Architecture ≤20s, then live)
 
 **Narrator:**
-> This is a **training-free** system on purpose — centre docs change weekly, so fine-tuning is the wrong loop. We built our own **RAG** pipeline: markdown KB → DashScope embeddings → Chroma → lexical rerank → Qwen with citations. Above that sits a **hybrid intent router**. The scores you see are **not** retrieval similarities — hard detectors award fixed confidence (typhoon 1.0, fees 0.90). Soft FAQ routes **grounded-compose**: the fact card stays privileged; KB may enrich. Hard paths — book, cancel, escalate, refuse — **bypass retrieve** so live seats and safety copy cannot be diluted. Before those commits, a **cheap LLM final check** must go ahead, clarify, or abort. Parent chat stays WhatsApp-shaped: conversation only.
+> This is a **training-free** system on purpose — centre docs change weekly, so fine-tuning is the wrong loop. We built our own **RAG** pipeline: markdown KB → DashScope embeddings → Chroma ∥ BM25 → channel pack (3 dense + 2 BM25) → Qwen with citations. Above that sits a **hybrid intent router**. The scores you see are **not** retrieval similarities — hard detectors award fixed confidence (typhoon 1.0, fees 0.90). Soft FAQ routes **grounded-compose**: the fact card stays privileged; KB may enrich. Hard paths — book, cancel, escalate, refuse — **bypass retrieve** so live seats and safety copy cannot be diluted. Before those commits, a **cheap LLM final check** must go ahead, clarify, or abort. Parent chat stays WhatsApp-shaped: conversation only.
 
 **Pilot:** Flash Architecture; return to live UI.
 

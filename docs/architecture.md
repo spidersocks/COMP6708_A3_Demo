@@ -130,8 +130,8 @@ Scores are mostly **fixed detector awards** (`hard_regex`, `sticky_state`, …),
 ## RAG (self-built)
 
 ```text
-chunk Markdown → embed (DashScope) → Chroma top-k
-  → lexical rerank → Qwen generate → citations
+chunk Markdown → embed (DashScope) → Chroma ∥ BM25
+  → channel pack (3 dense + 2 BM25) → Qwen generate → citations
   (rank, score, full text in the inspector)
 ```
 
