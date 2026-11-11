@@ -3,7 +3,7 @@ language: zh-HK
 type: guide
 canonical: how-to-pay
 folder: guides
-aliases: 付款; 學費; 收費; 入數; 銀行轉帳; 轉數快; FPS; FPS 帳戶; 戶口編號; 銀行代碼; 入數紙
+aliases: 付款; 學費; 收費; 入數; 銀行轉帳; 轉數快; FPS; FPS 帳戶; 戶口編號; 銀行代碼; 入數紙; 點樣俾學費; 怎么付款
 category: payment
 ---
 # 如何付款？
@@ -19,3 +19,7 @@ category: payment
 - 備註：付款類別請選「其他／Others」。
 
 完成付款後，請將存款憑證電郵至 hello@brightnest-hk.example 作紀錄。
+
+## 家長常見問題例子
+- 點樣俾學費？有冇轉數快？
+- FPS 帳戶係咩？

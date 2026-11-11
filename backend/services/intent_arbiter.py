@@ -11,23 +11,8 @@ from typing import Any, Dict, List, Optional, Set
 from config import SETTINGS
 from services import cheap_llm
 
-# Structured / tool routes worth reviewing (keyword misfires look awkward live).
+# Tool routes worth reviewing (keyword misfires look awkward live).
 _REVIEWABLE: Set[str] = {
-    "teachers",
-    "fees",
-    "location",
-    "payment",
-    "pickup",
-    "makeup",
-    "sibling",
-    "guest_policy",
-    "waiting",
-    "allergy",
-    "illness",
-    "trial_info",
-    "pets_policy",
-    "unsupported_facility",
-    "unknown_programme",
     "opening_hours",
     "severe_weather",
     "booking_tool",
@@ -38,40 +23,21 @@ _REVIEWABLE: Set[str] = {
 # Never second-guess these mid-flight / safety paths.
 _SKIP: Set[str] = {
     "staff_escalation",
-    "greeting",
-    "thanks",
     "rag",
 }
 # Soft short-circuits: arbiter may only KEEP or send to RAG (no random reroute).
 _RAG_OR_KEEP: Set[str] = {
-    "confused",
     "off_domain",
 }
 
 _ROUTE_BLURBS: Dict[str, str] = {
-    "teachers": "Fixed teacher roster card (optionally filtered by programme).",
-    "fees": "Published tuition / trial fee guide card.",
-    "location": "Centre address / MTR / parking card.",
-    "payment": "How to pay (bank / FPS) card.",
-    "pickup": "Drop-off & pickup policy card.",
-    "makeup": "Absence / make-up class policy card.",
-    "sibling": "Sibling discount card.",
-    "guest_policy": "Bring a friend / guest / visitor policy card.",
-    "waiting": "Waiting-list / full-class card.",
-    "allergy": "Allergy / peanut policy card.",
-    "illness": "Fever / illness stay-home card.",
-    "trial_info": "What a trial assessment is / whether it's required.",
-    "pets_policy": "Pets-on-site policy (we don't board animals).",
-    "unsupported_facility": "Politely decline something we don't offer.",
-    "unknown_programme": "Quiet admin flag — programme we don't teach.",
     "opening_hours": "Deterministic hours / holiday / weather-hours engine.",
-    "severe_weather": "Typhoon / rainstorm closure policy card.",
+    "severe_weather": "Typhoon / rainstorm closure policy + live HKO.",
     "booking_tool": "Show open seats / availability list.",
     "booking_dialogue": "Multi-turn book-a-class dialogue.",
     "cancel_dialogue": "Multi-turn cancel-a-class dialogue.",
     "rag": "Retrieve centre KB chunks and write a tailored answer.",
     "staff_escalation": "Hand off to a human / boss inbox.",
-    "confused": "Short clarify template — bad if the message already has substance.",
     "off_domain": "Refuse off-topic asks — bad on false keyword hits.",
 }
 

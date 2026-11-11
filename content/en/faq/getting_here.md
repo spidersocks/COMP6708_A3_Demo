@@ -3,7 +3,7 @@ language: en
 type: faq
 canonical: GettingHere
 folder: faq
-aliases: how to get there; directions; MTR; parking; car park; do you have parking; park the car; lift; stroller; access; entrance; Central MTR; Exit D2
+aliases: how to get there; directions; MTR; parking; car park; do you have parking; park the car; lift; stroller; access; entrance; Central MTR; Exit D2; where are you; where is the centre; address; located; location; map; 地址; 喺邊; 點搭港鐵
 ---
 # Getting Here
 
@@ -16,3 +16,10 @@ aliases: how to get there; directions; MTR; parking; car park; do you have parki
 **Parking:** Paid public car park in Harbourview Plaza (hourly). We do **not** provide parking validation. Street parking nearby is limited — MTR is usually faster at peak hours.
 
 **Visitors:** Please sign in at reception. A staff member will greet you for trials and first visits.
+
+## Sample parent questions
+- Where are you located?
+- What's the centre address?
+- How do I get there by MTR?
+- Do you have parking?
+- 你哋喺邊？點搭港鐵？

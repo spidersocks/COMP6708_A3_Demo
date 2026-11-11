@@ -1,4 +1,4 @@
-"""Golden intent-routing tests — dates, weather, fees, and conflict cases."""
+"""Golden intent-routing tests — tools stay hard; static FAQs → RAG."""
 from __future__ import annotations
 
 import sys
@@ -29,6 +29,7 @@ def _route(msg: str, lang: str = "en", sid: str = "test") -> str:
         ("Are you open this Saturday at 10am?", "opening_hours"),
         ("Are you open tomorrow?", "opening_hours"),
         ("週末营业吗？", "opening_hours"),
+        ("黑色暴雨还上课吗？", "severe_weather"),
     ],
 )
 def test_weather_vs_hours(msg: str, expected: str):
@@ -36,29 +37,44 @@ def test_weather_vs_hours(msg: str, expected: str):
 
 
 @pytest.mark.parametrize(
+    "msg",
+    [
+        "How much is the phonics class?",
+        "What are your tuition fees?",
+        "月費幾多？",
+        "How do I pay for a course package?",
+        "FPS payment details?",
+        "Where are you located?",
+        "How do I get there by MTR?",
+        "My child has a peanut allergy",
+        "Fever of 39C — bring to class?",
+        "Can my dog sit in on the trial?",
+        "Do you offer a trial for my 5 year old?",
+        "How much time is a trial?",
+        "Tell me about your teachers",
+        "Who can pick up my child?",
+        "What is your make-up class policy?",
+        "Do you have a sibling discount?",
+        "Is there a waiting list if a class is full?",
+        "滿班嘅話可唔可以候補？",
+        "你们老师有什么资格？",
+        "你哋喺邊？點搭港鐵？",
+        "點樣俾學費？有冇轉數快？",
+        "Hello",
+        "Thanks!",
+        "huh?",
+        "Can you tell me more about your phonics lessons",
+    ],
+)
+def test_static_faqs_are_rag(msg: str):
+    assert _route(msg) == "rag"
+
+
+@pytest.mark.parametrize(
     "msg,expected",
     [
-        ("How much is the phonics class?", "fees"),
-        ("What are your tuition fees?", "fees"),
-        ("月費幾多？", "fees"),
-        ("費用幾多", "fees"),
-        ("幾錢一個月", "fees"),
-        ("How do I pay for a course package?", "payment"),
-        ("FPS payment details?", "payment"),
-        ("How much time is a trial?", "trial_info"),  # duration → trial facts, not fees
-        ("Where are you located?", "location"),
-        ("How do I get there by MTR?", "location"),
-        ("My child has a peanut allergy", "allergy"),
-        ("Fever of 39C — bring to class?", "illness"),
-        ("Can my dog sit in on the trial?", "pets_policy"),
-        ("Do you offer a trial for my 5 year old?", "trial_info"),
-        ("If my kid has not attended before, does he need to book a trial assessment first?", "trial_info"),
-        ("But do I need to book the trial assessment before class?", "trial_info"),
         ("Show trial class availability", "booking_tool"),
         ("I want to book a trial class", "booking_dialogue"),
-        ("huh?", "confused"),
-        ("Thanks!", "thanks"),
-        ("Hello", "greeting"),
         ("Can I speak to a real person?", "staff_escalation"),
         ("This is unacceptable get me a manager", "staff_escalation"),
         (
@@ -69,50 +85,20 @@ def test_weather_vs_hours(msg: str, expected: str):
         ("How many seats are left and how much is phonics?", "booking_tool"),
         ("星期六拼音班仲有冇位？", "booking_tool"),
         ("拼音班有冇位？", "booking_tool"),
-        ("滿班嘅話可唔可以候補？", "waiting"),
         ("What's the weather in Tokyo tomorrow?", "off_domain"),
-        ("Tell me about your teachers", "teachers"),
-        ("Who can pick up my child?", "pickup"),
-        ("What is your make-up class policy?", "makeup"),
-        ("Do you have a sibling discount?", "sibling"),
-        ("Is there a waiting list if a class is full?", "waiting"),
-        ("黑色暴雨还上课吗？", "severe_weather"),
-        ("你们老师有什么资格？", "teachers"),
-        ("你哋喺邊？點搭港鐵？", "location"),
-        ("點樣俾學費？有冇轉數快？", "payment"),
+        ("Please cancel my booking", "cancel_dialogue"),
     ],
 )
-def test_core_intents(msg: str, expected: str):
+def test_tool_intents(msg: str, expected: str):
     assert _route(msg) == expected
 
 
-def test_change_teachers_not_roster():
-    assert _route("Can we change teachers mid-term?") != "teachers"
-
-
-def test_phonics_teachers_filtered_not_full_roster():
-    from services import centre_facts
-
-    answer, _ = centre_facts.format_teachers_answer(
-        "en", message="which teachers do you have available to teach phonics?"
-    )
-    low = answer.lower()
-    assert "avery" in low or "jordan" in low
-    assert "wei lin" not in low  # Mandarin lead — not a phonics-tagged dump
-    assert "sofia" not in low
-
-
 def test_weather_beats_hours_in_scores():
-    scores, debug = score_intents(
+    scores, _debug = score_intents(
         "Are you open during T8?", lang="en", session_id="t"
     )
     assert "severe_weather" in scores
     assert "opening_hours" not in scores
-    # hours_intent itself clears weather-only / T8+open as hours; router may not list a conflict
     assert decide_intent("Are you open during T8?", lang="en", session_id="t").route == (
         "severe_weather"
     )
-
-
-def test_fees_not_duration():
-    assert _route("How long is the phonics class?") != "fees"

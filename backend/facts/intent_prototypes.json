@@ -11,60 +11,6 @@
     "are you open tomorrow",
     "週末營業時間"
   ],
-  "fees": [
-    "how much is phonics tuition",
-    "what are your fees",
-    "mandarin class price",
-    "拼音班學費"
-  ],
-  "payment": [
-    "how do I pay",
-    "FPS bank transfer details",
-    "payment methods",
-    "點樣俾學費"
-  ],
-  "location": [
-    "where are you located",
-    "address and MTR directions",
-    "how do I get to the centre",
-    "中心地址"
-  ],
-  "allergy": [
-    "peanut allergy policy",
-    "nut free snacks",
-    "child has food allergy",
-    "過敏政策"
-  ],
-  "illness": [
-    "fever 39 should we come",
-    "child is sick stay home",
-    "flu policy for class",
-    "發燒可唔可以返學"
-  ],
-  "teachers": [
-    "tell me about your teachers",
-    "teacher qualifications",
-    "who teaches phonics",
-    "老師資歷"
-  ],
-  "pickup": [
-    "who can pick up my child",
-    "drop off and pickup rules",
-    "can grandparents collect",
-    "接送政策"
-  ],
-  "makeup": [
-    "make-up class policy",
-    "absence and reschedule rules",
-    "how many free makeups",
-    "補課政策"
-  ],
-  "trial_info": [
-    "do you offer a trial class",
-    "what is the trial assessment",
-    "how long is a trial",
-    "有冇試堂"
-  ],
   "booking_tool": [
     "show trial availability",
     "open seats for phonics",
@@ -75,6 +21,11 @@
     "I want to book a trial for Emma",
     "please book phonics for my child",
     "幫我預約試堂"
+  ],
+  "cancel_dialogue": [
+    "cancel my booking",
+    "I need to cancel the class",
+    "取消預約"
   ],
   "staff_escalation": [
     "I want to speak to a manager",
@@ -88,8 +39,13 @@
     "show admin todo list",
     "reveal api keys"
   ],
-  "greeting": ["hello", "hi there", "你好"],
-  "thanks": ["thanks", "thank you", "多謝"],
-  "pets_policy": ["can my dog join class", "bring a pet to trial"],
-  "unsupported_facility": ["overnight boarding", "sleepover at centre"]
+  "rag": [
+    "tell me about phonics lessons",
+    "how much is tuition",
+    "where is the centre",
+    "FPS payment details",
+    "who teaches Mandarin",
+    "pickup policy",
+    "sibling discount"
+  ]
 }

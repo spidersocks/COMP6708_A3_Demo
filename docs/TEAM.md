@@ -96,17 +96,16 @@ Entry: `backend/router.py::chat`.
 
 ### 2.1 Three answer tiers
 
-BrightNest does **not** treat every structured hit the same. After the router picks a route:
+Tools own live / multi-turn work. Static FAQs (fees, address, payment, teachers, pickup, …) are **pure RAG**.
 
 | Tier | Routes (examples) | What runs | Retrieve? |
 |------|-------------------|-----------|-----------|
-| **1 · Hard FSM / hand-off** | `booking_dialogue`, `cancel_dialogue`, `staff_escalation`, `off_domain` | Sticky dialogue / inbox / refuse templates. **Final check** before book assessment write, cancel write, escalate inbox, or hard refuse. | **Bypass** (no KB retrieve on the answer path) |
-| **1b · Soft gap / unknown** | `unknown_programme`, RAG soft-gap | Honest refuse + **SheetPro** row (no final check) | Bypass or gap after RAG |
-| **2 · Grounded compose** | `severe_weather`, `opening_hours`, `booking_tool`, `allergy`, `fees`, `teachers`, … | Structured card and/or **live doc** (HKO / register) → retrieve KB → `compose_grounded_fact` (docs privileged). | **Enrich only** |
-| **3 · Pure RAG** | `rag` (default / multi-topic) | Retrieve → generate with citations; optional gap polish | **Full** generate |
+| **1 · Hard FSM / hand-off** | `booking_dialogue`, `cancel_dialogue`, `staff_escalation`, `off_domain` | Sticky dialogue / inbox / refuse templates. **Final check** before book assessment write, cancel write, escalate inbox, or hard refuse. | **Bypass** |
+| **2 · Live tools (+ enrich)** | `severe_weather`, `opening_hours`, `booking_tool` | Live HKO / holiday calendar / seat register → optional KB enrich via `compose_grounded_fact`. | **Enrich only** |
+| **3 · Pure RAG** | `rag` (default for all static FAQs + programmes) | Retrieve → generate with citations; off-topic gate may refuse | **Full** generate |
 
-**Weather:** live HKO (when available) is a privileged live doc; centre severe-weather JSON is the structured card; KB may enrich. Pure RAG generate is **not** used as the owner.  
-**Seats / booking (WhatsApp-shaped):** seat counts are **chat text** (+ Class register in the inspector). Named programmes use `booking_dialogue` → `confirm_assessment` → parent **yes** → **final check** → SheetPro `assessment_request`. No booking form / Book buttons. API may still return `slots[]` for tooling; the demo UI does not render them as cards.
+**Weather:** live HKO (when available) is a privileged live doc; centre severe-weather JSON is the structured card; KB may enrich.  
+**Seats / booking (WhatsApp-shaped):** seat counts are **chat text** (+ Class register in the inspector). Named programmes use `booking_dialogue` → `confirm_assessment` → parent **yes** → **final check** → SheetPro `assessment_request`. No booking form / Book buttons.
 
 Flags: `GROUNDING_ENRICH_ENABLED` (default true), `GROUNDING_ENRICH_TOP_K` (default 3).  
 Inspector: `trace.grounding.{mode,why,composed,live_doc,ask_tool_ok,invoke_tool,rag_hit_count}` and `trace.rag.mode=grounded_enrich` when enrich runs.
@@ -122,23 +121,23 @@ Inspector: `trace.grounding.{mode,why,composed,live_doc,ask_tool_ok,invoke_tool,
 
 | Layer | Role | Example |
 |-------|------|---------|
-| Hard regex / detectors | High-stakes intents must be deterministic | Typhoon → always policy fact, never a vague RAG paragraph |
-| Conflict resolution | When two detectors fire, pick the safer owner | Weather beats hours; strong seats beat fees |
+| Hard regex / detectors | Tool intents must be deterministic | Typhoon → weather tool; seats → register; book/cancel → FSM |
+| Conflict resolution | When two tool detectors fire, pick the safer owner | Weather beats hours |
 | Soft prototypes | Catch paraphrases the regex missed | Blended only when no hard veto (≥ 0.98) |
-| Cheap route arbiter | Second look on ambiguous **routes** | Skipped when top score ≥ 0.9 and no material conflict |
+| Cheap route arbiter | Second look on ambiguous **tool** routes | Skipped when top score ≥ 0.9 and no material conflict |
 | Cheap **final check** | Second look before **commits** (book / cancel / escalate / refuse) | `proceed` · `clarify` · `abort` (fail-open; safety never blocked) |
 
 ### 3.2 Where intent scores come from
 
-**Intent scores are not RAG similarity.** They are mostly **fixed awards** from named detectors.
+**Intent scores are not RAG similarity.** They are **fixed awards** from tool detectors only.
 
 | Source id | What it means | Example |
 |-----------|---------------|---------|
-| `hard_regex` | Detector / regex / sticky state matched → assign a **fixed** score | `allergy=0.95`, `fees=0.90`, `severe_weather=1.0` |
+| `hard_regex` | Tool detector / sticky state matched → fixed score | `severe_weather=1.0`, `booking_tool=0.95` |
 | `sticky_state` | Session already in book/cancel dialogue | `booking_dialogue=0.85` |
 | `prototype_blend` | Soft prototype similarities blended in (unless hard veto ≥ 0.98) | Score may move slightly; hits ≥ 0.95 are protected |
-| `conflict_clear` | Higher-priority conflict removed this route | `availability>fees` clears `fees` |
-| `default_floor` | Nothing else owns the turn | `rag=0.5` or multi-topic `rag=0.65` |
+| `conflict_clear` | Higher-priority conflict removed this route | `weather>hours` clears `opening_hours` |
+| `default_floor` | No tool owns the turn | `rag=0.5` |
 
 Every award / blend / clear is appended to `trace.routing.score_ledger[]`.  
 Per-route snapshot: `trace.routing.score_origins`.  
@@ -149,16 +148,12 @@ Legend for the UI: `trace.routing.score_source_guide`.
 ```text
 message
   │
-  ├─ hard detectors → scores[route] ∈ [0.85, 1.0]   ← fixed awards (ledger: award)
-  │     escalation, off_domain, severe_weather, illness, allergy, fees, …
-  │     booking_tool / booking_dialogue / cancel / trial_info / hours
+  ├─ tool detectors → scores[route] ∈ [0.8, 1.0]   ← fixed awards (ledger: award)
+  │     escalation, off_domain, severe_weather,
+  │     cancel / booking_dialogue / booking_tool / opening_hours
   │
-  ├─ conflict resolution (destructive)              ← ledger: clear
-  │     weather>hours, payment>fees, illness|allergy|sibling>fees,
-  │     availability>fees, trial_info>availability, booking>trial_info,
-  │     trial_policy>booking, pets>booking,
-  │     waiting clears pickup + booking_tool,
-  │     multi_topic>single_fact → drop fact keys, scores[rag]=0.65
+  ├─ conflict resolution                              ← ledger: clear
+  │     weather>hours
   │
   ├─ soft prototype blend  (skipped if any hard veto score ≥ 0.98)
   │                                                     ← ledger: blend
@@ -167,9 +162,8 @@ message
   ├─ _pick_route via _PRIORITY tie-break
   │
   └─ cheap LLM route arbiter (optional)
-        skip if top≥0.9 ∧ ¬material_conflicts ∧ route ∉ {confused,off_domain,rag}
+        skip if top≥0.9 ∧ ¬material_conflicts ∧ route ∉ {off_domain,rag}
         else review_intent → keep | rag
-        (demo-safe: never jumps to an unrelated tool route)
         sticky book/cancel mid-flight: arbiter skipped
         staff_escalation: never second-guessed by route arbiter
 
@@ -180,22 +174,19 @@ Later, on hard commits only:
 ### 3.4 Priority order (high → low)
 
 ```text
-staff_escalation > off_domain > severe_weather > illness > allergy >
-makeup > teachers > pickup > waiting > sibling > guest_policy >
-location > payment > fees > pets_policy > unsupported_facility >
-unknown_programme > cancel_dialogue > trial_info > booking_dialogue >
-booking_tool > opening_hours > greeting > thanks > confused > rag
+staff_escalation > off_domain > severe_weather > cancel_dialogue >
+booking_dialogue > booking_tool > opening_hours > rag
 ```
 
 Hard veto set (`_HARD_VETO`, blocks prototype dilution):  
-`staff_escalation`, `off_domain`, `severe_weather`, `confused`, `thanks`.
+`staff_escalation`, `off_domain`, `severe_weather`.
 
 ### 3.5 Route arbiter gate
 
 ```text
 IF max(scores) ≥ 0.9
    AND no material conflicts (ignoring blended_prototypes)
-   AND route ∉ {confused, off_domain, rag}
+   AND route ∉ {off_domain, rag}
 THEN
    arbiter.called = false
    reason = high_confidence_skip
@@ -484,11 +475,10 @@ Canonical probes:
 | Probe | Expected route | What to point at |
 |-------|----------------|------------------|
 | Typhoon | `severe_weather` | Match cue + grounded compose (privileged live/policy) |
-| Phonics fee / `月費幾多？` | `fees` | Highlighted fee cue + ledger `fees=0.90` |
-| RAG · Private 1:1 | `rag` | Chunk rank / score / full text |
+| Phonics fee / `月費幾多？` | `rag` | Fee FAQ chunk rank / score / text (no fact card) |
+| Address / FPS / teachers | `rag` | KB retrieve — static FAQs are RAG |
 | Phonics seats / `仲有冇位？` | `booking_tool` | Chat seat counts + Class register |
 | Book Jason | `booking_dialogue` | FSM → final check → SheetPro |
-| Unknown ask | `unknown_programme` | SheetPro follow-up row |
 | Safety call | `staff_escalation` | final check (fail-open) + MailBox draft |
 
 ---

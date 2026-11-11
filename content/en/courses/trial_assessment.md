@@ -3,7 +3,7 @@ language: en
 type: course
 canonical: TrialAssessment
 folder: courses
-aliases: trial; trial class; trial assessment; assessment; placement; try a class; free trial; open day
+aliases: trial; trial class; trial assessment; assessment; placement; try a class; free trial; open day; do you offer a trial; how long is a trial; 試堂; 试听
 ---
 # Trial Assessment
 
@@ -23,3 +23,10 @@ How to book:
 - Ask the bot for **trial availability**, or
 - Call / WhatsApp **+852 9123 4567**, or
 - Email **hello@brightnest-hk.example**
+
+## Sample parent questions
+- Do you offer a trial for my 5 year old?
+- How long is a trial assessment?
+- How much is the trial?
+- 有冇試堂？試堂幾耐？
+

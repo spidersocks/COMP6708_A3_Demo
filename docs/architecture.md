@@ -97,9 +97,8 @@ flowchart TB
 | Tier | Examples | Retrieve | LLM role |
 |------|----------|----------|----------|
 | Hard FSM + final check | Book assessment, cancel, escalate, refuse | Bypass | Cheap commit gate; templates own the reply |
-| Soft gap / unknown | Scuba, weak RAG gap | — / after RAG | SheetPro capture; no final check |
-| Grounded compose | Typhoon+HKO, fees, seats, allergy | Enrich only | Compose with card/live doc privileged |
-| Pure RAG | Private 1:1, multi-topic narrative | Full | Generate + citations |
+| Live tools (+ enrich) | Typhoon+HKO, hours calendar, seats | Enrich only | Compose with live doc privileged |
+| Pure RAG | Fees, address, payment, teachers, programmes, policies | Full | Generate + citations |
 
 ---
 
@@ -107,15 +106,14 @@ flowchart TB
 
 | Parent ask | Path | Why |
 |------------|------|-----|
-| Typhoon / Christmas / hours | Grounded compose | Must not invent a signal or holiday |
-| Phonics fee | Fee card + enrich | Published numbers stay privileged |
-| Private 1:1 | Pure RAG | Narrative KB with visible chunks |
+| Typhoon / Christmas / hours | Live tool + enrich | Must not invent a signal or holiday |
+| Phonics fee / address / FPS / teachers | Pure RAG | Static FAQ lives in KB Markdown |
+| Private 1:1 / phonics lessons | Pure RAG | Narrative KB with visible chunks |
 | Saturday seats | Seat browse in chat | Live CSV register; no fake Book UI |
 | Book Jason / assessment Yes | Booking FSM → **final check** → SheetPro | Parent affirm + model go-ahead |
 | Cancel → Yes / No | Cancel FSM → final check / abort | Decline keeps the class |
-| Scuba / unknown | Honest gap + SheetPro | No hallucinated programme |
 | Allergy emergency | Escalate → final check (fail-open) | Human + MailBox |
-| Tokyo weather | Refuse → final check | Abort may send to RAG instead |
+| Tokyo weather / fish biology | Refuse / off-topic gate | Stay centre-scoped |
 
 ---
 

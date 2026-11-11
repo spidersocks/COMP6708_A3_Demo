@@ -3,7 +3,7 @@ language: en
 type: institution
 canonical: Teachers
 folder: institution
-aliases: teachers; tutors; staff; who teaches; teacher qualifications; native speakers
+aliases: teachers; tutors; staff; who teaches; teacher qualifications; native speakers; Avery Chan; Wei Lin; who teaches phonics; Mandarin teacher; 老師; 資歷; 邊個教
 ---
 # Our Teachers
 
@@ -24,3 +24,9 @@ Highlights:
 Class seats live on the centre register (CSV admin sheets in this demo). Ask “show phonics availability”, “show early math availability”, or “show Jordan open slots for phonics” to see open seats.
 
 All classroom staff complete BrightNest's in-house safeguarding and positive-discipline modules.
+
+## Sample parent questions
+- Tell me about your teachers
+- Who teaches phonics?
+- What are the teachers' qualifications?
+- 你們老師有什麼資格？

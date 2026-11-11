@@ -3,7 +3,7 @@ language: en
 type: faq
 canonical: DropoffPickup
 folder: faq
-aliases: drop off; pickup; pick up; waiting area; parent waiting; late pickup; can parents stay; sit in class; helper pickup; domestic helper; wifi; free wifi; parent lounge
+aliases: drop off; pickup; pick up; waiting area; parent waiting; late pickup; can parents stay; sit in class; helper pickup; domestic helper; wifi; free wifi; parent lounge; who can pick up; authorised collector; authorized pickup; grandparents collect; 接送; 邊個接
 ---
 # Drop-off, Pickup & Waiting
 
@@ -14,3 +14,9 @@ aliases: drop off; pickup; pick up; waiting area; parent waiting; late pickup; c
 - **Late pickup:** We can supervise until **18:15 on weekdays** and **16:15 on Saturdays**. After that a late-care note may apply (HK$50 per 15 minutes) — rare; please message us if delayed.
 - Siblings waiting: welcome in the lounge if supervised by a parent.
 - **Helpers / grandparents:** may drop off and pick up when listed as authorized collectors (see Authorized Pickup FAQ).
+
+## Sample parent questions
+- Who can pick up my child?
+- Can grandparents collect?
+- What are the drop-off and pickup rules?
+- 接送政策係點？

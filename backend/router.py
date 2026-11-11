@@ -43,27 +43,11 @@ from services import staff_messages
 # Keep this short — soft refuses / greetings stay template-clean for the demo.
 _ADAPT_PROVIDERS = {
     "deterministic_opening_hours",
-    "unsupported_facility",
     "booking_tool",
 }
 
-# Soft structured routes: retrieve KB, then compose with the fact card as truth.
-# Hard tools (weather calendar, seats, booking FSM, escalation) stay RAG-bypass.
+# Live tools may retrieve KB for enrich; static FAQs are pure RAG (no fact cards).
 _GROUNDING_ENRICH_ROUTES = {
-    "allergy",
-    "illness",
-    "fees",
-    "teachers",
-    "makeup",
-    "sibling",
-    "guest_policy",
-    "waiting",
-    "pickup",
-    "payment",
-    "location",
-    "trial_info",
-    "pets_policy",
-    # Live / policy docs + general KB advice (no longer hard RAG bypass)
     "severe_weather",
     "deterministic_opening_hours",
     "opening_hours",
@@ -71,21 +55,6 @@ _GROUNDING_ENRICH_ROUTES = {
 }
 
 router = APIRouter()
-
-_CONFUSED_REPLY = (
-    "Happy to help — could you tell me a bit more? "
-    "You can ask about opening hours, programmes, fees, trial assessments, "
-    "availability, or ask to speak with our team."
-)
-_OFFERED_PROGRAMMES = (
-    "Phonics, Mandarin, Writing, Early Math, Playgroup, and Trial assessments"
-)
-_GREETING_REPLY = (
-    "Hello! Welcome to **BrightNest Learning Centre**.\n\n"
-    "How can I help you today? You can ask about opening hours, our programmes "
-    "(Phonics, Mandarin, Writing, Early Math, Playgroup, Trial), booking or cancelling "
-    "a class, or fees and policies."
-)
 
 # Avoid matching "opening hours" — use open slots / availability / book / trial.
 _AVAIL_RE = re.compile(
@@ -852,15 +821,6 @@ def chat(req: ChatRequest) -> ChatResponse:
             adapt=False,
         )
 
-    if route == "confused":
-        return _fact_response(
-            route_name="confused",
-            answer=_CONFUSED_REPLY,
-            citations=[],
-            provider="confused",
-            extra_step=_step("confused", "Clarify short-circuit", "done", "short ask"),
-        )
-
     if route == "off_domain":
         from services import final_check as final_check_svc
 
@@ -955,24 +915,6 @@ def chat(req: ChatRequest) -> ChatResponse:
                 adapt=False,
             )
 
-    if route == "thanks":
-        thanks = {
-            "en": "You’re welcome! Anything else I can help with — hours, fees, trials, or booking?",
-            "zh-HK": "唔該晒！仲有冇想問——營業時間、學費、試堂定預約？",
-            "zh-CN": "不客气！还有想问的吗——营业时间、学费、试听或预约？",
-        }
-        L = (lang or "en").lower()
-        ans = thanks["zh-HK"] if L.startswith("zh-hk") else (
-            thanks["zh-CN"] if L.startswith("zh") else thanks["en"]
-        )
-        return _fact_response(
-            route_name="thanks",
-            answer=ans,
-            citations=[],
-            provider="thanks",
-            extra_step=_step("thanks", "Thanks short-circuit", "done", "ack"),
-        )
-
     if route == "severe_weather":
         cached = answer_cache.get("severe_weather", message, lang)
         if cached:
@@ -1014,172 +956,6 @@ def chat(req: ChatRequest) -> ChatResponse:
             extra_step=_step("facts", "Severe weather policy", "done", "structured"),
             live_doc=live_weather,
         )
-
-    if route == "fees":
-        cached = answer_cache.get("fees", message, lang)
-        if cached:
-            answer, cites = cached["answer"], cached["citations"]
-        else:
-            answer, cites = centre_facts.format_fees_answer(message, lang)
-            answer_cache.put("fees", message, lang, {"answer": answer, "citations": cites})
-        return _fact_response(
-            route_name="fees",
-            answer=answer,
-            citations=cites,
-            provider="centre_facts",
-            extra_step=_step("facts", "Published fee guide", "done", "structured"),
-        )
-
-    if route == "location":
-        answer, cites = centre_facts.format_location_answer(lang)
-        return _fact_response(
-            route_name="location",
-            answer=answer,
-            citations=cites,
-            provider="centre_facts",
-            extra_step=_step("facts", "Centre location", "done", "structured"),
-        )
-
-    if route == "allergy":
-        answer, cites = centre_facts.format_allergy_answer(lang)
-        return _fact_response(
-            route_name="allergy",
-            answer=answer,
-            citations=cites,
-            provider="centre_facts",
-            extra_step=_step("facts", "Allergy policy", "done", "structured"),
-        )
-
-    if route == "illness":
-        answer, cites = centre_facts.format_illness_answer(lang)
-        return _fact_response(
-            route_name="illness",
-            answer=answer,
-            citations=cites,
-            provider="centre_facts",
-            extra_step=_step("facts", "Illness / fever policy", "done", "structured"),
-        )
-
-    if route == "payment":
-        answer, cites = centre_facts.format_payment_answer(lang)
-        return _fact_response(
-            route_name="payment",
-            answer=answer,
-            citations=cites,
-            provider="centre_facts",
-            extra_step=_step("facts", "How to pay", "done", "structured"),
-        )
-
-    if route == "teachers":
-        answer, cites = centre_facts.format_teachers_answer(lang, message=message)
-        return _fact_response(
-            route_name="teachers",
-            answer=answer,
-            citations=cites,
-            provider="centre_facts",
-            extra_step=_step("facts", "Teachers", "done", "structured"),
-        )
-
-    if route == "pickup":
-        answer, cites = centre_facts.format_pickup_answer(lang)
-        return _fact_response(
-            route_name="pickup",
-            answer=answer,
-            citations=cites,
-            provider="centre_facts",
-            extra_step=_step("facts", "Drop-off & pickup", "done", "structured"),
-        )
-
-    if route == "makeup":
-        answer, cites = centre_facts.format_makeup_answer(lang)
-        return _fact_response(
-            route_name="makeup",
-            answer=answer,
-            citations=cites,
-            provider="centre_facts",
-            extra_step=_step("facts", "Absence & make-up", "done", "structured"),
-        )
-
-    if route == "sibling":
-        answer, cites = centre_facts.format_sibling_answer(lang)
-        return _fact_response(
-            route_name="sibling",
-            answer=answer,
-            citations=cites,
-            provider="centre_facts",
-            extra_step=_step("facts", "Sibling discount", "done", "structured"),
-        )
-
-    if route == "guest_policy":
-        answer, cites = centre_facts.format_guest_answer(lang)
-        # Fluent card already — skip main-model rewrite for latency
-        return _fact_response(
-            route_name="guest_policy",
-            answer=answer,
-            citations=cites,
-            provider="centre_facts",
-            extra_step=_step("facts", "Guest / friend policy", "done", "structured"),
-            adapt=False,
-        )
-
-    if route == "waiting":
-        answer, cites = centre_facts.format_waiting_answer(lang)
-        return _fact_response(
-            route_name="waiting",
-            answer=answer,
-            citations=cites,
-            provider="centre_facts",
-            extra_step=_step("facts", "Waiting list", "done", "structured"),
-        )
-
-    if route == "pets_policy":
-        answer, cites = centre_facts.format_pets_policy(lang)
-        return _fact_response(
-            route_name="pets_policy",
-            answer=answer,
-            citations=cites,
-            provider="centre_facts",
-            extra_step=_step("facts", "Pets policy", "done", "no pets in class"),
-        )
-
-    if route == "unsupported_facility":
-        label = (decision.debug.get("label") or "that facility").lower()
-        answer = (
-            f"We don't offer **{label}** at BrightNest — we're a day learning centre "
-            f"for programmes like {_OFFERED_PROGRAMMES}. "
-            "If you tell me your child's age, I can suggest a better fit — "
-            "or ask to speak with our team and someone will reach out during working hours."
-        )
-        return _fact_response(
-            route_name="unsupported_facility",
-            answer=answer,
-            citations=[],
-            provider="unsupported_facility",
-            extra_step=_step("unsupported", "Unsupported facility", "done", label),
-        )
-
-    if route == "trial_info":
-        # Don't leave a half-open booking loop after a policy answer
-        try:
-            dialogue_svc.clear_state(session_id)
-        except Exception:
-            pass
-        answer, cites = centre_facts.format_trial_info_answer(lang)
-        return _fact_response(
-            route_name="trial_info",
-            answer=answer,
-            citations=cites,
-            provider="centre_facts",
-            extra_step=_step("facts", "Trial assessment info", "done", "policy not slots"),
-        )
-
-    if route == "unknown_programme":
-        unk = decision.debug.get("label") or dialogue_svc.unknown_programme(message)
-        # fall through to existing unknown handler below via reassign
-        route = "unknown_programme"
-        unknown_programme = unk
-    else:
-        unknown_programme = dialogue_svc.unknown_programme(message)
 
     if route == "opening_hours" and SETTINGS.opening_hours_enabled:
         general = is_general_hours_query(hours_msg, lang)
@@ -1420,67 +1196,6 @@ def chat(req: ChatRequest) -> ChatResponse:
             ask_tool_ok=True,
             tool_label="live seat / trial-slot cards",
         )
-
-    if route == "greeting" or is_greeting(message):
-        return _fact_response(
-            route_name="greeting",
-            answer=_GREETING_REPLY,
-            citations=[{"source": "en/faq/greeting.md", "title": "Welcome!"}],
-            provider="greeting",
-            extra_step=_step("greeting", "Greeting short-circuit", "done", "welcome"),
-            debug={"greeting": True},
-        )
-
-    # Deterministic: we do not teach scuba/piano/etc. — never dump unrelated FAQs
-    unk = unknown_programme if route == "unknown_programme" else None
-    if unk:
-        todo_parent, todo_child = _family_names()
-        label = unk.lower()
-        # Parent-facing: no mention of internal admin sheets
-        answer = (
-            f"We don't offer **{label}** at BrightNest — sorry about the confusion.\n\n"
-            f"Our programmes are {_OFFERED_PROGRAMMES}. "
-            "If you tell me your child's age, I can suggest a better fit — "
-            "or ask to speak with our team and someone will reach out during working hours."
-        )
-        admin_todo = admin_todos.add_todo(
-            question=message if unknown_programme else f"{message} (re: {label})",
-            reply=answer,
-            info_needed=(
-                f"Parent asked about {label}. Please confirm we do not offer it, "
-                "and whether we can suggest a partner or referral."
-            ),
-            reason="unknown_programme",
-            phone=phone,
-            parent_name=todo_parent,
-            child_name=todo_child,
-            session_id=session_id,
-            top_score=None,
-            hit_count=0,
-        )
-        steps.append(
-            _step("unknown_programme", "Unsupported programme", "done", label)
-        )
-        steps.append(
-            _step("admin_todo", "Flag for admin to-do", "done", admin_todo.get("id"))
-        )
-        steps.append(_step("rag", "RAG retrieve → generate", "skipped", "unknown programme"))
-        trace["route"] = "unknown_programme"
-        trace["provider"] = "unknown_programme"
-        trace["answer_provider"] = "unknown_programme"
-        trace["admin_todo"] = admin_todo
-        trace["llm"] = _llm_trace_summary(decision.debug or {}, steps, "unknown_programme")
-        trace["latency_ms"] = int((time.perf_counter() - t0) * 1000)
-        resp = ChatResponse(
-            answer=answer,
-            citations=[],
-            provider="unknown_programme",
-            session_id=session_id,
-            debug={"unknown_programme": label, "admin_todo": admin_todo},
-            trace=trace,
-        )
-        _persist_turn(session_id, message, answer, lang, use_history)
-        return resp
 
     def _answer_promises_outreach(text: str) -> bool:
         low = (text or "").lower()

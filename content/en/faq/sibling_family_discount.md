@@ -19,3 +19,8 @@ aliases: sibling discount; brother discount; sister discount; two children disco
 
 **How to claim**
 - Tell us both children’s names when you enrol or renew. Admin applies the discount on the invoice.
+
+## Sample parent questions
+- Do you have a sibling discount?
+- Is there a family rate for two children?
+

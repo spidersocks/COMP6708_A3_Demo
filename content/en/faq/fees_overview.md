@@ -3,7 +3,7 @@ language: en
 type: faq
 canonical: FeesOverview
 folder: faq
-aliases: fees; tuition; price; prices; cost; how much; package; monthly fee; sibling discount; family discount; second child
+aliases: fees; tuition; price; prices; cost; how much; package; monthly fee; sibling discount; family discount; second child; 學費; 月費; 幾錢; how much is phonics
 ---
 # Fees Overview (Published Ranges)
 
@@ -24,3 +24,9 @@ Materials fee (workbooks / readers): usually HK$180–320 per term, charged sepa
 Sibling discount: **8%** off the lower package when two siblings enrol in the same term.
 
 Private 1:1 **guide fees**: English/Math HK$650–850 / 45 min; Mandarin HK$580–720 / 45 min; **5%** off for a prepaid pack of 8. Final quote after a short placement chat.
+
+## Sample parent questions
+- What are your tuition fees?
+- How much is the phonics class?
+- Do you have a sibling discount?
+- 月費幾多？
