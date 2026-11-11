@@ -132,67 +132,276 @@ def pick_cancel_candidate(
     return {**base, "action": "none", "index": None, "reason": reason or "none"}
 
 
-def parse_booking_hints(message: str) -> Dict[str, Any]:
+_ALLOWED_COURSES = {"phonics", "mandarin", "writing", "playgroup", "math", "trial"}
+_KINSHIP_NAME_BLOCK = {
+    "my",
+    "our",
+    "his",
+    "her",
+    "their",
+    "child",
+    "kid",
+    "son",
+    "daughter",
+    "boy",
+    "girl",
+    "parent",
+    "mum",
+    "mom",
+    "dad",
+    "father",
+    "mother",
+}
+
+
+def _clean_person_slot(raw: Any) -> Optional[str]:
+    if raw is None:
+        return None
+    s = str(raw).strip(" .,;:!?")
+    if not s or s.lower() in {"null", "none", "n/a", "-"}:
+        return None
+    low = s.lower()
+    if low in _KINSHIP_NAME_BLOCK:
+        return None
+    if any(tok in _KINSHIP_NAME_BLOCK for tok in re.split(r"\s+", low)):
+        return None
+    # Prefer Title Case for single/multi English names
+    if s.islower() or s.isupper():
+        s = s.title()
+    return s
+
+
+def _parse_weekday_slot(raw: Any) -> Optional[int]:
+    try:
+        weekday_i = int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+    if weekday_i is not None and 0 <= weekday_i <= 6:
+        return weekday_i
+    return None
+
+
+def track_booking_slots(
+    message: str,
+    *,
+    prior: Optional[Dict[str, Any]] = None,
+    missing: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     """
-    Soft extract course / weekday / window from a booking clarify utterance.
-    Returns keys among: course_key, weekday (0=Mon), window, teacher_hint, confidence.
+    Cheap-LLM Dialogue State Tracking for booking.
+
+    Schema-constrained JSON extract over the latest parent turn (+ known slots).
+    Fills only what the utterance supports: parent_name, child_name, course_key,
+    weekday, window, teacher_hint. Caller merges into FSM state (never wipe
+    untouched slots).
     """
     empty: Dict[str, Any] = {
         "ok": False,
         "called": False,
         "model": cheap_llm.arbiter_model() if cheap_llm.enabled() else None,
+        "role": "booking_dst",
+        "how": [
+            "Regex / detectors run first (fast path).",
+            "If slots still missing: cheap LLM returns structured JSON for this turn.",
+            "Merge only filled fields; reject kinship pronouns as names.",
+            "Booking FSM still decides what to ask next and when to book.",
+        ],
     }
     if not SETTINGS.arbiter_booking_parse or not cheap_llm.enabled():
-        return empty
+        return {**empty, "reason": "disabled"}
+    prior = dict(prior or {})
+    miss = [m for m in (missing or []) if m]
+    prior_compact = {
+        k: prior.get(k)
+        for k in (
+            "parent_name",
+            "child_name",
+            "course_key",
+            "weekday",
+            "window",
+            "teacher_hint",
+            "stage",
+        )
+        if prior.get(k) not in (None, "", [])
+    }
     prompt = (
-        "Extract booking hints.\n"
+        "Dialogue state tracking for a kids' learning-centre booking chat.\n"
+        "Extract ONLY values clearly stated in the latest parent message. "
+        "Do not invent names. Kinship words (my/kid/child/son) are NOT names — use null.\n"
         "course_key: phonics|mandarin|writing|playgroup|math|trial|null; "
-        "weekday 0=Mon..6=Sun|null; window tomorrow|this_week|next_week|null; "
-        "teacher_hint short|null.\n"
-        'JSON: {"course_key":..,"weekday":..,"window":..,"teacher_hint":..,"confidence":0-1}\n'
+        "weekday 0=Mon..6=Sun|null; window tomorrow|this_week|next_week|null.\n"
+        "Return null for any slot not supported by this utterance.\n"
+        f"Already known (do not clear): {prior_compact or '{}'}\n"
+        f"Still missing (prefer filling these): {miss or ['any stated']}\n"
+        'JSON: {"parent_name":..,"child_name":..,"course_key":..,"weekday":..,'
+        '"window":..,"teacher_hint":..,"confidence":0-1,"notes":"short"}\n'
         f"Parent: {message}\n"
     )
-    parsed = cheap_llm.complete_json(prompt, max_tokens=80, role="booking_parse")
+    parsed = cheap_llm.complete_json(prompt, max_tokens=140, role="booking_dst")
     if not parsed:
         return {**empty, "called": True, "reason": "parse_fail"}
-    allowed_courses = {"phonics", "mandarin", "writing", "playgroup", "math", "trial"}
     course = parsed.get("course_key")
-    if course not in allowed_courses:
+    if course not in _ALLOWED_COURSES:
         course = None
-    weekday = parsed.get("weekday")
-    try:
-        weekday_i = int(weekday) if weekday is not None else None
-        if weekday_i is not None and not (0 <= weekday_i <= 6):
-            weekday_i = None
-    except (TypeError, ValueError):
-        weekday_i = None
+    weekday_i = _parse_weekday_slot(parsed.get("weekday"))
     window = parsed.get("window")
     if window not in {"tomorrow", "this_week", "next_week"}:
         window = None
     teacher = parsed.get("teacher_hint")
     if teacher is not None:
         teacher = str(teacher).strip() or None
+        if teacher and teacher.lower() in {"null", "none"}:
+            teacher = None
+    parent = _clean_person_slot(parsed.get("parent_name"))
+    child = _clean_person_slot(parsed.get("child_name"))
     try:
         conf = float(parsed.get("confidence") or 0)
     except (TypeError, ValueError):
         conf = 0.0
-    if not any([course, weekday_i is not None, window, teacher]) or conf < 0.45:
-        return {
-            "ok": False,
-            "called": True,
-            "confidence": conf,
-            "model": empty["model"],
-            "reason": "low_confidence",
-        }
-    return {
-        "ok": True,
-        "called": True,
+    filled = {
+        "parent_name": parent,
+        "child_name": child,
         "course_key": course,
         "weekday": weekday_i,
         "window": window,
         "teacher_hint": teacher,
+    }
+    # Drop empties for merge clarity
+    filled = {k: v for k, v in filled.items() if v is not None and v != ""}
+    if not filled or conf < 0.40:
+        return {
+            **empty,
+            "called": True,
+            "ok": False,
+            "confidence": conf,
+            "filled": {},
+            "raw": parsed,
+            "reason": "low_confidence",
+            "missing_asked": miss,
+            "prior": prior_compact,
+        }
+    return {
+        "ok": True,
+        "called": True,
+        "filled": filled,
         "confidence": conf,
+        "notes": str(parsed.get("notes") or "")[:160],
         "model": empty["model"],
+        "role": "booking_dst",
+        "how": empty["how"],
+        "missing_asked": miss,
+        "prior": prior_compact,
+        # Back-compat keys used by older booking_parse merge
+        "course_key": course,
+        "weekday": weekday_i,
+        "window": window,
+        "teacher_hint": teacher,
+        "parent_name": parent,
+        "child_name": child,
+    }
+
+
+def parse_booking_hints(message: str) -> Dict[str, Any]:
+    """Back-compat wrapper — full DST lives in track_booking_slots."""
+    return track_booking_slots(message, missing=["course_key", "weekday", "window", "teacher_hint"])
+
+
+def track_cancel_slots(
+    message: str,
+    *,
+    known_children: Optional[List[str]] = None,
+    prior: Optional[Dict[str, Any]] = None,
+    missing: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Cheap-LLM DST for cancel dialogue: child_name / course / when cues when
+    regex + roster match miss.
+    """
+    empty: Dict[str, Any] = {
+        "ok": False,
+        "called": False,
+        "model": cheap_llm.arbiter_model() if cheap_llm.enabled() else None,
+        "role": "cancel_dst",
+        "how": [
+            "Roster name match / regex first.",
+            "If child or filters still unclear: cheap LLM structured JSON.",
+            "Merge into cancel FSM; pick/confirm stays deterministic (or cancel_pick).",
+        ],
+    }
+    # Reuse booking parse flag — same cheap NLU budget
+    if not SETTINGS.arbiter_booking_parse or not cheap_llm.enabled():
+        return {**empty, "reason": "disabled"}
+    kids = [str(k).strip() for k in (known_children or []) if str(k).strip()]
+    prior = dict(prior or {})
+    miss = [m for m in (missing or []) if m]
+    prior_compact = {
+        k: prior.get(k)
+        for k in ("child_name", "course_key", "weekday", "stage")
+        if prior.get(k) not in (None, "", [])
+    }
+    prompt = (
+        "Dialogue state tracking for cancelling a class at a kids' centre.\n"
+        "Extract ONLY values clearly stated. Do not invent child names.\n"
+        f"Known children on this WhatsApp (prefer exact match): {kids or ['(none)']}\n"
+        "course_key: phonics|mandarin|writing|playgroup|math|trial|null; "
+        "weekday 0=Mon..6=Sun|null.\n"
+        f"Already known: {prior_compact or '{}'}\n"
+        f"Still missing: {miss or ['any stated']}\n"
+        'JSON: {"child_name":..,"course_key":..,"weekday":..,"confidence":0-1,"notes":"short"}\n'
+        f"Parent: {message}\n"
+    )
+    parsed = cheap_llm.complete_json(prompt, max_tokens=120, role="cancel_dst")
+    if not parsed:
+        return {**empty, "called": True, "reason": "parse_fail"}
+    child = _clean_person_slot(parsed.get("child_name"))
+    if child and kids:
+        # Prefer canonical roster casing when fuzzy-equal
+        for k in kids:
+            if k.lower() == child.lower() or k.split()[0].lower() == child.lower():
+                child = k
+                break
+    course = parsed.get("course_key")
+    if course not in _ALLOWED_COURSES:
+        course = None
+    weekday_i = _parse_weekday_slot(parsed.get("weekday"))
+    try:
+        conf = float(parsed.get("confidence") or 0)
+    except (TypeError, ValueError):
+        conf = 0.0
+    filled = {
+        k: v
+        for k, v in {
+            "child_name": child,
+            "course_key": course,
+            "weekday": weekday_i,
+        }.items()
+        if v is not None and v != ""
+    }
+    if not filled or conf < 0.40:
+        return {
+            **empty,
+            "called": True,
+            "ok": False,
+            "confidence": conf,
+            "filled": {},
+            "reason": "low_confidence",
+            "missing_asked": miss,
+            "prior": prior_compact,
+        }
+    return {
+        "ok": True,
+        "called": True,
+        "filled": filled,
+        "confidence": conf,
+        "notes": str(parsed.get("notes") or "")[:160],
+        "model": empty["model"],
+        "role": "cancel_dst",
+        "how": empty["how"],
+        "missing_asked": miss,
+        "prior": prior_compact,
+        "child_name": child,
+        "course_key": course,
+        "weekday": weekday_i,
     }
 
 

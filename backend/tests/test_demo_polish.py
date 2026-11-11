@@ -49,6 +49,75 @@ def test_parse_booking_hints(monkeypatch):
     assert out["weekday"] == 1
 
 
+def test_track_booking_slots_identity(monkeypatch):
+    monkeypatch.setattr(demo_polish.SETTINGS, "arbiter_booking_parse", True)
+    monkeypatch.setattr(demo_polish.cheap_llm.SETTINGS, "intent_arbiter_enabled", True)
+    monkeypatch.setattr(demo_polish.cheap_llm.SETTINGS, "dashscope_api_key", "x")
+    with patch(
+        "services.demo_polish.cheap_llm.complete_json",
+        return_value={
+            "parent_name": "Jeff",
+            "child_name": "Chester",
+            "course_key": "math",
+            "weekday": None,
+            "window": None,
+            "teacher_hint": None,
+            "confidence": 0.95,
+            "notes": "stated names",
+        },
+    ):
+        out = demo_polish.track_booking_slots(
+            "My name is Jeff. My kid's name is Chester. math lesson",
+            missing=["parent_name", "child_name", "course_key"],
+        )
+    assert out["ok"] is True
+    assert out["filled"]["parent_name"] == "Jeff"
+    assert out["filled"]["child_name"] == "Chester"
+    assert out["filled"]["course_key"] == "math"
+    assert out["role"] == "booking_dst"
+
+
+def test_track_booking_slots_rejects_kinship(monkeypatch):
+    monkeypatch.setattr(demo_polish.SETTINGS, "arbiter_booking_parse", True)
+    monkeypatch.setattr(demo_polish.cheap_llm.SETTINGS, "intent_arbiter_enabled", True)
+    monkeypatch.setattr(demo_polish.cheap_llm.SETTINGS, "dashscope_api_key", "x")
+    with patch(
+        "services.demo_polish.cheap_llm.complete_json",
+        return_value={
+            "parent_name": "my",
+            "child_name": "kid",
+            "course_key": None,
+            "confidence": 0.9,
+        },
+    ):
+        out = demo_polish.track_booking_slots("book for my kid")
+    assert out["ok"] is False
+    assert out.get("filled") in ({}, None) or not out.get("filled")
+
+
+def test_track_cancel_slots(monkeypatch):
+    monkeypatch.setattr(demo_polish.SETTINGS, "arbiter_booking_parse", True)
+    monkeypatch.setattr(demo_polish.cheap_llm.SETTINGS, "intent_arbiter_enabled", True)
+    monkeypatch.setattr(demo_polish.cheap_llm.SETTINGS, "dashscope_api_key", "x")
+    with patch(
+        "services.demo_polish.cheap_llm.complete_json",
+        return_value={
+            "child_name": "mia",
+            "course_key": "phonics",
+            "weekday": 1,
+            "confidence": 0.9,
+        },
+    ):
+        out = demo_polish.track_cancel_slots(
+            "cancel Mia's phonics Tuesday",
+            known_children=["Mia Wong", "Jason Wong"],
+            missing=["child_name"],
+        )
+    assert out["ok"] is True
+    assert out["filled"]["child_name"] == "Mia Wong"
+    assert out["role"] == "cancel_dst"
+
+
 def test_polish_gap_reply(monkeypatch):
     monkeypatch.setattr(demo_polish.SETTINGS, "arbiter_gap_rewrite", True)
     monkeypatch.setattr(demo_polish.cheap_llm.SETTINGS, "intent_arbiter_enabled", True)

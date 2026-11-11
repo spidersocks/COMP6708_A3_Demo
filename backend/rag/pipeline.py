@@ -350,6 +350,7 @@ def retrieve_hybrid(
         sparse,
         rrf_k=SETTINGS.rag_rrf_k,
         limit=max(k, dense_pool),
+        question=question,
     )
     return {"hits": fused[: max(k, dense_pool)], "debug": fuse_dbg}
 

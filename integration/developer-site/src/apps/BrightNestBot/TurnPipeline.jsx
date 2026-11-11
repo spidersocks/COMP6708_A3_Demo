@@ -14,7 +14,9 @@ const LLM_ROLE_LABELS = {
   rag_generate: "RAG generate (main)",
   gap_polish: "Gap polish (cheap)",
   cancel_pick: "Cancel pick (cheap)",
-  booking_parse: "Booking parse (cheap)",
+  booking_parse: "Booking DST (cheap)",
+  booking_dst: "Booking DST (cheap)",
+  cancel_dst: "Cancel DST (cheap)",
   query_rewrite: "Query rewrite (cheap)",
   staff_email: "Staff email draft (cheap)",
   main_generate: "Main generate",
@@ -37,7 +39,8 @@ const LAYOUT = {
   path: { x: 0, y: 450, w: 112, h: 112 },
   fsm: { x: -210, y: 590, w: 140, h: 46 },
   rag: { x: 200, y: 590, w: 140, h: 46 },
-  live: { x: -210, y: 690, w: 140, h: 46 },
+  dst: { x: -210, y: 680, w: 152, h: 46 },
+  live: { x: -210, y: 770, w: 140, h: 46 },
   // Hybrid retrieve expands here: dense ∥ sparse → RRF → pass 1
   dense: { x: 100, y: 700, w: 136, h: 76 },
   sparse: { x: 300, y: 700, w: 136, h: 76 },
@@ -61,7 +64,10 @@ const EDGES = [
   { id: "e-arb-path", from: "arbiter", to: "path", dashed: true },
   { id: "e-path-fsm", from: "path", to: "fsm" },
   { id: "e-path-rag", from: "path", to: "rag" },
+  { id: "e-fsm-dst", from: "fsm", to: "dst" },
+  { id: "e-dst-live", from: "dst", to: "live", dashed: true },
   { id: "e-fsm-live", from: "fsm", to: "live", dashed: true },
+  { id: "e-dst-llm", from: "dst", to: "llm", dashed: true },
   { id: "e-fsm-llm", from: "fsm", to: "llm" },
   { id: "e-fsm-sheets", from: "fsm", to: "sheets" },
   { id: "e-rag-dense", from: "rag", to: "dense" },
@@ -266,6 +272,13 @@ function edgeGeometry(fromId, toId) {
   } else if (fromId === "arbiter" && toId === "path") {
     rawStart = nodeAnchor("arbiter", "bottom");
     rawEnd = nodeAnchor("path", "right");
+  } else if (fromId === "fsm" && toId === "dst") {
+    rawStart = nodeAnchor("fsm", "bottom");
+    rawEnd = nodeAnchor("dst", "top");
+  } else if (fromId === "dst" && toId === "llm") {
+    rawStart = nodeAnchor("dst", "right");
+    rawEnd = nodeAnchor("llm", "top");
+    elbow = [{ x: b.x, y: a.y }];
   } else if (fromId === "fsm" && toId === "llm") {
     // Right then down the center corridor (x ≈ llm) — avoid sheets cylinder
     rawStart = nodeAnchor("fsm", "right");
@@ -274,6 +287,9 @@ function edgeGeometry(fromId, toId) {
   } else if (fromId === "fsm" && toId === "sheets") {
     rawStart = nodeAnchor("fsm", "bottom");
     rawEnd = nodeAnchor("sheets", "top");
+  } else if (fromId === "dst" && toId === "live") {
+    rawStart = nodeAnchor("dst", "bottom");
+    rawEnd = nodeAnchor("live", "top");
   } else if (fromId === "rag" && toId === "dense") {
     rawStart = nodeAnchor("rag", "sw");
     rawEnd = nodeAnchor("dense", "top");
@@ -287,10 +303,9 @@ function edgeGeometry(fromId, toId) {
     rawStart = nodeAnchor("sparse", "bottom");
     rawEnd = nodeAnchor("fuse", "right");
   } else if (fromId === "rewrite" && toId === "llm") {
-    // Exit left, drop at llm.x — never cut through KB · pass 2 (right arm)
-    rawStart = nodeAnchor("rewrite", "left");
+    // Diagonal down-left; pass 2 sits on the right so a normal curve stays clear
+    rawStart = nodeAnchor("rewrite", "bottom");
     rawEnd = nodeAnchor("llm", "top");
-    elbow = [{ x: b.x, y: rawStart.y }];
   } else if (fromId === "rewrite" && toId === "chroma2") {
     rawStart = nodeAnchor("rewrite", "right");
     rawEnd = nodeAnchor("chroma2", "top");
@@ -495,8 +510,75 @@ function RagHit({ hit, index }) {
   );
 }
 
-/** Compact list for a single retrieve channel (dense_top / sparse_top). */
-function ChannelPoolPanel({ title, query, rows, emptyHint, meta }) {
+/** Highlight BM25 / query tokens inside chunk text (sparse channel). */
+function highlightTokens(text, tokens) {
+  const body = text || "";
+  const toks = (tokens || [])
+    .map((t) => String(t || "").trim())
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  if (!body || !toks.length) return body;
+  const escaped = toks.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const re = new RegExp(`(${escaped.join("|")})`, "gi");
+  const parts = body.split(re);
+  return parts.map((part, i) =>
+    i % 2 === 1 ? (
+      <mark key={`tok-${i}`} className="bn-tok-hit">
+        {part}
+      </mark>
+    ) : (
+      <span key={`t-${i}`}>{part}</span>
+    )
+  );
+}
+
+function ChannelHit({ hit, index, highlight = false }) {
+  const [open, setOpen] = useState(false);
+  const body = hit.text || hit.snippet || "";
+  const tokens = hit.matched_tokens || hit.query_tokens || [];
+  const score = scoreLabel(hit.score);
+  return (
+    <li className={`bn-hit ${open ? "is-open" : ""}`}>
+      <button
+        type="button"
+        className="bn-hit-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <div className="bn-hit-head">
+          <strong>
+            <span className="bn-hit-rank">#{hit.rank ?? index + 1}</span>{" "}
+            {hit.title || hit.source || `Row ${index + 1}`}
+          </strong>
+          {score ? <code>{score}</code> : null}
+        </div>
+        {hit.source ? <span className="bn-hit-src">{hit.source}</span> : null}
+        {highlight && tokens.length ? (
+          <p className="bn-hit-snip bn-hit-why">
+            Matched: {tokens.slice(0, 12).join(" · ")}
+            {tokens.length > 12 ? "…" : ""}
+          </p>
+        ) : null}
+        {!open && body ? (
+          <p className="bn-hit-snip">
+            {highlight ? highlightTokens(body.slice(0, 220), tokens) : body.slice(0, 220)}
+          </p>
+        ) : null}
+        <span className="bn-hit-expand-hint">
+          {open ? "Collapse chunk" : "Expand full chunk"}
+        </span>
+      </button>
+      {open && body ? (
+        <pre className="bn-hit-full">
+          {highlight ? highlightTokens(body, tokens) : body}
+        </pre>
+      ) : null}
+    </li>
+  );
+}
+
+/** Expandable pool for dense_top / sparse_top. */
+function ChannelPoolPanel({ title, query, rows, emptyHint, meta, highlightTokens: doHl }) {
   const list = rows || [];
   return (
     <>
@@ -522,22 +604,80 @@ function ChannelPoolPanel({ title, query, rows, emptyHint, meta }) {
       ) : (
         <ul className="bn-hits">
           {list.map((h, i) => (
-            <li key={`${h.source || h.id || i}-${i}`} className="bn-hit">
-              <div className="bn-hit-head">
-                <strong>
-                  <span className="bn-hit-rank">#{h.rank ?? i + 1}</span>{" "}
-                  {h.title || h.source || `Row ${i + 1}`}
-                </strong>
-                {h.score != null ? (
-                  <code>{scoreLabel(h.score) ?? String(h.score)}</code>
-                ) : null}
-              </div>
-              {h.source ? <span className="bn-hit-src">{h.source}</span> : null}
-            </li>
+            <ChannelHit
+              key={`${h.source || h.id || i}-${i}`}
+              hit={h}
+              index={i}
+              highlight={Boolean(doHl)}
+            />
           ))}
         </ul>
       )}
     </>
+  );
+}
+
+function SlotDstCard({ title, dst, regexNote }) {
+  if (!dst) return null;
+  const filled = dst.filled || {};
+  const how = dst.how || [];
+  return (
+    <div className="bn-dst-card">
+      <div className="bn-match-summary-kicker">{title}</div>
+      <p className="bn-rules-hint" style={{ marginTop: 4 }}>
+        Regex / detectors first, then cheap LLM structured JSON for missing
+        slots. FSM still owns asks + tools.
+      </p>
+      {how.length ? (
+        <ol className="bn-select-steps">
+          {how.map((line, i) => (
+            <li key={`how-${i}`}>{line}</li>
+          ))}
+        </ol>
+      ) : null}
+      <ul className="bn-fact-list">
+        <li>
+          <span>Called</span>
+          <code>{dst.called ? "yes" : "no"}</code>
+        </li>
+        <li>
+          <span>Result</span>
+          <code>
+            {dst.ok ? "filled" : dst.reason || "—"}
+            {dst.confidence != null ? ` · conf ${dst.confidence}` : ""}
+          </code>
+        </li>
+        {dst.missing_asked?.length ? (
+          <li>
+            <span>Asked to fill</span>
+            <code>{dst.missing_asked.join(", ")}</code>
+          </li>
+        ) : null}
+        {Object.keys(filled).length ? (
+          <li>
+            <span>Merged slots</span>
+            <code>
+              {Object.entries(filled)
+                .map(([k, v]) => `${k}=${v}`)
+                .join(" · ")}
+            </code>
+          </li>
+        ) : null}
+        {regexNote ? (
+          <li>
+            <span>Regex</span>
+            <code>{regexNote}</code>
+          </li>
+        ) : null}
+      </ul>
+      <StageIO
+        request={{
+          missing: dst.missing_asked || null,
+          prior: dst.prior || null,
+        }}
+        payload={dst}
+      />
+    </div>
   );
 }
 
@@ -1236,7 +1376,8 @@ function NodeDetail({
       return (
         <>
           <p className="bn-rules-hint">
-            Tool / sticky dialogue for <code>{route || "—"}</code>.
+            Tool / sticky dialogue for <code>{route || "—"}</code>. Slot filling
+            (DST) is the next node when booking/cancel needs structured extracts.
           </p>
           <ul className="bn-fact-list">
             {trace?.booking?.stage ? (
@@ -1278,12 +1419,9 @@ function NodeDetail({
               (c) =>
                 String(c.role || "").startsWith("final_check") ||
                 [
-                  "booking_parse",
-                  "cancel_pick",
                   "staff_email",
                   "grounded_compose",
                   "fact_adapt",
-                  "query_rewrite",
                 ].includes(c.role)
             )
             .map((c, i) => (
@@ -1295,6 +1433,71 @@ function NodeDetail({
             ))}
         </>
       );
+
+    case "dst": {
+      const bookingDst =
+        trace?.booking?.booking_dst ||
+        trace?.booking?.arbiter_booking ||
+        null;
+      const cancelDst = trace?.cancel?.cancel_dst || null;
+      const ran = Boolean(
+        (bookingDst && bookingDst.called) || (cancelDst && cancelDst.called)
+      );
+      if (path !== "fsm") {
+        return <Skipped>DST runs on FSM booking / cancel turns.</Skipped>;
+      }
+      if (!ran) {
+        return (
+          <Skipped>
+            No slot-DST call this turn (regex filled everything, or dialogue did
+            not need identity/schedule slots).
+          </Skipped>
+        );
+      }
+      const regexNote = bookingDst
+        ? [
+            bookingDst.regex_identity &&
+            Object.keys(bookingDst.regex_identity).length
+              ? `identity ${JSON.stringify(bookingDst.regex_identity)}`
+              : "identity {}",
+            bookingDst.regex_course
+              ? `course=${bookingDst.regex_course}`
+              : "course=—",
+          ].join(" · ")
+        : null;
+      return (
+        <>
+          <p className="bn-rules-hint">
+            <strong>Dialogue State Tracking</strong> — schema-constrained cheap
+            LLM JSON after regex. Merges only supported slots; FSM still asks
+            for gaps and commits books/cancels.
+          </p>
+          {bookingDst?.called ? (
+            <SlotDstCard
+              title="Booking DST"
+              dst={bookingDst}
+              regexNote={regexNote}
+            />
+          ) : null}
+          {cancelDst?.called ? (
+            <SlotDstCard title="Cancel DST" dst={cancelDst} />
+          ) : null}
+          {llmCalls
+            .filter((c) =>
+              ["booking_dst", "booking_parse", "cancel_dst", "cancel_pick"].includes(
+                c.role
+              )
+            )
+            .map((c, i) => (
+              <LlmCallCard
+                key={`dst-llm-${i}`}
+                call={c}
+                defaultOpen={i === 0}
+              />
+            ))}
+        </>
+      );
+    }
 
     case "rag":
       if (path !== "rag") {
@@ -1428,7 +1631,7 @@ function NodeDetail({
       if (!ran) return <Skipped>Dense retrieve did not run.</Skipped>;
       return (
         <ChannelPoolPanel
-          title="Dense channel · Chroma vector search (embeddings). Runs in parallel with BM25."
+          title="Dense channel · Chroma vector search (embeddings). Click a row to expand the chunk."
           query={rag?.pass1_query || inbound}
           rows={hy?.dense_top || []}
           meta={{
@@ -1451,13 +1654,14 @@ function NodeDetail({
       if (!ran) return <Skipped>Sparse retrieve did not run.</Skipped>;
       return (
         <ChannelPoolPanel
-          title="Sparse channel · in-process BM25 over the same KB rows. No cloud search service."
+          title="Sparse channel · in-process BM25 over the same KB rows. Click a row to expand; matched query tokens are highlighted."
           query={rag?.pass1_query || inbound}
           rows={hy?.sparse_top || []}
           meta={{
             Pool: hy?.sparse_count ?? "—",
             Index: rag?.sparse_index_size ?? "—",
           }}
+          highlightTokens
           emptyHint={
             hy?.mode && hy.mode !== "hybrid_rrf"
               ? `BM25 skipped: ${hy.reason || hy.mode}`
@@ -1470,6 +1674,7 @@ function NodeDetail({
     case "fuse": {
       const hy = rag?.hybrid;
       const ran = path === "rag" || enrichMode || hy || hits.length;
+      const pass1 = rag?.pass1_hits || hits;
       if (!ran) return <Skipped>RRF fuse did not run.</Skipped>;
       if (hy && hy.mode !== "hybrid_rrf") {
         return (
@@ -1490,38 +1695,97 @@ function NodeDetail({
           </>
         );
       }
+      const how =
+        hy?.how ||
+        [
+          "Dense Chroma ranks by embedding similarity.",
+          "BM25 ranks by keyword / CJK token overlap.",
+          `RRF = 1/(k+dense_rank) + 1/(k+BM25_rank) with k=${hy?.rrf_k ?? 60}.`,
+          `Lexical re-rank then keep top_k=${rag?.top_k ?? 5} for the LLM.`,
+        ];
       return (
         <>
           <p className="bn-rules-hint">
-            <strong>Reciprocal Rank Fusion</strong> merges dense + BM25 rank lists
-            (score = Σ 1/(k + rank)). Docs in both lists rise; then lexical
-            re-rank keeps <code>top_k</code> for pass 1.
+            <strong>How the final {rag?.top_k ?? pass1.length || 5} chunks are chosen</strong>
           </p>
+          <ol className="bn-select-steps">
+            {how.map((line, i) => (
+              <li key={`fuse-how-${i}`}>{line}</li>
+            ))}
+          </ol>
           <ul className="bn-fact-list">
-            <li>
-              <span>Mode</span>
-              <code>{hy?.mode || rag?.retrieve_mode || "hybrid_rrf"}</code>
-            </li>
             <li>
               <span>RRF k</span>
               <code>{hy?.rrf_k ?? "—"}</code>
             </li>
             <li>
-              <span>Dense pool</span>
-              <code>{hy?.dense_count ?? "—"}</code>
+              <span>Pools</span>
+              <code>
+                dense {hy?.dense_count ?? "—"} · BM25 {hy?.sparse_count ?? "—"}
+              </code>
             </li>
             <li>
-              <span>BM25 pool</span>
-              <code>{hy?.sparse_count ?? "—"}</code>
-            </li>
-            <li>
-              <span>Channels</span>
+              <span>Channels in fuse</span>
               <code>
                 both {hy?.both ?? 0} · dense {hy?.dense_only ?? 0} · BM25{" "}
                 {hy?.sparse_only ?? 0}
               </code>
             </li>
+            <li>
+              <span>Keep</span>
+              <code>
+                top_k {rag?.top_k ?? "—"} after lexical · pool{" "}
+                {rag?.pool_returned ?? "—"}/{rag?.pool_k ?? "—"}
+              </code>
+            </li>
           </ul>
+          {(hy?.fused_preview || []).length ? (
+            <>
+              <p className="bn-rules-hint">RRF order (before lexical keep)</p>
+              <ul className="bn-fact-list">
+                {hy.fused_preview.slice(0, 8).map((row) => (
+                  <li key={`fp-${row.rank}-${row.source}`}>
+                    <span>
+                      #{row.rank} {row.title || row.source || "chunk"}
+                    </span>
+                    <code>
+                      RRF {row.rrf ?? "—"}
+                      {row.dense_rank != null ? ` · d#${row.dense_rank}` : ""}
+                      {row.sparse_rank != null ? ` · s#${row.sparse_rank}` : ""}
+                      {row.channels ? ` · ${row.channels}` : ""}
+                    </code>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+          {pass1.length ? (
+            <>
+              <p className="bn-rules-hint">
+                Kept for pass 1 (after lexical) — why each row won
+              </p>
+              <ul className="bn-fact-list">
+                {pass1.map((h, i) => (
+                  <li key={`kept-${h.source}-${i}`}>
+                    <span>
+                      #{h.rank ?? i + 1} {h.title || h.source || "hit"}
+                    </span>
+                    <code>
+                      {h.fusion?.dense_rank != null
+                        ? `d#${h.fusion.dense_rank}`
+                        : "d—"}
+                      {" · "}
+                      {h.fusion?.sparse_rank != null
+                        ? `s#${h.fusion.sparse_rank}`
+                        : "s—"}
+                      {h.fusion?.rrf != null ? ` · RRF ${h.fusion.rrf}` : ""}
+                      {h.rerank?.why ? ` → ${h.rerank.why}` : ""}
+                    </code>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
           <StageIO
             request={{
               query: rag?.pass1_query || inbound,
@@ -1531,6 +1795,14 @@ function NodeDetail({
               hybrid: hy || null,
               kept_top_k: rag?.top_k ?? null,
               pool_returned: rag?.pool_returned ?? null,
+              kept: pass1.map((h) => ({
+                rank: h.rank,
+                source: h.source,
+                dense_rank: h.fusion?.dense_rank ?? null,
+                sparse_rank: h.fusion?.sparse_rank ?? null,
+                rrf: h.fusion?.rrf ?? null,
+                order: h.rerank?.why || null,
+              })),
             }}
           />
         </>
@@ -1907,6 +2179,28 @@ export default function TurnPipeline({
         status: !hasTrace ? "idle" : path === "fsm" ? "done" : "skipped",
       },
       {
+        id: "dst",
+        label: "Slot fill · DST",
+        kind: "llm",
+        shape: "process",
+        status: !hasTrace
+          ? "idle"
+          : path !== "fsm"
+            ? "skipped"
+            : (trace?.booking?.booking_dst || trace?.booking?.arbiter_booking)
+                  ?.called || trace?.cancel?.cancel_dst?.called
+              ? (trace?.booking?.booking_dst || trace?.booking?.arbiter_booking)
+                  ?.ok || trace?.cancel?.cancel_dst?.ok
+                ? "done"
+                : "empty"
+              : route === "booking_tool" ||
+                  route === "cancel_dialogue" ||
+                  trace?.booking ||
+                  trace?.cancel
+                ? "skipped"
+                : "skipped",
+      },
+      {
         id: "rag",
         label: "RAG",
         kind: "rag",
@@ -2089,6 +2383,12 @@ export default function TurnPipeline({
     };
     if (path === "fsm") {
       lit.add("fsm");
+      if (
+        (trace?.booking?.booking_dst || trace?.booking?.arbiter_booking)?.called ||
+        trace?.cancel?.cancel_dst?.called
+      ) {
+        lit.add("dst");
+      }
       if (liveOn) lit.add("live");
       if (hits.length || enrichMode) lightHybrid();
       if (
@@ -2145,8 +2445,11 @@ export default function TurnPipeline({
     }
     if (path === "fsm") link("path", "fsm", "e-path-fsm");
     if (path === "rag") link("path", "rag", "e-path-rag");
-    if (on("fsm") && on("live")) link("fsm", "live", "e-fsm-live");
-    if (on("fsm") && on("llm")) link("fsm", "llm", "e-fsm-llm");
+    if (on("fsm") && on("dst")) link("fsm", "dst", "e-fsm-dst");
+    if (on("dst") && on("live")) link("dst", "live", "e-dst-live");
+    else if (on("fsm") && on("live")) link("fsm", "live", "e-fsm-live");
+    if (on("dst") && on("llm")) link("dst", "llm", "e-dst-llm");
+    else if (on("fsm") && on("llm")) link("fsm", "llm", "e-fsm-llm");
     if (on("fsm") && on("sheets")) link("fsm", "sheets", "e-fsm-sheets");
     if (on("rag") && on("dense")) link("rag", "dense", "e-rag-dense");
     if (on("rag") && on("sparse")) link("rag", "sparse", "e-rag-sparse");
@@ -2205,6 +2508,12 @@ export default function TurnPipeline({
       "e-arb-path": arbiter?.called ? arbiter.action || "keep" : "",
       "e-path-fsm": path === "fsm" ? "FSM" : "",
       "e-path-rag": path === "rag" ? "RAG" : "",
+      "e-fsm-dst":
+        (trace?.booking?.booking_dst || trace?.booking?.arbiter_booking)?.called ||
+        trace?.cancel?.cancel_dst?.called
+          ? "slot DST"
+          : "slots",
+      "e-dst-llm": "merge → ask",
       "e-rag-dense": "vectors",
       "e-rag-sparse": "keywords",
       "e-dense-fuse":
@@ -2231,7 +2540,7 @@ export default function TurnPipeline({
       "e-live-fuse": enrichMode ? "enrich" : "",
     };
     return labels;
-  }, [routing, winningRuleId, route, arbiter, path, hits, rag, enrichMode]);
+  }, [routing, winningRuleId, route, arbiter, path, hits, rag, enrichMode, trace]);
 
   const fitView = useCallback(() => {
     const el = viewportRef.current;

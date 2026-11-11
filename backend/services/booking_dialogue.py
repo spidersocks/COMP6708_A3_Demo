@@ -387,6 +387,35 @@ def _detect_day_of_month(text: str) -> Optional[int]:
     return None
 
 
+def _norm_person_name(raw: str) -> str:
+    s = (raw or "").strip(" .,;:!?")
+    if not s:
+        return ""
+    # Drop accidental sentence continuation ("Chester. I want…")
+    s = re.split(r"[.!?]+", s, maxsplit=1)[0].strip()
+    parts = [p for p in re.split(r"\s+", s) if p]
+    # Keep at most first+last; reject if a token looks like a sentence word
+    _stop = {
+        "i",
+        "want",
+        "to",
+        "book",
+        "a",
+        "the",
+        "my",
+        "and",
+        "looking",
+        "for",
+        "is",
+        "am",
+    }
+    parts = [p for p in parts if p.lower() not in _stop][:2]
+    s = " ".join(parts).strip(" .,;:!?")
+    if not s:
+        return ""
+    return s.title() if s.islower() or s.isupper() else s
+
+
 def _parse_identity(text: str) -> Dict[str, str]:
     """Pull parent / child names from a new-parent reply."""
     t = (text or "").strip()
@@ -394,20 +423,31 @@ def _parse_identity(text: str) -> Dict[str, str]:
     if not t:
         return out
 
+    # Allow "kid's name" / "child's name" (possessive), not only "kid name"
+    _child_cue = (
+        r"(?:my\s+)?(?:child|kid|son|daughter|girl|boy)(?:'?s)?(?:\s*name)?(?:\s+is)?"
+    )
+    # No '.' inside names — periods end the capture (avoids "Jeff. My" / "Chester. I")
+    _name = r"([A-Za-z][A-Za-z']*(?:\s+[A-Za-z][A-Za-z']*)?)"
     patterns = [
         (
             r"(?:i'?m|i\s+am|my\s+name\s+is|parent(?:\s*name)?(?:\s+is)?)\s+"
-            r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?).{0,40}?"
-            r"(?:(?:my\s+)?(?:child|kid|son|daughter|girl|boy)(?:\s*name)?(?:\s+is)?|booking\s+for|for)\s+"
-            r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+            + _name
+            + r".{0,60}?"
+            + r"(?:"
+            + _child_cue
+            + r"|booking\s+for|for)\s+"
+            + _name,
             "parent",
             "child",
         ),
         (
-            r"(?:child|kid|son|daughter)(?:\s*name)?(?:\s+is)?\s+"
-            r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?).{0,40}?"
-            r"(?:parent(?:\s*name)?(?:\s+is)?|i'?m|i\s+am)\s+"
-            r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+            _child_cue
+            + r"\s+"
+            + _name
+            + r".{0,60}?"
+            + r"(?:parent(?:\s*name)?(?:\s+is)?|i'?m|i\s+am|my\s+name\s+is)\s+"
+            + _name,
             "child",
             "parent",
         ),
@@ -422,10 +462,10 @@ def _parse_identity(text: str) -> Dict[str, str]:
         m = re.search(pat, t, re.I | re.S)
         if not m:
             continue
-        va, vb = m.group(1).strip(" .,"), m.group(2).strip(" .,")
+        va, vb = _norm_person_name(m.group(1)), _norm_person_name(m.group(2))
         if families._is_plausible_person_name(va) and families._is_plausible_person_name(vb):  # noqa: SLF001
-            out[a] = va.title() if va.islower() or va.isupper() else va
-            out[b] = vb.title() if vb.islower() or vb.isupper() else vb
+            out[a] = va
+            out[b] = vb
             return out
 
     # "Jane Lee / Mia Lee" or "Jane Lee, Mia Lee"
@@ -435,16 +475,36 @@ def _parse_identity(text: str) -> Dict[str, str]:
         t,
     )
     if m:
-        p, c = m.group(1).strip(), m.group(2).strip()
+        p, c = _norm_person_name(m.group(1)), _norm_person_name(m.group(2))
         if families._is_plausible_person_name(p) and families._is_plausible_person_name(c):  # noqa: SLF001
-            out["parent"] = p.title() if p.islower() else p
-            out["child"] = c.title() if c.islower() else c
+            out["parent"] = p
+            out["child"] = c
             return out
+
+    # Separate cues in one message: "My name is Jeff. My kid's name is Chester."
+    mp = re.search(
+        r"(?:i'?m|i\s+am|my\s+name\s+is|parent(?:\s*name)?(?:\s+is)?)\s+" + _name,
+        t,
+        re.I,
+    )
+    mc = re.search(_child_cue + r"\s+" + _name, t, re.I)
+    if mp:
+        p = _norm_person_name(mp.group(1))
+        if families._is_plausible_person_name(p):  # noqa: SLF001
+            out["parent"] = p
+    if mc:
+        c = _norm_person_name(mc.group(1))
+        if families._is_plausible_person_name(c):  # noqa: SLF001
+            out["child"] = c
+    if out.get("parent") and out.get("child"):
+        return out
+    if out.get("parent") or out.get("child"):
+        return out
 
     # Single plausible name when only one field is missing (handled by caller)
     m = re.match(r"^\s*([A-Za-z][A-Za-z'.]+(?:\s+[A-Za-z][A-Za-z'.]+)?)\s*$", t)
     if m and families._is_plausible_person_name(m.group(1)):  # noqa: SLF001
-        out["single"] = m.group(1).strip().title() if m.group(1).islower() else m.group(1).strip()
+        out["single"] = _norm_person_name(m.group(1))
     return out
 
 
@@ -749,33 +809,10 @@ def handle_turn(
             "state": None,
         }
 
-    # Merge hints from this utterance
+    # Merge hints from this utterance (regex first)
     course = _detect_course(text)
     teacher = _detect_teacher(text)
     when_bits = _parse_when(text)
-    # Demo: cheap LLM fill-in when regex missed course / when / teacher
-    if not course or not when_bits or not teacher:
-        try:
-            from services import demo_polish
-
-            hints = demo_polish.parse_booking_hints(text)
-            state["arbiter_booking"] = hints
-            if hints.get("ok"):
-                if not course and hints.get("course_key"):
-                    course = hints["course_key"]
-                if not when_bits:
-                    soft_when: Dict[str, Any] = {}
-                    if hints.get("window"):
-                        soft_when["window"] = hints["window"]
-                    if hints.get("weekday") is not None:
-                        soft_when["weekday"] = hints["weekday"]
-                    if soft_when:
-                        when_bits = soft_when
-                if not teacher and hints.get("teacher_hint"):
-                    # Map free-text hint through existing teacher detector if possible
-                    teacher = _detect_teacher(str(hints["teacher_hint"])) or teacher
-        except Exception as e:
-            print(f"[BOOKING] parse arbiter failed: {e}", flush=True)
     named_prog = _named_english_programme(text)
     if named_prog:
         state["programme_label"] = named_prog
@@ -798,6 +835,7 @@ def handle_turn(
 
     steps: List[str] = []
     identity = _parse_identity(text)
+    regex_identity = dict(identity)
     if identity.get("parent") and not family.get("matched"):
         state["parent_name"] = identity["parent"]
     if identity.get("child") and not state.get("child_name"):
@@ -809,14 +847,93 @@ def handle_turn(
         elif not state.get("child_name"):
             mentioned = identity["single"]
 
+    # Prefer UI-provided parent name once the New Parent profile is chosen
+    if not family.get("matched") and parent_name and not (state.get("parent_name") or "").strip():
+        if families._is_plausible_person_name(parent_name):  # noqa: SLF001
+            state["parent_name"] = parent_name
+
+    # Cheap-LLM DST when regex left identity / schedule slots empty
+    dst_missing: List[str] = []
+    if not family.get("matched"):
+        if not (state.get("parent_name") or "").strip():
+            dst_missing.append("parent_name")
+        child_probe = (state.get("child_name") or mentioned or "").strip()
+        if not child_probe or not families._is_plausible_person_name(child_probe):  # noqa: SLF001
+            dst_missing.append("child_name")
+    if not (state.get("course_key") or state.get("programme_label")):
+        dst_missing.append("course_key")
+    if not (state.get("when") or {}):
+        dst_missing.extend(["weekday", "window"])
+    if not teacher and not state.get("teacher_id"):
+        dst_missing.append("teacher_hint")
+
+    if dst_missing:
+        try:
+            from services import demo_polish
+
+            prior_slots = {
+                "parent_name": state.get("parent_name") or "",
+                "child_name": state.get("child_name") or mentioned or "",
+                "course_key": state.get("course_key") or "",
+                "weekday": (state.get("when") or {}).get("weekday"),
+                "window": (state.get("when") or {}).get("window"),
+                "teacher_hint": state.get("teacher_id") or "",
+                "stage": state.get("stage") or "",
+            }
+            dst = demo_polish.track_booking_slots(
+                text, prior=prior_slots, missing=dst_missing
+            )
+            dst["regex_identity"] = regex_identity
+            dst["regex_course"] = course
+            dst["regex_when"] = when_bits or {}
+            state["arbiter_booking"] = dst
+            state["booking_dst"] = dst
+            if dst.get("ok"):
+                filled = dst.get("filled") or {}
+                if (
+                    filled.get("parent_name")
+                    and not family.get("matched")
+                    and not (state.get("parent_name") or "").strip()
+                    and families._is_plausible_person_name(filled["parent_name"])  # noqa: SLF001
+                ):
+                    state["parent_name"] = filled["parent_name"]
+                    steps.append("dst_parent")
+                if (
+                    filled.get("child_name")
+                    and families._is_plausible_person_name(filled["child_name"])  # noqa: SLF001
+                    and not (
+                        mentioned and families._is_plausible_person_name(mentioned)  # noqa: SLF001
+                    )
+                ):
+                    mentioned = filled["child_name"]
+                    steps.append("dst_child")
+                if not course and filled.get("course_key"):
+                    course = filled["course_key"]
+                    state["course_key"] = course
+                    steps.append("dst_course")
+                if not when_bits:
+                    soft_when: Dict[str, Any] = {}
+                    if filled.get("window"):
+                        soft_when["window"] = filled["window"]
+                    if filled.get("weekday") is not None:
+                        soft_when["weekday"] = filled["weekday"]
+                    if soft_when:
+                        when_bits = soft_when
+                        merged_when = dict(state.get("when") or {})
+                        merged_when.update(when_bits)
+                        state["when"] = merged_when
+                        steps.append("dst_when")
+                if not teacher and filled.get("teacher_hint"):
+                    teacher = _detect_teacher(str(filled["teacher_hint"])) or teacher
+                    if teacher:
+                        state["teacher_id"] = teacher
+                        steps.append("dst_teacher")
+        except Exception as e:
+            print(f"[BOOKING] DST failed: {e}", flush=True)
+
     # --- New parent / unknown WhatsApp: collect parent + child names ---
     if not family.get("matched"):
         state["is_new_family"] = True
-        # Prefer UI-provided parent name once the New Parent profile is chosen
-        if parent_name and not (state.get("parent_name") or "").strip():
-            # Blank new-parent profile sends empty string — ignore placeholders
-            if families._is_plausible_person_name(parent_name):  # noqa: SLF001
-                state["parent_name"] = parent_name
         # Never keep pronoun / kinship fragments as child_name ("my", "child", …)
         if (state.get("child_name") or "").strip() and not families._is_plausible_person_name(  # noqa: SLF001
             state.get("child_name") or ""
@@ -883,7 +1000,10 @@ def handle_turn(
                     "stage": stage,
                     "phone": state.get("phone"),
                     "parent_name": state.get("parent_name") or "",
+                    "child_name": state.get("child_name") or mentioned or "",
                     "steps": steps,
+                    "booking_dst": state.get("booking_dst") or state.get("arbiter_booking"),
+                    "arbiter_booking": state.get("arbiter_booking"),
                 },
                 "state": state,
             }

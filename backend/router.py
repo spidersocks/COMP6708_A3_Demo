@@ -221,12 +221,15 @@ def _llm_trace_summary(
             uses.append("gap_polish")
         elif sid == "cancel_pick":
             uses.append("cancel_pick")
-        elif sid == "booking_parse":
-            uses.append("booking_parse")
+        elif sid in {"booking_parse", "booking_dst"}:
+            uses.append("booking_dst")
+        elif sid == "cancel_dst":
+            uses.append("cancel_dst")
         elif sid == "adapt":
             uses.append("fact_rewrite")
     cheap_called = bool(arb.get("called")) or any(
-        s.get("id") in {"gap_polish", "cancel_pick", "booking_parse"}
+        s.get("id")
+        in {"gap_polish", "cancel_pick", "booking_parse", "booking_dst", "cancel_dst"}
         and s.get("status") in {"done", "error"}
         for s in steps
     )
@@ -932,7 +935,10 @@ def chat(req: ChatRequest) -> ChatResponse:
         st = result.get("state") or {}
         if st.get("arbiter_pick") and "arbiter_pick" not in tc:
             tc["arbiter_pick"] = st["arbiter_pick"]
+        if st.get("cancel_dst") and "cancel_dst" not in tc:
+            tc["cancel_dst"] = st["cancel_dst"]
         pick = tc.get("arbiter_pick")
+        cdst = tc.get("cancel_dst")
         gate = tc.get("final_check") or {}
         if gate:
             steps.append(
@@ -942,6 +948,28 @@ def chat(req: ChatRequest) -> ChatResponse:
                     "done" if gate.get("called") else "skipped",
                     f"{gate.get('action')} · {gate.get('reason') or 'n/a'}"
                     + (f" · {gate.get('model')}" if gate.get("model") else ""),
+                )
+            )
+        if cdst and cdst.get("called"):
+            filled = cdst.get("filled") or {}
+            filled_keys = ",".join(sorted(filled.keys())) or "—"
+            if cdst.get("ok"):
+                cd_status = "done"
+                cd_detail = f"filled [{filled_keys}] · conf={cdst.get('confidence')}"
+            elif cdst.get("reason") == "parse_fail":
+                cd_status = "error"
+                cd_detail = "parse_fail"
+            else:
+                cd_status = "skipped"
+                cd_detail = f"{cdst.get('reason') or 'no_fill'} · conf={cdst.get('confidence')}"
+            if cdst.get("model"):
+                cd_detail = f"{cd_detail} · {cdst['model']}"
+            steps.append(
+                _step(
+                    "cancel_dst",
+                    "Cancel DST · cheap LLM slots",
+                    cd_status,
+                    cd_detail,
                 )
             )
         if pick and pick.get("called"):
@@ -998,7 +1026,9 @@ def chat(req: ChatRequest) -> ChatResponse:
             st = result.get("state") or {}
             if st.get("arbiter_booking") and "arbiter_booking" not in tb:
                 tb["arbiter_booking"] = st["arbiter_booking"]
-            hints = tb.get("arbiter_booking")
+            if st.get("booking_dst") and "booking_dst" not in tb:
+                tb["booking_dst"] = st["booking_dst"]
+            hints = tb.get("booking_dst") or tb.get("arbiter_booking")
             gate = tb.get("final_check") or {}
             if gate:
                 steps.append(
@@ -1011,21 +1041,25 @@ def chat(req: ChatRequest) -> ChatResponse:
                     )
                 )
             if hints and hints.get("called"):
+                filled = hints.get("filled") or {}
+                filled_keys = ",".join(sorted(filled.keys())) or "—"
                 if hints.get("ok"):
                     bp_status = "done"
-                    bp_detail = f"ok · conf={hints.get('confidence')}"
+                    bp_detail = f"filled [{filled_keys}] · conf={hints.get('confidence')}"
                 elif hints.get("reason") == "parse_fail":
                     bp_status = "error"
                     bp_detail = "parse_fail"
                 else:
                     bp_status = "skipped"
-                    bp_detail = f"no_fill · conf={hints.get('confidence')}"
+                    bp_detail = (
+                        f"{hints.get('reason') or 'no_fill'} · conf={hints.get('confidence')}"
+                    )
                 if hints.get("model"):
                     bp_detail = f"{bp_detail} · {hints['model']}"
                 steps.append(
                     _step(
-                        "booking_parse",
-                        "Cheap LLM booking parse",
+                        "booking_dst",
+                        "Booking DST · cheap LLM slots",
                         bp_status,
                         bp_detail,
                     )

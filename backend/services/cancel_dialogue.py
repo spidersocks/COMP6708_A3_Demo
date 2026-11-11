@@ -414,6 +414,31 @@ def handle_turn(
     if not mentioned and child_name_hint and not state.get("child_name"):
         mentioned = child_name_hint
 
+    # Cheap-LLM DST when roster/regex did not resolve the child (or course filter)
+    cancel_dst: Optional[Dict[str, Any]] = None
+    if not state.get("child_name") and not (
+        mentioned and families._is_plausible_person_name(mentioned)  # noqa: SLF001
+    ):
+        try:
+            from services import demo_polish
+
+            cancel_dst = demo_polish.track_cancel_slots(
+                text,
+                known_children=known,
+                prior={
+                    "child_name": state.get("child_name") or "",
+                    "stage": state.get("stage") or "",
+                },
+                missing=["child_name", "course_key", "weekday"],
+            )
+            state["cancel_dst"] = cancel_dst
+            if cancel_dst.get("ok") and (cancel_dst.get("filled") or {}).get("child_name"):
+                cand = cancel_dst["filled"]["child_name"]
+                if families._is_plausible_person_name(cand):  # noqa: SLF001
+                    mentioned = cand
+        except Exception as e:
+            print(f"[CANCEL] DST failed: {e}", flush=True)
+
     # Resolve child
     if not state.get("child_name"):
         resolved = families.resolve_child(
@@ -430,7 +455,11 @@ def handle_turn(
                     + (f" On this number I have: {names}." if names else "")
                 ),
                 "provider": "cancel_dialogue",
-                "trace_cancel": {"stage": "need_child", "candidates": names},
+                "trace_cancel": {
+                    "stage": "need_child",
+                    "candidates": names,
+                    "cancel_dst": cancel_dst or state.get("cancel_dst"),
+                },
                 "state": state,
             }
         state["child_name"] = resolved["child"]["child_name"]

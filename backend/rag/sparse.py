@@ -117,12 +117,47 @@ class SparseIndex:
         return out
 
 
+def _channel_preview(
+    hits: Sequence[Dict[str, Any]],
+    *,
+    channel: str,
+    question: str = "",
+    limit: int = 15,
+) -> List[Dict[str, Any]]:
+    """Inspector rows for dense/sparse pools (expandable text + BM25 token matches)."""
+    q_toks = tokenize(question) if question else []
+    q_set = set(q_toks)
+    preview: List[Dict[str, Any]] = []
+    for i, h in enumerate(list(hits)[: max(0, limit)]):
+        meta = h.get("metadata") or {}
+        text = str(h.get("text") or "")
+        row: Dict[str, Any] = {
+            "rank": i + 1,
+            "id": h.get("id"),
+            "source": meta.get("source"),
+            "title": meta.get("title") or meta.get("canonical"),
+            "score": h.get("score"),
+            "snippet": text[:280],
+            "text": text[:4000],
+            "char_count": len(text),
+            "channel": channel,
+        }
+        if channel == "sparse" and q_set:
+            doc_toks = set(tokenize(text))
+            matched = sorted(q_set & doc_toks, key=lambda t: (-len(t), t))
+            row["query_tokens"] = sorted(set(q_toks), key=lambda t: (-len(t), t))
+            row["matched_tokens"] = matched
+        preview.append(row)
+    return preview
+
+
 def rrf_fuse(
     dense: Sequence[Dict[str, Any]],
     sparse: Sequence[Dict[str, Any]],
     *,
     rrf_k: int = 60,
     limit: int = 20,
+    question: str = "",
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     Reciprocal Rank Fusion: score(d) = Σ 1/(k + rank_i).
@@ -173,6 +208,14 @@ def rrf_fuse(
             "dense_rank": dense_rank.get(kid),
             "sparse_rank": sparse_rank.get(kid),
             "channels": channels,
+            "contrib": {
+                "dense": round(1.0 / (k + dense_rank[kid]), 6)
+                if kid in dense_rank
+                else 0.0,
+                "sparse": round(1.0 / (k + sparse_rank[kid]), 6)
+                if kid in sparse_rank
+                else 0.0,
+            },
         }
         # Keep vector score when present; else leave BM25 score
         if channels == "sparse" and "score" in h:
@@ -188,21 +231,27 @@ def rrf_fuse(
         "dense_only": sum(1 for h in out if (h.get("fusion") or {}).get("channels") == "dense"),
         "sparse_only": sum(1 for h in out if (h.get("fusion") or {}).get("channels") == "sparse"),
         "both": sum(1 for h in out if (h.get("fusion") or {}).get("channels") == "both"),
-        "dense_top": [
-            {
-                "rank": i + 1,
-                "source": (h.get("metadata") or {}).get("source"),
-                "score": h.get("score"),
-            }
-            for i, h in enumerate(list(dense)[:5])
+        "how": [
+            "Dense Chroma ranks chunks by embedding similarity.",
+            "BM25 ranks the same KB by keyword / CJK token overlap.",
+            f"RRF score = 1/({k}+dense_rank) + 1/({k}+BM25_rank); both-lists boost.",
+            "Lexical re-rank (age / path / folder / overlap) then keep top_k for the LLM.",
         ],
-        "sparse_top": [
+        "dense_top": _channel_preview(dense, channel="dense", question=question),
+        "sparse_top": _channel_preview(sparse, channel="sparse", question=question),
+        "fused_preview": [
             {
                 "rank": i + 1,
                 "source": (h.get("metadata") or {}).get("source"),
-                "score": h.get("score"),
+                "title": (h.get("metadata") or {}).get("title")
+                or (h.get("metadata") or {}).get("canonical"),
+                "rrf": (h.get("fusion") or {}).get("rrf"),
+                "dense_rank": (h.get("fusion") or {}).get("dense_rank"),
+                "sparse_rank": (h.get("fusion") or {}).get("sparse_rank"),
+                "channels": (h.get("fusion") or {}).get("channels"),
+                "contrib": (h.get("fusion") or {}).get("contrib"),
             }
-            for i, h in enumerate(list(sparse)[:5])
+            for i, h in enumerate(out[:12])
         ],
     }
     return out, debug

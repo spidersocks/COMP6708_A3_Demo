@@ -1294,10 +1294,33 @@ code,
   max-width: 58%;
 }
 .bn-shape-cylinder .bn-flow-node-body {
-  /* Sit below the cylinder lid ellipse; extra air for multi-word labels */
-  padding: 24px 12px 14px;
+  /* Sit clearly below the cylinder lid ellipse */
+  padding: 34px 12px 12px;
   max-width: 90%;
   gap: 5px;
+}
+.bn-tok-hit {
+  background: rgba(255, 196, 72, 0.55);
+  color: inherit;
+  padding: 0 1px;
+  border-radius: 2px;
+}
+.bn-select-steps {
+  margin: 0.35rem 0 0.65rem;
+  padding-left: 1.2rem;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: #3d5156;
+}
+.bn-select-steps li {
+  margin: 0.2rem 0;
+}
+.bn-dst-card {
+  margin: 0.55rem 0 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.85);
 }
 .bn-shape-cylinder .bn-pipe-node-label {
   font-size: 0.7rem;
