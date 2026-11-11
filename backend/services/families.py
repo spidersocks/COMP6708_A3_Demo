@@ -180,6 +180,23 @@ _COURSE_NAME_BLOCKLIST = {
     "any",
     "someone",
     "somebody",
+    # Function words the name cue used to swallow ("my son started on phonics")
+    "started",
+    "start",
+    "on",
+    "onto",
+    "into",
+    "get",
+    "getting",
+    "like",
+    "want",
+    "please",
+    "for",
+    "with",
+    "from",
+    "about",
+    "and",
+    "to",
 }
 
 

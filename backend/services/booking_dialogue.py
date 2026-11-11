@@ -521,7 +521,12 @@ def _parse_identity(text: str) -> Dict[str, str]:
         t,
         re.I,
     )
-    mc = re.search(_child_cue + r"\s+" + _name, t, re.I)
+    # Require an identity verb. Bare "my son started …" is not a name.
+    _child_id = (
+        r"(?:my\s+)?(?:child|kid|son|daughter|girl|boy)(?:'?s)?"
+        r"(?:\s*name\s+is|\s+is(?:\s+(?:named|called))?|\s+(?:named|called))"
+    )
+    mc = re.search(_child_id + r"\s+" + _name, t, re.I)
     if mp:
         p = _norm_person_name(mp.group(1))
         if families._is_plausible_person_name(p):  # noqa: SLF001

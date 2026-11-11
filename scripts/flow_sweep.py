@@ -441,7 +441,7 @@ def main() -> None:
         side["notes"].append("terry_family" if "Terry" in blob else "terry_family_missing")
     except Exception as e:
         side["notes"].append(f"families_err:{e}")
-    side["turns"] = [{"message": "side", "ms": 0, "route": "", "issues": [n for n in side["notes"] if "missing" in n or "err" in n], "answer": " ".join(side["notes"])}]
+    side["turns"] = [{"message": "side", "ms": 0, "route": "", "issues": [n for n in side["notes"] if "missing" in n or n.startswith("schedule_err") or n.startswith("families_err")], "answer": " ".join(side["notes"])}]
     record(side)
 
     issues = []

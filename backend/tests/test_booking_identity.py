@@ -46,6 +46,13 @@ def test_parse_identity_kid_possessive():
     assert got.get("child") == "Chester"
 
 
+def test_son_started_is_not_a_child_name():
+    got = bd._parse_identity("I'd like to get my son started on phonics")
+    assert "child" not in got
+    assert not families._is_plausible_person_name("Started On")  # noqa: SLF001
+    assert families._is_plausible_person_name("Terry Gunton")  # noqa: SLF001
+
+
 def test_parse_identity_named_david():
     got = bd._parse_identity(
         "I'm General Humpty and my child is named David. I want to do phonics"
