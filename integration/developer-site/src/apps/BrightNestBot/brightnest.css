@@ -637,6 +637,28 @@ code,
   overflow: hidden;
   padding-right: 0;
 }
+.bn-pane-system,
+.bn-pane-staff {
+  display: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+.bn-pane-system.is-visible,
+.bn-pane-staff.is-visible {
+  display: flex;
+  flex-direction: column;
+}
+.bn-pane-system.is-visible {
+  height: 100%;
+}
+.bn-pane-staff.is-visible {
+  height: 100%;
+}
+.bn-pane-staff .bn-browser {
+  flex: 1 1 auto;
+  min-height: 0;
+}
 
 /* Staff desk only: fixed height matching the phone so the rounded browser fills */
 .bn-inspector--staff {
@@ -1110,15 +1132,43 @@ code,
 }
 .bn-pipe-edge-label {
   fill: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
   font-family: var(--font-mono);
-  opacity: 0.55;
+  opacity: 0.45;
   pointer-events: none;
 }
 .bn-pipe-edge-label.is-lit {
-  fill: var(--teal-deep);
+  fill: var(--teal-ink);
   opacity: 1;
   font-weight: 650;
+  paint-order: stroke;
+  stroke: rgba(255, 255, 255, 0.92);
+  stroke-width: 3px;
+}
+.bn-score-howto {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(18, 169, 188, 0.06);
+  border: 1px solid rgba(18, 169, 188, 0.16);
+}
+.bn-score-howto p {
+  margin: 0 0 6px;
+  color: var(--teal-ink);
+  font-size: 0.82rem;
+}
+.bn-score-howto ol {
+  margin: 0;
+  padding-left: 1.15rem;
+  font-size: 0.78rem;
+  color: var(--ink);
+  line-height: 1.45;
+}
+.bn-score-howto li {
+  margin: 0 0 3px;
+}
+.bn-score-howto code {
+  font-size: 0.74rem;
 }
 .bn-flow-nodes {
   position: absolute;

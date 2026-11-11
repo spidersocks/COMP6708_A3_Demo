@@ -43,27 +43,27 @@ const LAYOUT = {
   answer: { x: 0, y: 748, w: 156, h: 42 },
 };
 
+/** Spine: parent → memory → router → rules → tier → branch…  Arbiter is optional side. */
 const EDGES = [
-  { from: "parent", to: "memory" },
-  { from: "memory", to: "router" },
-  { from: "router", to: "rules" },
-  { from: "router", to: "arbiter" },
-  { from: "rules", to: "tier" },
-  { from: "arbiter", to: "tier" },
-  { from: "router", to: "tier" },
-  { from: "tier", to: "soft", label: "live" },
-  { from: "tier", to: "hard", label: "hard" },
-  { from: "tier", to: "rag", label: "RAG" },
-  { from: "soft", to: "hko" },
-  { from: "soft", to: "llm" },
-  { from: "soft", to: "chroma", dashed: true },
-  { from: "hard", to: "llm" },
-  { from: "hard", to: "sheets" },
-  { from: "rag", to: "chroma" },
-  { from: "chroma", to: "llm" },
-  { from: "hko", to: "llm", dashed: true },
-  { from: "llm", to: "answer" },
-  { from: "sheets", to: "answer" },
+  { id: "e-parent-mem", from: "parent", to: "memory" },
+  { id: "e-mem-router", from: "memory", to: "router" },
+  { id: "e-router-rules", from: "router", to: "rules" },
+  { id: "e-rules-tier", from: "rules", to: "tier" },
+  { id: "e-router-arb", from: "router", to: "arbiter", dashed: true },
+  { id: "e-arb-tier", from: "arbiter", to: "tier", dashed: true },
+  { id: "e-tier-soft", from: "tier", to: "soft", label: "live" },
+  { id: "e-tier-hard", from: "tier", to: "hard", label: "hard" },
+  { id: "e-tier-rag", from: "tier", to: "rag", label: "RAG" },
+  { id: "e-soft-hko", from: "soft", to: "hko" },
+  { id: "e-soft-llm", from: "soft", to: "llm" },
+  { id: "e-soft-chroma", from: "soft", to: "chroma", dashed: true },
+  { id: "e-hard-llm", from: "hard", to: "llm" },
+  { id: "e-hard-sheets", from: "hard", to: "sheets" },
+  { id: "e-rag-chroma", from: "rag", to: "chroma" },
+  { id: "e-chroma-llm", from: "chroma", to: "llm" },
+  { id: "e-hko-llm", from: "hko", to: "llm", dashed: true },
+  { id: "e-llm-answer", from: "llm", to: "answer" },
+  { id: "e-sheets-answer", from: "sheets", to: "answer" },
 ];
 
 const WORLD = { minX: -340, minY: -28, maxX: 340, maxY: 820 };
@@ -137,6 +137,16 @@ function priorChatTurns(chatHistory, inbound) {
 function nodeAnchor(id, side = "bottom") {
   const n = LAYOUT[id];
   if (!n) return { x: 0, y: 0 };
+  // Diamond ports sit on the diamond vertices (inset from the square bbox)
+  if (id === "tier") {
+    const inset = n.w * 0.08;
+    if (side === "top") return { x: n.x, y: n.y - n.h / 2 + inset };
+    if (side === "bottom") return { x: n.x, y: n.y + n.h / 2 - inset };
+    if (side === "left") return { x: n.x - n.w / 2 + inset, y: n.y };
+    if (side === "right") return { x: n.x + n.w / 2 - inset, y: n.y };
+    if (side === "sw") return { x: n.x - n.w * 0.28, y: n.y + n.h * 0.28 };
+    if (side === "se") return { x: n.x + n.w * 0.28, y: n.y + n.h * 0.28 };
+  }
   if (side === "top") return { x: n.x, y: n.y - n.h / 2 };
   if (side === "left") return { x: n.x - n.w / 2, y: n.y };
   if (side === "right") return { x: n.x + n.w / 2, y: n.y };
@@ -144,29 +154,80 @@ function nodeAnchor(id, side = "bottom") {
   return { x: n.x, y: n.y + n.h / 2 };
 }
 
+function shorten(a, b, padStart = 2, padEnd = 10) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  return {
+    start: {
+      x: a.x + (dx / len) * padStart,
+      y: a.y + (dy / len) * padStart,
+    },
+    end: {
+      x: b.x - (dx / len) * padEnd,
+      y: b.y - (dy / len) * padEnd,
+    },
+  };
+}
+
 function edgeGeometry(fromId, toId) {
   const a = LAYOUT[fromId];
   const b = LAYOUT[toId];
   if (!a || !b) return null;
-  const start = nodeAnchor(fromId, "bottom");
-  const end = nodeAnchor(toId, "top");
-  if (fromId === "tier") {
-    if (toId === "soft") {
-      start.x = a.x - a.w * 0.28;
-      start.y = a.y + a.h * 0.22;
-    } else if (toId === "rag") {
-      start.x = a.x + a.w * 0.28;
-      start.y = a.y + a.h * 0.22;
-    } else {
-      start.x = a.x;
-      start.y = a.y + a.h / 2;
-    }
+
+  let rawStart;
+  let rawEnd;
+
+  if (fromId === "tier" && toId === "soft") {
+    rawStart = nodeAnchor("tier", "sw");
+    rawEnd = nodeAnchor(toId, "top");
+  } else if (fromId === "tier" && toId === "rag") {
+    rawStart = nodeAnchor("tier", "se");
+    rawEnd = nodeAnchor(toId, "top");
+  } else if (fromId === "tier" && toId === "hard") {
+    rawStart = nodeAnchor("tier", "bottom");
+    rawEnd = nodeAnchor(toId, "top");
+  } else if (fromId === "router" && toId === "rules") {
+    rawStart = nodeAnchor("router", "left");
+    rawEnd = nodeAnchor("rules", "top");
+  } else if (fromId === "router" && toId === "arbiter") {
+    rawStart = nodeAnchor("router", "right");
+    rawEnd = nodeAnchor("arbiter", "top");
+  } else if (fromId === "rules" && toId === "tier") {
+    rawStart = nodeAnchor("rules", "bottom");
+    rawEnd = nodeAnchor("tier", "left");
+  } else if (fromId === "arbiter" && toId === "tier") {
+    rawStart = nodeAnchor("arbiter", "bottom");
+    rawEnd = nodeAnchor("tier", "right");
+  } else if (Math.abs(b.x - a.x) > 40 && Math.abs(b.y - a.y) < 30) {
+    rawStart = nodeAnchor(fromId, b.x < a.x ? "left" : "right");
+    rawEnd = nodeAnchor(toId, b.x < a.x ? "right" : "left");
+  } else {
+    rawStart = nodeAnchor(fromId, "bottom");
+    rawEnd = nodeAnchor(toId, "top");
   }
-  const midY = (start.y + end.y) / 2;
-  return {
-    d: `M ${start.x} ${start.y} C ${start.x} ${midY}, ${end.x} ${midY}, ${end.x} ${end.y}`,
-    labelAt: { x: (start.x + end.x) / 2, y: midY - 4 },
-  };
+
+  const { start, end } = shorten(rawStart, rawEnd, 1, 11);
+  const dx = Math.abs(end.x - start.x);
+  const dy = Math.abs(end.y - start.y);
+  let d;
+  let labelAt;
+  if (dx < 8) {
+    // Vertical
+    const midY = (start.y + end.y) / 2;
+    d = `M ${start.x} ${start.y} L ${end.x} ${end.y}`;
+    labelAt = { x: start.x + 10, y: midY };
+  } else if (fromId === "router" || toId === "tier") {
+    // Orthogonal elbow for fan-ins/outs
+    const midY = (start.y + end.y) / 2;
+    d = `M ${start.x} ${start.y} L ${start.x} ${midY} L ${end.x} ${midY} L ${end.x} ${end.y}`;
+    labelAt = { x: (start.x + end.x) / 2, y: midY - 6 };
+  } else {
+    const midY = (start.y + end.y) / 2;
+    d = `M ${start.x} ${start.y} C ${start.x} ${midY}, ${end.x} ${midY}, ${end.x} ${end.y}`;
+    labelAt = { x: (start.x + end.x) / 2, y: midY - 5 };
+  }
+  return { d, labelAt, start, end };
 }
 
 function QueryHighlight({ segments, fallback, cue }) {
@@ -388,14 +449,13 @@ function RuleEvidence({ rule, defaultOpen = false, isWinner = false }) {
           </div>
           {rule.score_origin?.source && rule.score_origin.source !== "none" ? (
             <div className="bn-rule-block">
-              <span>Where this score came from</span>
+              <span>Score source</span>
               <p>
                 <code>{rule.score_origin.source}</code>
                 {rule.score_origin.score != null
-                  ? ` = ${Number(rule.score_origin.score).toFixed(3)}`
+                  ? ` = ${Number(rule.score_origin.score).toFixed(2)}`
                   : ""}
-                {" — "}
-                {rule.score_origin.why || "see score ledger"}
+                {rule.score_origin.why ? ` — ${rule.score_origin.why}` : ""}
               </p>
             </div>
           ) : null}
@@ -601,9 +661,17 @@ function NodeDetail({
     case "rules":
       return (
         <>
-          <p className="bn-rules-hint">
-            Detector awards for this turn — not RAG similarity.
-          </p>
+          <div className="bn-score-howto">
+            <p>
+              <strong>How a route wins</strong>
+            </p>
+            <ol>
+              <li>Each detector that matches awards a <em>fixed</em> score (not RAG similarity).</li>
+              <li>Drop anything under <code>0.28</code>.</li>
+              <li>Highest score wins. Ties break by priority: escalate → off-domain → weather → cancel → book → seats → hours → RAG.</li>
+              <li>If nothing matched → RAG at <code>0.5</code>.</li>
+            </ol>
+          </div>
           {routing?.scores && Object.keys(routing.scores).length > 0 ? (
             <details className="bn-rules" open>
               <summary>Scores · detector awards</summary>
@@ -1283,6 +1351,7 @@ export default function TurnPipeline({
         label: "Session memory",
         kind: "store",
         shape: "cylinder",
+        // Always consulted when history is enabled — empty prior is still a real load.
         status: !hasTrace
           ? "idle"
           : history?.enabled === false
@@ -1425,8 +1494,9 @@ export default function TurnPipeline({
 
   const activePath = useMemo(() => {
     if (!trace) return new Set();
-    const path = new Set(["parent", "memory", "router", "tier", "answer"]);
-    if (rulesEvaluated.length) path.add("rules");
+    // Memory is always on the spine when history ran (even 0 prior turns).
+    const path = new Set(["parent", "memory", "router", "rules", "tier", "answer"]);
+    if (history?.enabled === false) path.delete("memory");
     if (arbiter?.called) path.add("arbiter");
     if (tier === "soft") {
       path.add("soft");
@@ -1451,7 +1521,7 @@ export default function TurnPipeline({
     return path;
   }, [
     trace,
-    rulesEvaluated.length,
+    history?.enabled,
     arbiter,
     tier,
     facts,
@@ -1462,11 +1532,88 @@ export default function TurnPipeline({
     staffMessage,
   ]);
 
+  const litEdgeIds = useMemo(() => {
+    if (!trace) return new Set();
+    const lit = new Set();
+    const on = (id) => activePath.has(id);
+    const ok = (id) =>
+      statusById[id] === "done" ||
+      statusById[id] === "empty" ||
+      (id === "memory" && on(id));
+    const link = (from, to, edgeId) => {
+      if (on(from) && on(to) && ok(from) && ok(to)) lit.add(edgeId);
+    };
+    link("parent", "memory", "e-parent-mem");
+    link("memory", "router", "e-mem-router");
+    link("router", "rules", "e-router-rules");
+    link("rules", "tier", "e-rules-tier");
+    if (arbiter?.called) {
+      link("router", "arbiter", "e-router-arb");
+      link("arbiter", "tier", "e-arb-tier");
+    }
+    if (tier === "soft") link("tier", "soft", "e-tier-soft");
+    if (tier === "hard") link("tier", "hard", "e-tier-hard");
+    if (tier === "rag") link("tier", "rag", "e-tier-rag");
+    if (on("soft") && on("hko")) link("soft", "hko", "e-soft-hko");
+    if (on("soft") && on("llm")) link("soft", "llm", "e-soft-llm");
+    if (on("soft") && on("chroma")) link("soft", "chroma", "e-soft-chroma");
+    if (on("hard") && on("llm")) link("hard", "llm", "e-hard-llm");
+    if (on("hard") && on("sheets")) link("hard", "sheets", "e-hard-sheets");
+    if (on("rag") && on("chroma")) link("rag", "chroma", "e-rag-chroma");
+    if (on("chroma") && on("llm")) link("chroma", "llm", "e-chroma-llm");
+    if (on("hko") && on("llm")) link("hko", "llm", "e-hko-llm");
+    if (on("llm")) link("llm", "answer", "e-llm-answer");
+    if (on("sheets")) link("sheets", "answer", "e-sheets-answer");
+    return lit;
+  }, [trace, activePath, statusById, arbiter, tier]);
+
+  const edgeLabels = useMemo(() => {
+    const priorN = Number(history?.turns_loaded || 0);
+    const win =
+      matchSummary?.cue
+        ? `«${clip(matchSummary.cue, 18)}»`
+        : winningRuleId || route || "";
+    const labels = {
+      "e-parent-mem": "inbound",
+      "e-mem-router":
+        priorN > 0
+          ? `${priorN} prior msg${priorN === 1 ? "" : "s"}`
+          : "0 prior",
+      "e-router-rules": "detectors",
+      "e-rules-tier": win ? `→ ${win}` : "pick",
+      "e-router-arb": arbiter?.called ? "review" : "",
+      "e-arb-tier": arbiter?.action || "",
+      "e-tier-soft": "live",
+      "e-tier-hard": "hard",
+      "e-tier-rag": "RAG",
+      "e-soft-hko": facts ? "hours" : "",
+      "e-soft-chroma": enrichMode ? "enrich" : "",
+      "e-rag-chroma": hits.length ? `${hits.length} hits` : "retrieve",
+      "e-chroma-llm": hits.length ? `top ${scoreLabel(hits[0]?.score) || "—"}` : "",
+      "e-hard-sheets": adminTodo || staffMessage ? "write" : "",
+      "e-llm-answer": "reply",
+    };
+    return labels;
+  }, [
+    history?.turns_loaded,
+    matchSummary,
+    winningRuleId,
+    route,
+    arbiter,
+    facts,
+    enrichMode,
+    hits,
+    adminTodo,
+    staffMessage,
+  ]);
+
   const fitView = useCallback(() => {
     const el = viewportRef.current;
-    if (!el) return;
+    if (!el) return false;
+    // Skip while the system pane is display:none (staff desk) — avoids zoom flash.
+    if (el.offsetParent === null && el.getClientRects().length === 0) return false;
     const { width, height } = el.getBoundingClientRect();
-    if (width < 40 || height < 40) return;
+    if (width < 120 || height < 120) return false;
     const gw = WORLD.maxX - WORLD.minX;
     const gh = WORLD.maxY - WORLD.minY;
     const pad = 36;
@@ -1476,31 +1623,53 @@ export default function TurnPipeline({
     );
     const cx = (WORLD.minX + WORLD.maxX) / 2;
     const cy = (WORLD.minY + WORLD.maxY) / 2;
-    setZoom(nextZoom);
-    setPan({
+    const nextPan = {
       x: width / 2 - cx * nextZoom,
       y: height / 2 - cy * nextZoom,
-    });
+    };
+    zoomRef.current = nextZoom;
+    panRef.current = nextPan;
+    setZoom(nextZoom);
+    setPan(nextPan);
+    return true;
   }, []);
 
   useEffect(() => {
     setActiveId(null);
-    fittedRef.current = false;
   }, [turnKey]);
 
+  // Fit once when the canvas has a real size; never on hide/show of staff desk.
   useEffect(() => {
-    if (fittedRef.current) return;
-    const t = window.setTimeout(() => {
-      fitView();
-      fittedRef.current = true;
-    }, 40);
+    if (fittedRef.current) return undefined;
+    let tries = 0;
+    const tick = () => {
+      tries += 1;
+      if (fitView()) {
+        fittedRef.current = true;
+        return;
+      }
+      if (tries < 20) window.setTimeout(tick, 50);
+    };
+    const t = window.setTimeout(tick, 30);
     return () => window.clearTimeout(t);
-  }, [fitView, turnKey]);
+  }, [fitView]);
 
   useEffect(() => {
-    const onResize = () => fitView();
+    let timer = null;
+    const onResize = () => {
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        const el = viewportRef.current;
+        if (!el) return;
+        if (el.offsetParent === null && el.getClientRects().length === 0) return;
+        fitView();
+      }, 120);
+    };
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      if (timer) window.clearTimeout(timer);
+    };
   }, [fitView]);
 
   useEffect(() => {
@@ -1669,39 +1838,49 @@ export default function TurnPipeline({
                 viewBox="0 0 10 10"
                 refX="9"
                 refY="5"
-                markerWidth="7"
-                markerHeight="7"
+                markerWidth="6"
+                markerHeight="6"
                 orient="auto-start-reverse"
+                markerUnits="strokeWidth"
               >
-                <path d="M 0 1.2 L 9 5 L 0 8.8 Z" fill="currentColor" />
+                <path d="M 0 1.2 L 9 5 L 0 8.8 Z" fill="rgba(18,169,188,0.35)" />
+              </marker>
+              <marker
+                id="bn-flow-arrow-lit"
+                viewBox="0 0 10 10"
+                refX="9"
+                refY="5"
+                markerWidth="6"
+                markerHeight="6"
+                orient="auto-start-reverse"
+                markerUnits="strokeWidth"
+              >
+                <path d="M 0 1.2 L 9 5 L 0 8.8 Z" fill="#0b7f8f" />
               </marker>
             </defs>
             {EDGES.map((edge) => {
               const geo = edgeGeometry(edge.from, edge.to);
               if (!geo) return null;
-              const lit =
-                activePath.has(edge.from) &&
-                activePath.has(edge.to) &&
-                statusById[edge.from] === "done" &&
-                (statusById[edge.to] === "done" ||
-                  statusById[edge.to] === "empty");
+              const lit = litEdgeIds.has(edge.id);
+              const label =
+                (lit && edgeLabels[edge.id]) || (lit ? edge.label : "") || "";
               return (
-                <g key={`${edge.from}-${edge.to}`}>
+                <g key={edge.id}>
                   <path
                     d={geo.d}
                     className={`bn-pipe-edge${lit ? " is-lit" : ""}${
                       edge.dashed ? " is-dashed" : ""
                     }`}
-                    markerEnd="url(#bn-flow-arrow)"
+                    markerEnd={lit ? "url(#bn-flow-arrow-lit)" : "url(#bn-flow-arrow)"}
                   />
-                  {edge.label ? (
+                  {label ? (
                     <text
                       x={geo.labelAt.x}
                       y={geo.labelAt.y}
                       className={`bn-pipe-edge-label${lit ? " is-lit" : ""}`}
                       textAnchor="middle"
                     >
-                      {edge.label}
+                      {label}
                     </text>
                   ) : null}
                 </g>
@@ -1718,7 +1897,10 @@ export default function TurnPipeline({
               <FlowNode
                 key={n.id}
                 node={n}
-                lit={activePath.has(n.id) && n.status === "done"}
+                lit={
+                  activePath.has(n.id) &&
+                  (n.status === "done" || n.status === "empty")
+                }
                 active={activeId === n.id}
               />
             ))}

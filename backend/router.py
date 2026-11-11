@@ -702,7 +702,7 @@ def chat(req: ChatRequest) -> ChatResponse:
         from services import final_check, staff_email
 
         esc = decision.debug.get("escalation") or escalation_svc.detect_escalation(message)
-        # Soft prototypes can award this route without the hard detector — never 500
+        # Never 500 if route is set without a hard detector payload
         if not isinstance(esc, dict) or not esc.get("category"):
             esc = {
                 "category": "ask_human",

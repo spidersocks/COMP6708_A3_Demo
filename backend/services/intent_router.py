@@ -17,7 +17,7 @@ from services import booking_dialogue as dialogue_svc
 from services import cancel_dialogue as cancel_svc
 from services import centre_facts
 from services import escalation as escalation_svc
-from services.intent_classifier import blend_scores, score_prototypes
+# Soft prototype blend removed (Ockham): hard detectors + sticky state + RAG default.
 
 # Strong availability / seat browse — NOT bare "trial class"
 _AVAIL_STRONG_RE = re.compile(
@@ -110,30 +110,23 @@ def _pick_route(scores: Dict[str, float]) -> str:
 SCORE_SOURCE_GUIDE = [
     {
         "id": "hard_regex",
-        "label": "Hard regex / detector",
-        "meaning": (
-            "Fixed high score when a tool detector matches. Not from RAG similarity."
-        ),
+        "label": "Detector match",
+        "meaning": "Fixed score when a tool regex/predicate matches.",
     },
     {
         "id": "sticky_state",
-        "label": "Sticky session state",
-        "meaning": "Book/cancel dialogue already open for this session_id.",
-    },
-    {
-        "id": "prototype_blend",
-        "label": "Soft prototype blend",
-        "meaning": "Embedding/prototype similarity softly mixed when no hard veto owns the turn.",
+        "label": "Sticky dialogue",
+        "meaning": "Book/cancel FSM already open for this session.",
     },
     {
         "id": "conflict_clear",
-        "label": "Conflict resolution",
-        "meaning": "Lower-priority score cleared (e.g. weather>hours).",
+        "label": "Conflict clear",
+        "meaning": "Lower-priority score dropped (e.g. weather beats hours).",
     },
     {
         "id": "default_floor",
-        "label": "Default RAG floor",
-        "meaning": "No tool owner remained — rag gets a floor score.",
+        "label": "RAG default",
+        "meaning": "Nothing matched → rag = 0.5.",
     },
 ]
 
@@ -256,23 +249,15 @@ def score_intents(
         strong = bool(_AVAIL_STRONG_RE.search(message or ""))
         avail_score = 0.95 if strong else 0.85
         span = _match_span(_AVAIL_STRONG_RE, message or "")
-        why = (
-            "Strong availability regex · fixed 0.95"
-            if strong
-            else "Availability browse predicate · fixed 0.85"
-        )
-        _award(
-            "availability",
-            avail_score,
-            source="hard_regex",
-            why=why,
-            cue=(span or {}).get("text") or "",
-        )
         _award(
             "booking_tool",
             avail_score,
             source="hard_regex",
-            why=why + " (aliased to booking_tool)",
+            why=(
+                "Seat/slot browse · 0.95"
+                if strong
+                else "Seat/slot browse · 0.85"
+            ),
             cue=(span or {}).get("text") or "",
         )
 
@@ -292,50 +277,6 @@ def score_intents(
     if scores.get("severe_weather") and scores.get("opening_hours"):
         debug["conflicts"].append("weather>hours")
         _clear("opening_hours", "weather>hours")
-
-    # Soft prototype classifier blend (unless a hard veto already owns the turn)
-    hard_hit = any(scores.get(k, 0) >= 0.98 for k in _HARD_VETO)
-    proto = score_prototypes(message)
-    debug["prototype_top"] = sorted(proto.items(), key=lambda kv: -kv[1])[:3]
-    if not hard_hit and proto:
-        before = dict(scores)
-        blended = blend_scores(scores, proto)
-        for k, v in scores.items():
-            if v >= 0.95:
-                blended[k] = max(blended.get(k, 0), v)
-        scores = blended
-        debug["conflicts"].append("blended_prototypes")
-        for k, v in scores.items():
-            prev = before.get(k)
-            if prev is None or abs(float(v) - float(prev)) > 1e-6:
-                ledger.append(
-                    {
-                        "op": "blend",
-                        "route": k,
-                        "score": float(v),
-                        "prev_score": prev,
-                        "source": "prototype_blend",
-                        "why": (
-                            f"Prototype blend adjusted score"
-                            f"{'' if prev is None else f' from {prev:.3f}'}"
-                            f" → {float(v):.3f}"
-                        ),
-                        "cue": "",
-                    }
-                )
-    elif hard_hit:
-        ledger.append(
-            {
-                "op": "note",
-                "route": next(
-                    (k for k in _HARD_VETO if scores.get(k, 0) >= 0.98), "hard_veto"
-                ),
-                "score": None,
-                "source": "hard_regex",
-                "why": "Hard veto ≥0.98 — prototype blend skipped",
-                "cue": "",
-            }
-        )
 
     if not scores:
         _award(
@@ -357,23 +298,6 @@ def score_intents(
             origin_by_route.pop(r, None)
             continue
         if entry.get("op") == "note":
-            continue
-        prev = origin_by_route.get(r) or {}
-        if (
-            entry.get("op") == "blend"
-            and prev.get("source") in {"hard_regex", "sticky_state"}
-            and float(prev.get("score") or 0) >= 0.85
-        ):
-            origin_by_route[r] = {
-                **prev,
-                "score": entry.get("score"),
-                "why": (
-                    f"{prev.get('why')} "
-                    f"(prototype blend nudged {float(prev.get('score') or 0):.3f} "
-                    f"→ {float(entry.get('score') or 0):.3f}; hard award kept)"
-                ),
-                "blended": True,
-            }
             continue
         origin_by_route[r] = {
             "source": entry.get("source"),
@@ -667,11 +591,8 @@ def _build_rules_evaluated(
             "Ask-human / anger / safety",
             matched=bool(scores.get("staff_escalation")),
             score=scores.get("staff_escalation"),
-            mechanism=(
-                "Ordered detectors in services/escalation.py: safety → angry → "
-                "hard_conflict → ask_human. First hit wins; score 1.0."
-            ),
-            pattern_summary="safety / anger / refund-withdraw / speak-to-human cues",
+            mechanism="First matching escalation cue → score 1.0.",
+            pattern_summary="safety / anger / hard conflict / ask-human",
             matched_span=esc_span,
             match_evidence=_match_evidence(
                 msg,
@@ -706,87 +627,77 @@ def _build_rules_evaluated(
             pattern_summary="politics / malware / non-HK city weather / crypto / sports…",
             matched=bool(scores.get("off_domain")),
             score=scores.get("off_domain"),
-            mechanism="Regex short-circuit before centre tools. Score 0.98. No admin todo.",
-            why_template="Triggered by off-domain cue «{span}».",
-            why_not="Message stays inside centre / parenting scope.",
-            downstream="Polite refuse · no follow-up sheet row",
+            mechanism="Off-domain regex → 0.98 refuse.",
+            why_template="Off-domain cue «{span}».",
+            why_not="Stays in centre scope.",
+            downstream="Polite refuse",
         ),
         _regex_rule(
             "severe_weather",
             "Typhoon / Black Rain / severe weather policy",
             message=msg,
             pattern=centre_facts._WEATHER_POLICY_RE,  # noqa: SLF001
-            pattern_summary="typhoon, T1/T3/T8/T10, black/red/amber rain, 風球, 黑雨…",
+            pattern_summary="typhoon / T8 / black rain / 風球 / 黑雨",
             matched=centre_facts.is_severe_weather_intent(message),
             score=scores.get("severe_weather"),
-            mechanism=(
-                "centre_facts.is_severe_weather_intent → load facts/severe_weather.json → "
-                "optional live HKO enrich. Hard veto."
-            ),
-            why_template="Weather-policy keywords matched «{span}».",
-            why_not="No typhoon / rainstorm / signal keywords present.",
-            downstream="Structured weather policy + live HKO · RAG enrich allowed",
+            mechanism="Weather-policy keywords → 1.0 (beats hours).",
+            why_template="Weather cue «{span}».",
+            why_not="No weather-policy keywords.",
+            downstream="Weather policy + optional live HKO",
         ),
         _rule_row(
             "cancel_dialogue",
             "Cancel class dialogue",
             matched=cancel_active or cancel_request,
             score=scores.get("cancel_dialogue"),
-            mechanism="Sticky cancel state OR fresh cancel request detector.",
-            pattern_summary="cancel / 取消 + sticky session flag",
+            mechanism="Sticky cancel or fresh cancel request → 0.95.",
+            pattern_summary="cancel / 取消",
             why=(
-                "Sticky cancel dialogue already active for this session."
+                "Sticky cancel open."
                 if cancel_active
-                else "Fresh cancel request detected."
+                else "Cancel request detected."
                 if cancel_request
                 else ""
             ),
-            why_not="No cancel request and no sticky cancel state.",
+            why_not="No cancel request / sticky state.",
             checks=[
-                _check("Sticky cancel active", cancel_active),
-                _check("is_cancel_request(message)", cancel_request),
+                _check("Sticky cancel", cancel_active),
+                _check("Cancel request", cancel_request),
             ],
-            downstream="Multi-turn cancel_dialogue tool",
+            downstream="Cancel FSM",
         ),
         _rule_row(
             "booking_dialogue",
             "Book / enrol dialogue",
             matched=bool(scores.get("booking_dialogue")),
             score=scores.get("booking_dialogue"),
-            mechanism=(
-                "Sticky booking state or is_booking_request, unless should_yield_to_rag."
-            ),
-            pattern_summary="book / enrol / 預約 + sticky session",
+            mechanism="Sticky book or book/enrol verbs → 0.85.",
+            pattern_summary="book / enrol / 預約",
             why=(
-                "Sticky booking dialogue active."
+                "Sticky booking open."
                 if dialogue_active and not leave_booking
-                else "Booking request verbs matched."
+                else "Booking verbs matched."
                 if scores.get("booking_dialogue")
                 else ""
             ),
             why_not=(
-                "Yielded sticky booking to RAG/other intent."
+                "Yielded sticky booking to another intent."
                 if leave_booking and dialogue_active
-                else "No booking request and no sticky booking state."
+                else "No booking request / sticky state."
             ),
             checks=[
-                _check("dialogue_active", dialogue_active),
-                _check("should_yield_to_rag", leave_booking),
-                _check(
-                    "score booking_dialogue",
-                    bool(scores.get("booking_dialogue")),
-                    f"{scores.get('booking_dialogue')}",
-                ),
+                _check("Sticky booking", dialogue_active),
+                _check("Yield to RAG", leave_booking),
             ],
-            downstream="Multi-turn booking_dialogue",
+            downstream="Booking FSM",
         ),
         _rule_row(
             "booking_tool",
             "Live seats / availability browse",
             matched=is_availability_browse(message),
-            score=scores.get("booking_tool") or scores.get("availability"),
-            mechanism="is_availability_browse: strong seat/slot wording for live register.",
-            pattern_summary="seats left, availability, open slots, 有冇位…",
+            score=scores.get("booking_tool"),
+            mechanism="Seat/slot browse wording → live register (0.85–0.95).",
+            pattern_summary="seats left / availability / 有冇位",
             matched_span=avail_span,
             match_evidence=_match_evidence(
                 msg,
@@ -828,11 +739,8 @@ def _build_rules_evaluated(
             "Opening hours / date / holiday",
             matched=hours_hit,
             score=scores.get("opening_hours"),
-            mechanism=(
-                "llm.hours_intent.detect_opening_hours_intent → deterministic calendar "
-                "(holidays, Sunday closed, optional HKO)."
-            ),
-            pattern_summary="hours / open / Christmas / tomorrow? follow-ups",
+            mechanism="Hours/date intent → 0.8 calendar tool.",
+            pattern_summary="hours / open / holiday / tomorrow?",
             why=(
                 f"Hours intent fired via {hours_detail or 'hours detector'}."
                 if hours_hit
@@ -854,21 +762,17 @@ def _build_rules_evaluated(
             "RAG knowledge-base path",
             matched=bool(scores.get("rag")) or not structured_owner,
             score=scores.get("rag"),
-            mechanism=(
-                "Default for static FAQs (fees, address, payment, teachers, policies…) "
-                "and narrative programme questions. Chroma retrieve → Qwen generate."
-            ),
-            pattern_summary="default / FAQ / programme / policy questions",
+            mechanism="Default path when no tool ≥ 0.8 — retrieve → generate.",
+            pattern_summary="FAQ / programme / policy / everything else",
             why=(
-                "No tool owner ≥ 0.8 — RAG default score applied."
+                "No tool ≥ 0.8 → RAG floor 0.5."
                 if not structured_owner
-                else f"Explicit RAG score {scores.get('rag')}."
+                else f"RAG score {scores.get('rag')}."
                 if scores.get("rag")
                 else ""
             ),
             why_not=(
-                "Idle because tool owner(s) already won: "
-                + ", ".join(f"{k}={scores.get(k)}" for k in structured_owner)
+                "Tool already won: " + ", ".join(structured_owner)
                 if structured_owner
                 else "RAG not selected."
             ),
@@ -890,12 +794,10 @@ def _build_rules_evaluated(
 
     suppressed = set()
     for c in debug.get("conflicts") or []:
-        if ">" in str(c) and c != "blended_prototypes":
+        if ">" in str(c):
             loser = str(c).split(">")[-1].strip()
             if loser == "hours":
                 loser = "opening_hours"
-            if loser == "availability":
-                loser = "booking_tool"
             suppressed.add(loser)
     for row in rows:
         rid = row["id"]
@@ -959,7 +861,7 @@ def _build_decision_path(
     matched = [
         (k, float(v))
         for k, v in sorted(scores.items(), key=lambda kv: -float(kv[1] or 0))
-        if float(v or 0) >= 0.28 and k != "availability"
+        if float(v or 0) >= 0.28
     ]
     if matched:
         top_id, top_sc = matched[0]
@@ -980,32 +882,11 @@ def _build_decision_path(
         )
 
     for c in debug.get("conflicts") or []:
-        if c == "blended_prototypes":
-            path.append(
-                {
-                    "step": "prototype_blend",
-                    "summary": "Soft prototype classifier blended into scores",
-                    "detail": str(debug.get("prototype_top") or "")[:160],
-                }
-            )
-        else:
-            path.append(
-                {
-                    "step": "conflict",
-                    "summary": f"Conflict resolved: {c}",
-                    "detail": "lower-priority score cleared",
-                }
-            )
-
-    hard = any(float(scores.get(k) or 0) >= 0.98 for k in _HARD_VETO)
-    if hard:
         path.append(
             {
-                "step": "hard_veto",
-                "summary": "Hard veto present — prototype blend did not override",
-                "detail": ", ".join(
-                    k for k in _HARD_VETO if float(scores.get(k) or 0) >= 0.98
-                ),
+                "step": "conflict",
+                "summary": f"Conflict: {c}",
+                "detail": "lower-priority score cleared",
             }
         )
 
@@ -1072,12 +953,10 @@ def decide_intent(
     scores, debug = score_intents(
         message, lang=lang, session_id=session_id, history=history
     )
-    if "availability" in scores and "booking_tool" not in scores:
-        scores["booking_tool"] = scores["availability"]
-    cleaned = {k: v for k, v in scores.items() if k == "availability" or v >= 0.28}
+    cleaned = {k: v for k, v in scores.items() if v >= 0.28}
     if not cleaned:
         cleaned = {"rag": 0.5}
-    route = _pick_route({k: v for k, v in cleaned.items() if k != "availability"})
+    route = _pick_route(cleaned)
     pre_arbiter_route = route
 
     try:
@@ -1085,10 +964,9 @@ def decide_intent(
 
         top_score = max(cleaned.values()) if cleaned else 0.0
         conflicts = list(debug.get("conflicts") or [])
-        material_conflicts = [c for c in conflicts if c != "blended_prototypes"]
         if (
             top_score >= 0.9
-            and not material_conflicts
+            and not conflicts
             and route not in {"off_domain", "rag"}
         ):
             debug["arbiter"] = {

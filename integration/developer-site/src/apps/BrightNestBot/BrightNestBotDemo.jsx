@@ -269,40 +269,22 @@ export default function BrightNestBotDemo() {
       .catch(() => setFamiliesRoster([]));
   }
 
-  function switchParentProfile(nextId, { fromGate = false } = {}) {
+  function switchParentProfile(nextId) {
     const profile = PARENT_PROFILES.find((p) => p.id === nextId) || PARENT_PROFILES[0];
-    const sid = localStorage.getItem("bn_bot_session_id");
-    const apply = () => {
-      try {
-        localStorage.setItem(PARENT_PICK_KEY, profile.id);
-      } catch {
-        /* ignore */
-      }
-      setProfileId(profile.id);
-      setParentName(profile.parentName);
-      setChildName(profile.childName);
-      setPhone(profile.phone);
-      setParentGateOpen(false);
-      setChatHistory([]);
-      setError(null);
-      setTrace(null);
-      localStorage.removeItem("bn_bot_session_id");
-      setSessionLabel(shortSessionLabel());
-      refreshFamilies();
-      refreshSchedule();
-    };
-    // First pick with no session: just unlock chat — no need to DELETE.
-    if (!sid && fromGate) {
-      apply();
-      return;
+    try {
+      localStorage.setItem(PARENT_PICK_KEY, profile.id);
+    } catch {
+      /* ignore */
     }
-    if (sid) {
-      fetch(`${API_BASE}/chat/history/${encodeURIComponent(sid)}`, { method: "DELETE" })
-        .catch(() => {})
-        .finally(apply);
-    } else {
-      apply();
-    }
+    setProfileId(profile.id);
+    setParentName(profile.parentName);
+    setChildName(profile.childName);
+    setPhone(profile.phone);
+    setParentGateOpen(false);
+    // Keep chat + session until System Reset — profile only changes who we speak as.
+    setError(null);
+    refreshFamilies();
+    refreshSchedule();
   }
 
   async function markTodoDone(id) {
@@ -576,7 +558,7 @@ export default function BrightNestBotDemo() {
                       key={p.id}
                       type="button"
                       className="bn-parent-gate-card"
-                      onClick={() => switchParentProfile(p.id, { fromGate: true })}
+                      onClick={() => switchParentProfile(p.id)}
                     >
                       <span className="bn-profile-avatar" aria-hidden="true">
                         {p.initials}
@@ -732,7 +714,27 @@ export default function BrightNestBotDemo() {
               rightView === "staff" ? " bn-inspector--staff" : " bn-inspector--system"
             }`}
           >
-          {rightView === "staff" ? (
+          {/* Keep both panes mounted so the flowchart does not remount/refit on tab switch. */}
+          <div
+            className={`bn-pane-system${rightView === "system" ? " is-visible" : ""}`}
+            aria-hidden={rightView !== "system"}
+          >
+            <TurnPipeline
+              trace={trace}
+              answer={
+                [...chatHistory].reverse().find((m) => m.role === "bot")?.message || ""
+              }
+              parentMessage={
+                [...chatHistory].reverse().find((m) => m.role === "user")?.message || ""
+              }
+              turnKey={turnKey}
+              chatHistory={chatHistory}
+            />
+          </div>
+          <div
+            className={`bn-pane-staff${rightView === "staff" ? " is-visible" : ""}`}
+            aria-hidden={rightView !== "staff"}
+          >
             <div className="bn-browser">
               <div className="bn-browser-chrome">
                 <div className="bn-browser-dots" aria-hidden="true">
@@ -1304,19 +1306,7 @@ export default function BrightNestBotDemo() {
                 )}
               </div>
             </div>
-          ) : (
-            <TurnPipeline
-              trace={trace}
-              answer={
-                [...chatHistory].reverse().find((m) => m.role === "bot")?.message || ""
-              }
-              parentMessage={
-                [...chatHistory].reverse().find((m) => m.role === "user")?.message || ""
-              }
-              turnKey={turnKey}
-              chatHistory={chatHistory}
-            />
-          )}
+          </div>
           </section>
         </div>
       </div>
