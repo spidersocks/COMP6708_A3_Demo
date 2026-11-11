@@ -817,29 +817,62 @@ def handle_turn(
             # Blank new-parent profile sends empty string — ignore placeholders
             if families._is_plausible_person_name(parent_name):  # noqa: SLF001
                 state["parent_name"] = parent_name
-        need_parent = not (state.get("parent_name") or "").strip()
-        need_child = not (state.get("child_name") or "").strip() and not (
+        # Never keep pronoun / kinship fragments as child_name ("my", "child", …)
+        if (state.get("child_name") or "").strip() and not families._is_plausible_person_name(  # noqa: SLF001
+            state.get("child_name") or ""
+        ):
+            state["child_name"] = ""
+        child_ok = bool(
+            (state.get("child_name") or "").strip()
+            and families._is_plausible_person_name(state.get("child_name") or "")  # noqa: SLF001
+        ) or bool(
             mentioned and families._is_plausible_person_name(mentioned)  # noqa: SLF001
         )
-        if need_parent or (need_child and not mentioned):
+        need_parent = not (state.get("parent_name") or "").strip()
+        need_child = not child_ok
+        need_class = not (state.get("course_key") or state.get("programme_label"))
+        if need_parent or need_child:
             if need_parent and need_child:
                 stage = "need_identity"
-                prompt = (
-                    "Happy to help with a booking. I don't have a family on this WhatsApp yet.\n\n"
-                    "Please reply with **your name** and **your child's name** "
-                    "(e.g. *I'm Alex Wong, child is Mia Wong*)."
-                )
+                if need_class:
+                    prompt = (
+                        "Happy to help with a booking. I don't have a family on this WhatsApp yet.\n\n"
+                        "Please reply with **your name**, **your child's name**, and which **class** "
+                        "(Phonics, Math, Mandarin, Writing, Playgroup, or Trial) — "
+                        "e.g. *I'm Alex Wong, child is Mia Wong, looking at Math*."
+                    )
+                else:
+                    prompt = (
+                        "Happy to help with a booking. I don't have a family on this WhatsApp yet.\n\n"
+                        "Please reply with **your name** and **your child's name** "
+                        "(e.g. *I'm Alex Wong, child is Mia Wong*)."
+                    )
             elif need_parent:
+                kid = (
+                    mentioned
+                    if mentioned and families._is_plausible_person_name(mentioned)  # noqa: SLF001
+                    else (state.get("child_name") or "").strip()
+                )
                 stage = "need_parent"
                 prompt = (
-                    f"Thanks — booking for **{mentioned or state.get('child_name')}**. "
+                    f"Thanks — booking for **{kid}**. "
                     "What's the **parent's name** I should put on the booking?"
+                    + (
+                        " And which **class** should I look at?"
+                        if need_class
+                        else ""
+                    )
                 )
             else:
                 stage = "need_child"
                 prompt = (
                     f"Thanks **{state.get('parent_name')}**. "
                     "What's your **child's name** for the class register?"
+                    + (
+                        " And which **class** should I look at?"
+                        if need_class
+                        else ""
+                    )
                 )
             save_state(session_id, {**state, "stage": stage})
             return {
@@ -875,8 +908,8 @@ def handle_turn(
                 return {
                     "answer": (
                         "Happy to help with a booking. I don't have a family on this WhatsApp yet.\n\n"
-                        "Please reply with **your name** and **your child's name** "
-                        "(e.g. *I'm Alex Wong, child is Mia Wong*)."
+                        "Please reply with **your name**, **your child's name**, and which **class** "
+                        "(e.g. *I'm Alex Wong, child is Mia Wong, looking at Math*)."
                     ),
                     "slots": None,
                     "provider": "booking_dialogue",

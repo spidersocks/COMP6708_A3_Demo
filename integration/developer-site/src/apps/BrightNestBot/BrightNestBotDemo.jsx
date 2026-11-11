@@ -124,6 +124,12 @@ function priorityLabel(priority, fallback) {
   return PRIORITY_LABELS[raw] || raw;
 }
 
+function clip(text, n = 120) {
+  const s = (text || "").trim();
+  if (s.length <= n) return s;
+  return `${s.slice(0, n - 1)}…`;
+}
+
 const LEGACY_MAIL_SUBJECTS = new Set([
   "Parent asked to speak with a real staff member / manager.",
   "Parent sounds very upset or is escalating a complaint — boss/staff should follow up.",
@@ -209,6 +215,8 @@ export default function BrightNestBotDemo() {
   const [adminTodos, setAdminTodos] = useState([]);
   const [staffMessages, setStaffMessages] = useState([]);
   const [familiesRoster, setFamiliesRoster] = useState([]);
+  /** Phones already acknowledged — badge only for *new* families since last view/reset. */
+  const [seenFamilyPhones, setSeenFamilyPhones] = useState(() => new Set());
   const [rightView, setRightView] = useState("system"); // system | staff
   const [staffTab, setStaffTab] = useState("calendar"); // calendar | sheet | mail | families
   const [selectedMsgId, setSelectedMsgId] = useState(null);
@@ -221,6 +229,7 @@ export default function BrightNestBotDemo() {
 
   const chatWindowRef = useRef(null);
   const textAreaRef = useRef(null);
+  const familiesBaselineRef = useRef(false);
 
   useEffect(() => {
     const setVh = () => {
@@ -238,7 +247,7 @@ export default function BrightNestBotDemo() {
     refreshSchedule();
     refreshAdminTodos();
     refreshStaffMessages();
-    refreshFamilies();
+    refreshFamilies({ markSeen: true });
   }, []);
 
   function refreshSchedule() {
@@ -262,11 +271,24 @@ export default function BrightNestBotDemo() {
       .catch(() => setStaffMessages([]));
   }
 
-  function refreshFamilies() {
+  function refreshFamilies({ markSeen = false } = {}) {
     fetch(`${API_BASE}/admin/families?days_ahead=21`)
       .then((r) => r.json())
-      .then((d) => setFamiliesRoster(d.families || []))
-      .catch(() => setFamiliesRoster([]));
+      .then((d) => {
+        const list = d.families || [];
+        setFamiliesRoster(list);
+        if (markSeen || !familiesBaselineRef.current) {
+          familiesBaselineRef.current = true;
+          setSeenFamilyPhones(new Set(list.map((f) => f.phone).filter(Boolean)));
+        }
+      })
+      .catch(() => {
+        setFamiliesRoster([]);
+        if (markSeen || !familiesBaselineRef.current) {
+          familiesBaselineRef.current = true;
+          setSeenFamilyPhones(new Set());
+        }
+      });
   }
 
   function switchParentProfile(nextId) {
@@ -351,6 +373,8 @@ export default function BrightNestBotDemo() {
       setRightView("system");
       setStaffTab("calendar");
       setSelectedFamilyPhone(null);
+      familiesBaselineRef.current = false;
+      setSeenFamilyPhones(new Set());
       localStorage.removeItem("bn_bot_session_id");
       try {
         localStorage.removeItem(PARENT_PICK_KEY);
@@ -361,7 +385,7 @@ export default function BrightNestBotDemo() {
       setSessionLabel(shortSessionLabel());
       refreshAdminTodos();
       refreshStaffMessages();
-      refreshFamilies();
+      refreshFamilies({ markSeen: true });
       refreshSchedule();
     };
     if (sid) {
@@ -497,6 +521,17 @@ export default function BrightNestBotDemo() {
   const unreadMailCount = useMemo(
     () => staffMessages.reduce((n, m) => n + (readMailIds.has(m.id) ? 0 : 1), 0),
     [staffMessages, readMailIds]
+  );
+
+  const newFamiliesCount = useMemo(
+    () =>
+      familiesBaselineRef.current
+        ? familiesRoster.reduce(
+            (n, f) => n + (f.phone && !seenFamilyPhones.has(f.phone) ? 1 : 0),
+            0
+          )
+        : 0,
+    [familiesRoster, seenFamilyPhones]
   );
 
   const sheetCols = ["A", "B", "C", "D", "E", "F", "G"];
@@ -804,7 +839,7 @@ export default function BrightNestBotDemo() {
                     className={`bn-browser-tab ${staffTab === "families" ? "active" : ""}`}
                     onClick={() => {
                       setStaffTab("families");
-                      refreshFamilies();
+                      refreshFamilies({ markSeen: true });
                     }}
                   >
                     <img
@@ -814,8 +849,8 @@ export default function BrightNestBotDemo() {
                       aria-hidden="true"
                     />
                     <span className="bn-browser-tab-label">Families</span>
-                    {familiesRoster.length > 0 && (
-                      <span className="bn-tab-count">{familiesRoster.length}</span>
+                    {newFamiliesCount > 0 && (
+                      <span className="bn-tab-count">{newFamiliesCount}</span>
                     )}
                   </button>
                 </div>

@@ -115,6 +115,27 @@ _COURSE_NAME_BLOCKLIST = {
     "daughter",
     "baby",
     "parent",
+    # Pronouns / fillers — "book for my child" must never yield child_name="my"
+    "my",
+    "our",
+    "his",
+    "her",
+    "their",
+    "me",
+    "we",
+    "you",
+    "us",
+    "him",
+    "them",
+    "this",
+    "that",
+    "the",
+    "a",
+    "an",
+    "some",
+    "any",
+    "someone",
+    "somebody",
 }
 
 
@@ -241,6 +262,14 @@ def extract_child_mention(text: str, known_names: List[str]) -> str:
         first = name.split()[0]
         if len(first) >= 3 and re.search(rf"\b{re.escape(first)}\b", t, re.I):
             return first
+    # "for my child" / "for our kid" — kinship, not a name
+    if re.search(
+        r"\b(?:for|about)\s+(?:my|our|his|her|their)\s+"
+        r"(?:child|kid|son|daughter|girl|boy)\b",
+        t,
+        re.I,
+    ):
+        return ""
     m = re.search(
         r"\b(?:for|about)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b",
         t,
