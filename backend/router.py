@@ -378,9 +378,13 @@ def chat(req: ChatRequest) -> ChatResponse:
             "enabled": use_history,
             "turns_loaded": len(history),
             "limit": SETTINGS.chat_history_limit,
-            # Exact conversation context string passed into the LLM prompt (full, not truncated)
+            # Prior turns only (before this inbound message) — session-memory inspector
+            "prior_preview": (
+                build_context_string(history, include_new=False) if use_history else ""
+            ),
+            # Exact conversation context string passed into the LLM prompt (includes inbound)
             "preview": history_context if use_history else "",
-            # Full turns for the expandable session-memory inspector
+            # Full prior turns for the expandable session-memory inspector
             "turns": [
                 {
                     "role": t.get("role") or t.get("speaker") or "unknown",
@@ -389,6 +393,7 @@ def chat(req: ChatRequest) -> ChatResponse:
                 for t in history
             ],
         },
+        "inbound_message": message,
         "routing": {
             "route": route,
             "scores": decision.scores,

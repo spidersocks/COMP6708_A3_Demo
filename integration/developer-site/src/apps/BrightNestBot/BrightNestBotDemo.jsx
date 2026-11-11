@@ -1310,6 +1310,9 @@ export default function BrightNestBotDemo() {
               answer={
                 [...chatHistory].reverse().find((m) => m.role === "bot")?.message || ""
               }
+              parentMessage={
+                [...chatHistory].reverse().find((m) => m.role === "user")?.message || ""
+              }
               turnKey={turnKey}
               chatHistory={chatHistory}
             />

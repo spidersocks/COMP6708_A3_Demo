@@ -1063,6 +1063,7 @@ code,
   cursor: grab;
   overflow: hidden;
   touch-action: none;
+  overscroll-behavior: none;
   background-color: transparent;
   background-image: radial-gradient(
     rgba(18, 169, 188, 0.16) 1px,
@@ -1072,7 +1073,8 @@ code,
   border-radius: 0;
   border: none;
 }
-.bn-flow-viewport:active {
+.bn-flow-viewport:active,
+.bn-flow-viewport.is-panning {
   cursor: grabbing;
 }
 .bn-flow-world {
@@ -1139,12 +1141,12 @@ code,
   color: var(--teal-ink);
   padding: 6px 8px;
   font: inherit;
-  cursor: pointer;
+  cursor: grab;
+  user-select: none;
   box-shadow: 0 6px 18px rgba(10, 79, 90, 0.07);
   transition:
     border-color 0.16s ease,
     box-shadow 0.16s ease,
-    background 0.16s ease,
     opacity 0.16s ease,
     filter 0.16s ease;
   z-index: 1;
@@ -1167,14 +1169,24 @@ code,
     0 0 0 2px rgba(18, 169, 188, 0.18),
     0 10px 28px rgba(10, 79, 90, 0.12);
 }
+.bn-flow-node-body {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  pointer-events: none;
+  max-width: 92%;
+}
 .bn-pipe-node-label {
-  font-size: 0.74rem;
+  font-size: 0.72rem;
   font-weight: 650;
-  line-height: 1.2;
+  line-height: 1.15;
   letter-spacing: -0.01em;
 }
 .bn-pipe-node-status {
-  font-size: 0.56rem;
+  font-size: 0.54rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--muted);
@@ -1193,7 +1205,16 @@ code,
   border-style: dashed;
 }
 
-/* Flowchart shapes */
+/* Flowchart shapes — SVG fill stays inside the silhouette */
+.bn-shape-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+  filter: drop-shadow(0 5px 12px rgba(10, 79, 90, 0.08));
+}
 .bn-shape-terminal {
   border-radius: 999px;
   border-style: solid;
@@ -1201,112 +1222,44 @@ code,
 .bn-shape-process {
   border-radius: 10px;
 }
-.bn-shape-decision {
-  border: none;
-  background: transparent;
-  box-shadow: none;
-  padding: 0;
-}
-.bn-shape-decision .bn-flow-diamond-inner {
-  width: 72%;
-  height: 72%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
-  background: rgba(255, 255, 255, 0.97);
-  border: 1.5px solid rgba(18, 169, 188, 0.4);
-  box-shadow: 0 6px 18px rgba(10, 79, 90, 0.07);
-  transform: rotate(45deg);
-}
-.bn-shape-decision .bn-pipe-node-label,
-.bn-shape-decision .bn-pipe-node-status {
-  transform: rotate(-45deg);
-  max-width: 88px;
-}
-.bn-shape-decision.is-lit .bn-flow-diamond-inner,
-.bn-shape-decision.is-active .bn-flow-diamond-inner {
-  border-color: var(--teal-ink);
-  box-shadow:
-    0 0 0 2px rgba(18, 169, 188, 0.18),
-    0 10px 28px rgba(10, 79, 90, 0.12);
-}
-.bn-shape-decision:hover .bn-flow-diamond-inner {
-  border-color: rgba(18, 169, 188, 0.75);
-}
+.bn-shape-decision,
 .bn-shape-cylinder {
-  border-radius: 0;
-  border: none;
-  background: transparent;
-  box-shadow: none;
-  padding: 10px 8px 12px;
-  position: relative;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0;
+  overflow: visible;
 }
-.bn-shape-cylinder .bn-cyl-rim,
-.bn-shape-cylinder .bn-cyl-base {
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 14px;
-  border: 1.5px solid rgba(90, 120, 90, 0.55);
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.97);
-  pointer-events: none;
+.bn-shape-decision.is-lit .bn-shape-svg polygon,
+.bn-shape-decision.is-active .bn-shape-svg polygon,
+.bn-shape-cylinder.is-lit .bn-shape-svg path,
+.bn-shape-cylinder.is-lit .bn-shape-svg ellipse,
+.bn-shape-cylinder.is-active .bn-shape-svg path,
+.bn-shape-cylinder.is-active .bn-shape-svg ellipse {
+  stroke: var(--teal-ink);
+  stroke-width: 2.6;
 }
-.bn-shape-cylinder .bn-cyl-rim {
-  top: 0;
-  z-index: 2;
+.bn-shape-decision .bn-flow-node-body {
+  max-width: 58%;
 }
-.bn-shape-cylinder .bn-cyl-base {
-  bottom: 0;
-  z-index: 0;
-}
-.bn-shape-cylinder::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 7px;
-  bottom: 7px;
-  border-left: 1.5px solid rgba(90, 120, 90, 0.55);
-  border-right: 1.5px solid rgba(90, 120, 90, 0.55);
-  background: rgba(255, 255, 255, 0.97);
-  z-index: 1;
-}
-.bn-shape-cylinder .bn-pipe-node-label,
-.bn-shape-cylinder .bn-pipe-node-status {
-  position: relative;
-  z-index: 3;
-}
-.bn-shape-cylinder.is-lit::before,
-.bn-shape-cylinder.is-active::before {
-  box-shadow: inset 0 0 0 1px rgba(18, 169, 188, 0.12);
-}
-.bn-shape-cylinder.is-lit .bn-cyl-rim,
-.bn-shape-cylinder.is-lit .bn-cyl-base,
-.bn-shape-cylinder.is-active .bn-cyl-rim,
-.bn-shape-cylinder.is-active .bn-cyl-base {
-  border-color: var(--teal-ink);
+.bn-shape-cylinder .bn-flow-node-body {
+  padding-top: 4px;
 }
 
-.bn-pipe-rag {
+.bn-pipe-rag.bn-shape-process {
   border-color: rgba(212, 160, 40, 0.55);
 }
-.bn-pipe-compose {
+.bn-pipe-compose.bn-shape-process {
   border-color: rgba(80, 140, 200, 0.55);
 }
-.bn-pipe-hard {
+.bn-pipe-hard.bn-shape-process {
   border-color: rgba(180, 90, 90, 0.5);
 }
-.bn-pipe-llm {
+.bn-pipe-llm.bn-shape-process {
   border-color: rgba(120, 90, 180, 0.55);
 }
-.bn-pipe-live {
+.bn-pipe-live.bn-shape-process {
   border-color: rgba(10, 126, 164, 0.55);
-}
-.bn-pipe-store {
-  border-color: rgba(90, 120, 90, 0.5);
 }
 .bn-pipe-pill {
   font-size: 0.62rem;
