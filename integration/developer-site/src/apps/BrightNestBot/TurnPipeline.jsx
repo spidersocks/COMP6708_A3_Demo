@@ -33,7 +33,6 @@ const MAIN_LLM_ROLES = new Set([
   "fact_adapt",
   "main_generate",
   "gap_polish",
-  "staff_email",
 ]);
 
 /** Slot-DST / pick JSON — shown on the DST node, never the final LLM node. */
@@ -44,13 +43,21 @@ const DST_LLM_ROLES = new Set([
   "cancel_pick",
 ]);
 
+function isFinalCheckCall(call) {
+  return String(call?.role || "").startsWith("final_check");
+}
+
+function isStaffEmailCall(call) {
+  return String(call?.role || "") === "staff_email";
+}
+
 function isMainLlmCall(call) {
   const role = String(call?.role || "");
   if (MAIN_LLM_ROLES.has(role)) return true;
   if (DST_LLM_ROLES.has(role)) return false;
+  if (isFinalCheckCall(call) || isStaffEmailCall(call)) return false;
   if (role === "intent_arbiter" || role === "query_rewrite") return false;
   if (role === "action_policy" || role === "commit_audit") return false;
-  if (role.startsWith("final_check")) return false;
   // Unknown roles: only treat as main if they look like free-text generate
   return Boolean(call?.response) && !String(call?.response || "").trim().startsWith("{");
 }
@@ -70,8 +77,11 @@ const LAYOUT = {
   arbiter: { x: 210, y: 380, w: 120, h: 46 },
   fsm: { x: -280, y: 560, w: 140, h: 46 },
   rag: { x: 280, y: 560, w: 140, h: 46 },
-  dst: { x: -280, y: 660, w: 168, h: 46 },
-  live: { x: -280, y: 760, w: 140, h: 46 },
+  dst: { x: -280, y: 650, w: 168, h: 46 },
+  // Commit gate + staff inbox draft — own nodes (not squashed into FSM)
+  gate: { x: -280, y: 740, w: 168, h: 46 },
+  staffmail: { x: -280, y: 830, w: 168, h: 46 },
+  live: { x: -280, y: 920, w: 140, h: 46 },
   // Hybrid retrieve — further right so FSM→LLM corridor stays clear
   dense: { x: 200, y: 680, w: 136, h: 76 },
   sparse: { x: 400, y: 680, w: 136, h: 76 },
@@ -97,13 +107,19 @@ const EDGES = [
   { id: "e-router-fsm", from: "router", to: "fsm" },
   { id: "e-router-rag", from: "router", to: "rag" },
   { id: "e-fsm-dst", from: "fsm", to: "dst" },
+  { id: "e-fsm-gate", from: "fsm", to: "gate", dashed: true },
+  { id: "e-dst-gate", from: "dst", to: "gate", dashed: true },
+  { id: "e-gate-staffmail", from: "gate", to: "staffmail" },
+  { id: "e-staffmail-sheets", from: "staffmail", to: "sheets" },
+  { id: "e-gate-sheets", from: "gate", to: "sheets", dashed: true },
+  { id: "e-gate-answer", from: "gate", to: "answer", dashed: true },
   { id: "e-dst-live", from: "dst", to: "live", dashed: true },
   { id: "e-fsm-live", from: "fsm", to: "live", dashed: true },
   { id: "e-dst-llm", from: "dst", to: "llm", dashed: true },
   { id: "e-dst-answer", from: "dst", to: "answer", dashed: true },
   { id: "e-fsm-llm", from: "fsm", to: "llm" },
   { id: "e-fsm-answer", from: "fsm", to: "answer", dashed: true },
-  { id: "e-fsm-sheets", from: "fsm", to: "sheets" },
+  { id: "e-fsm-sheets", from: "fsm", to: "sheets", dashed: true },
   { id: "e-rag-dense", from: "rag", to: "dense" },
   { id: "e-rag-sparse", from: "rag", to: "sparse" },
   { id: "e-dense-fuse", from: "dense", to: "fuse" },
@@ -363,6 +379,28 @@ function edgeGeometry(fromId, toId) {
   } else if (fromId === "fsm" && toId === "dst") {
     rawStart = nodeAnchor("fsm", "bottom");
     rawEnd = nodeAnchor("dst", "top");
+  } else if (fromId === "fsm" && toId === "gate") {
+    rawStart = nodeAnchor("fsm", "bottom");
+    rawEnd = nodeAnchor("gate", "top");
+  } else if (fromId === "dst" && toId === "gate") {
+    rawStart = nodeAnchor("dst", "bottom");
+    rawEnd = nodeAnchor("gate", "top");
+  } else if (fromId === "gate" && toId === "staffmail") {
+    rawStart = nodeAnchor("gate", "bottom");
+    rawEnd = nodeAnchor("staffmail", "top");
+  } else if (fromId === "staffmail" && toId === "sheets") {
+    rawStart = nodeAnchor("staffmail", "bottom");
+    rawEnd = nodeAnchor("sheets", "top");
+  } else if (fromId === "gate" && toId === "sheets") {
+    rawStart = nodeAnchor("gate", "bottom");
+    rawEnd = nodeAnchor("sheets", "top");
+  } else if (fromId === "gate" && toId === "answer") {
+    rawStart = nodeAnchor("gate", "right");
+    rawEnd = nodeAnchor("answer", "left");
+    elbow = [
+      { x: FSM_LLM_X, y: a.y },
+      { x: FSM_LLM_X, y: b.y },
+    ];
   } else if (
     (fromId === "fsm" || fromId === "dst" || fromId === "live") &&
     toId === "llm"
@@ -1484,8 +1522,10 @@ function NodeDetail({
       return (
         <>
           <p className="bn-rules-hint">
-            Tool / sticky dialogue for <code>{route || "—"}</code>. Slot filling
-            (DST) is the next node when booking/cancel needs structured extracts.
+            Tool / sticky dialogue for <code>{route || "—"}</code>. Downstream
+            nodes own the LLM work: <em>DST · cheap JSON</em> (slots),{" "}
+            <em>Final check</em> (proceed / clarify / abort),{" "}
+            <em>Staff email</em> (inbox draft on escalate).
           </p>
           <ul className="bn-fact-list">
             {trace?.booking?.stage ? (
@@ -1500,10 +1540,24 @@ function NodeDetail({
                 <code>{trace.cancel.stage}</code>
               </li>
             ) : null}
+            {route === "staff_escalation" || trace?.escalation ? (
+              <li>
+                <span>Escalation</span>
+                <code>
+                  {(trace?.escalation || trace?.debug?.escalation)?.category ||
+                    "staff"}
+                  {(trace?.escalation || trace?.debug?.escalation)?.priority
+                    ? ` · ${(trace?.escalation || trace?.debug?.escalation).priority}`
+                    : ""}
+                </code>
+              </li>
+            ) : null}
             {finalCheck?.action ? (
               <li>
                 <span>Final check</span>
-                <code>{finalCheck.action}</code>
+                <code>
+                  {finalCheck.action} → see Final check node
+                </code>
               </li>
             ) : null}
             {grounding?.composed != null ? (
@@ -1518,29 +1572,122 @@ function NodeDetail({
             payload={{
               booking: trace?.booking || null,
               cancel: trace?.cancel || null,
-              final_check: finalCheck || null,
+              escalation: trace?.escalation || trace?.debug?.escalation || null,
               grounding: grounding || null,
             }}
           />
-          {llmCalls
-            .filter(
-              (c) =>
-                String(c.role || "").startsWith("final_check") ||
-                [
-                  "staff_email",
-                  "grounded_compose",
-                  "fact_adapt",
-                ].includes(c.role)
-            )
-            .map((c, i) => (
-              <LlmCallCard
-                key={`fsm-llm-${i}`}
-                call={c}
-                defaultOpen={i === 0}
-              />
-            ))}
         </>
       );
+
+    case "gate": {
+      if (path !== "fsm") {
+        return <Skipped>Final check runs on FSM commit / escalate turns.</Skipped>;
+      }
+      const gateCalls = llmCalls.filter((c) => isFinalCheckCall(c));
+      const ran = Boolean(finalCheck?.called || gateCalls.length);
+      if (!ran) {
+        return (
+          <Skipped>
+            No final-check LLM this turn (commit gate not required, or skipped).
+          </Skipped>
+        );
+      }
+      return (
+        <>
+          <p className="bn-rules-hint">
+            <strong>Preliminary · Final check</strong> — cheap JSON gate before
+            a book / cancel / escalate side-effect. Not the parent-facing
+            DashScope generate.
+          </p>
+          <ul className="bn-fact-list">
+            <li>
+              <span>Action</span>
+              <code>{finalCheck?.action || "—"}</code>
+            </li>
+            <li>
+              <span>Reason</span>
+              <code>{finalCheck?.reason || "—"}</code>
+            </li>
+            {finalCheck?.model ? (
+              <li>
+                <span>Model</span>
+                <code>{finalCheck.model}</code>
+              </li>
+            ) : null}
+          </ul>
+          <StageIO
+            request={{ kind: route, message: inbound }}
+            payload={finalCheck || null}
+          />
+          {gateCalls.map((c, i) => (
+            <LlmCallCard
+              key={`gate-llm-${i}`}
+              call={c}
+              defaultOpen={i === 0}
+            />
+          ))}
+        </>
+      );
+    }
+
+    case "staffmail": {
+      if (path !== "fsm") {
+        return <Skipped>Staff email draft runs on escalate turns.</Skipped>;
+      }
+      const mailCalls = llmCalls.filter((c) => isStaffEmailCall(c));
+      const wrote = Boolean(staffMessage || mailCalls.length);
+      if (!wrote) {
+        return (
+          <Skipped>
+            No staff-email draft this turn (not escalate, or final check
+            clarified / aborted).
+          </Skipped>
+        );
+      }
+      return (
+        <>
+          <p className="bn-rules-hint">
+            <strong>Staff email draft</strong> — cheap LLM writes the Mailbox /
+            boss email body. Parent still gets a template safety reply; inbox
+            write lands on Staff desk.
+          </p>
+          <ul className="bn-fact-list">
+            {staffMessage?.category ? (
+              <li>
+                <span>Category</span>
+                <code>{staffMessage.category}</code>
+              </li>
+            ) : null}
+            {staffMessage?.priority ? (
+              <li>
+                <span>Priority</span>
+                <code>{staffMessage.priority}</code>
+              </li>
+            ) : null}
+            {staffMessage?.email_provider || staffMessage?.id ? (
+              <li>
+                <span>Draft</span>
+                <code>
+                  {staffMessage.email_provider || "template"}
+                  {staffMessage.id ? ` · ${staffMessage.id}` : ""}
+                </code>
+              </li>
+            ) : null}
+          </ul>
+          <StageIO
+            request={{ parent: inbound, route }}
+            payload={staffMessage || null}
+          />
+          {mailCalls.map((c, i) => (
+            <LlmCallCard
+              key={`staffmail-llm-${i}`}
+              call={c}
+              defaultOpen={i === 0}
+            />
+          ))}
+        </>
+      );
+    }
 
     case "dst": {
       const bookingDst =
@@ -2328,6 +2475,42 @@ export default function TurnPipeline({
                 : "skipped",
       },
       {
+        id: "gate",
+        label: "Final check",
+        kind: "llm",
+        shape: "process",
+        status: !hasTrace
+          ? "idle"
+          : path !== "fsm"
+            ? "skipped"
+            : finalCheck?.called ||
+                llmCalls.some((c) => isFinalCheckCall(c))
+              ? "done"
+              : route === "staff_escalation" ||
+                  trace?.booking?.stage === "booked" ||
+                  trace?.cancel?.stage === "cancelled" ||
+                  finalCheck
+                ? finalCheck && !finalCheck.called
+                  ? "skipped"
+                  : "empty"
+                : "skipped",
+      },
+      {
+        id: "staffmail",
+        label: "Staff email",
+        kind: "llm",
+        shape: "process",
+        status: !hasTrace
+          ? "idle"
+          : path !== "fsm"
+            ? "skipped"
+            : staffMessage || llmCalls.some((c) => isStaffEmailCall(c))
+              ? "done"
+              : route === "staff_escalation"
+                ? "empty"
+                : "skipped",
+      },
+      {
         id: "rag",
         label: "RAG",
         kind: "rag",
@@ -2479,6 +2662,7 @@ export default function TurnPipeline({
     llmCalls,
     adminTodo,
     staffMessage,
+    finalCheck,
   ]);
 
   const statusById = useMemo(() => {
@@ -2515,6 +2699,12 @@ export default function TurnPipeline({
       ) {
         lit.add("dst");
       }
+      if (finalCheck?.called || llmCalls.some((c) => isFinalCheckCall(c))) {
+        lit.add("gate");
+      }
+      if (staffMessage || llmCalls.some((c) => isStaffEmailCall(c))) {
+        lit.add("staffmail");
+      }
       if (liveOn) lit.add("live");
       if (hits.length || enrichMode) lightHybrid();
       if (
@@ -2544,6 +2734,7 @@ export default function TurnPipeline({
     llmCalls,
     adminTodo,
     staffMessage,
+    finalCheck,
     rag?.query_rewrite?.retried,
   ]);
 
@@ -2570,15 +2761,26 @@ export default function TurnPipeline({
     if (path === "fsm") link("router", "fsm", "e-router-fsm");
     if (path === "rag") link("router", "rag", "e-router-rag");
     if (on("fsm") && on("dst")) link("fsm", "dst", "e-fsm-dst");
+    if (on("dst") && on("gate")) link("dst", "gate", "e-dst-gate");
+    else if (on("fsm") && on("gate")) link("fsm", "gate", "e-fsm-gate");
+    if (on("gate") && on("staffmail")) link("gate", "staffmail", "e-gate-staffmail");
+    if (on("staffmail") && on("sheets"))
+      link("staffmail", "sheets", "e-staffmail-sheets");
+    else if (on("gate") && on("sheets") && !on("staffmail"))
+      link("gate", "sheets", "e-gate-sheets");
+    if (on("gate") && on("answer") && !on("llm") && !on("sheets") && !on("staffmail"))
+      link("gate", "answer", "e-gate-answer");
     if (on("dst") && on("live")) link("dst", "live", "e-dst-live");
     else if (on("fsm") && on("live")) link("fsm", "live", "e-fsm-live");
     if (on("dst") && on("llm")) link("dst", "llm", "e-dst-llm");
     else if (on("fsm") && on("llm")) link("fsm", "llm", "e-fsm-llm");
     // Booking/cancel often end on FSM templates — no parent-facing DashScope call.
-    if (on("dst") && on("answer") && !on("llm")) link("dst", "answer", "e-dst-answer");
-    else if (on("fsm") && on("answer") && !on("llm") && !on("sheets"))
+    if (on("dst") && on("answer") && !on("llm") && !on("gate"))
+      link("dst", "answer", "e-dst-answer");
+    else if (on("fsm") && on("answer") && !on("llm") && !on("sheets") && !on("gate"))
       link("fsm", "answer", "e-fsm-answer");
-    if (on("fsm") && on("sheets")) link("fsm", "sheets", "e-fsm-sheets");
+    if (on("fsm") && on("sheets") && !on("staffmail") && !on("gate"))
+      link("fsm", "sheets", "e-fsm-sheets");
     if (on("rag") && on("dense")) link("rag", "dense", "e-rag-dense");
     if (on("rag") && on("sparse")) link("rag", "sparse", "e-rag-sparse");
     if (on("dense") && on("fuse")) link("dense", "fuse", "e-dense-fuse");
@@ -2641,6 +2843,16 @@ export default function TurnPipeline({
         trace?.cancel?.cancel_dst?.called
           ? "slot DST"
           : "slots",
+      "e-fsm-gate": finalCheck?.action
+        ? `check · ${finalCheck.action}`
+        : "final check",
+      "e-dst-gate": "slots → gate",
+      "e-gate-staffmail": "proceed → draft",
+      "e-staffmail-sheets": "Mailbox",
+      "e-gate-sheets": "commit",
+      "e-gate-answer": finalCheck?.action
+        ? String(finalCheck.action)
+        : "clarify",
       "e-dst-llm": "slots → generate",
       "e-dst-answer": "slots → template",
       "e-fsm-answer": "FSM template",
@@ -2665,7 +2877,18 @@ export default function TurnPipeline({
       "e-live-fuse": enrichMode ? "enrich" : "",
     };
     return labels;
-  }, [routing, winningRuleId, route, arbiter, path, hits, rag, enrichMode, trace]);
+  }, [
+    routing,
+    winningRuleId,
+    route,
+    arbiter,
+    path,
+    hits,
+    rag,
+    enrichMode,
+    trace,
+    finalCheck,
+  ]);
 
   const fitView = useCallback(() => {
     const el = viewportRef.current;

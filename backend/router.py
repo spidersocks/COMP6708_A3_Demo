@@ -712,6 +712,12 @@ def chat(req: ChatRequest) -> ChatResponse:
             trace["cancel"] = dbg["cancel"]
         if dbg.get("dialogue") and "booking" not in trace:
             trace["booking"] = dbg["dialogue"]
+        if dbg.get("escalation") and "escalation" not in trace:
+            trace["escalation"] = dbg["escalation"]
+        if dbg.get("final_check") and "final_check" not in trace:
+            trace["final_check"] = dbg["final_check"]
+        if dbg.get("staff_message") and "staff_message" not in trace:
+            trace["staff_message"] = dbg["staff_message"]
         llm_io.attach(trace)
         resp = ChatResponse(
             answer=final,
@@ -837,9 +843,10 @@ def chat(req: ChatRequest) -> ChatResponse:
                 drafted.get("provider") or "template",
             )
         )
-        # Inspector reads staff_message from trace
+        # Inspector reads staff_message / escalation / final_check from trace
         trace["staff_message"] = staff_msg
         trace["final_check"] = gate
+        trace["escalation"] = esc
         return _fact_response(
             route_name="staff_escalation",
             answer=answer,
