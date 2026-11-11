@@ -32,6 +32,19 @@ _BOOK_REQUEST_RE = re.compile(
     r")",
     re.I,
 )
+# "try out phonics" / "want to try" — seat booking, not a FAQ about trials
+_TRYOUT_RE = re.compile(
+    r"("
+    r"try\s+out|"
+    r"want(?:s)?\s+to\s+try|"
+    r"(?:like|love)\s+to\s+try|"
+    r"(?:can|could)\s+(?:i|we)\s+try|"
+    r"arrange\s+(?:a\s+)?(?:trial|placement|assessment)|"
+    r"(?:book|schedule)\s+(?:a\s+)?(?:trial|placement|assessment)|"
+    r"試(一)?下|试(一)?下|想試|想试"
+    r")",
+    re.I,
+)
 # Abort the *booking chat* — not "cancel my class" (that belongs to cancel_dialogue)
 _ABORT_RE = re.compile(
     r"\b(never\s*mind|forget\s+it|stop\s+booking|cancel\s+booking|算了|唔使啦)\b",
@@ -191,6 +204,14 @@ def is_trial_policy_question(text: str) -> bool:
     )
 
 
+def is_tryout_request(text: str) -> bool:
+    """Parent wants to try / arrange a trial or placement — book a live trial seat."""
+    t = text or ""
+    if is_trial_policy_question(t):
+        return False
+    return bool(_TRYOUT_RE.search(t))
+
+
 def is_booking_request(text: str) -> bool:
     t = text or ""
     if is_trial_policy_question(t):
@@ -200,6 +221,8 @@ def is_booking_request(text: str) -> bool:
 
     if cancel_svc.is_cancel_request(t):
         return False
+    if is_tryout_request(t):
+        return True
     return bool(_BOOK_REQUEST_RE.search(t))
 
 
@@ -787,11 +810,18 @@ def handle_turn(
     if parent_name:
         state["parent_name"] = parent_name
 
-    # New trial / assessment enquiry — don't dump seeded "upcoming classes"
+    # Try-out / trial / assessment → live Trial Assessment seats (never SheetPro-only)
     course_hint = _detect_course(text)
-    if course_hint == "trial" or re.search(r"\btrial\b|試堂|试听", text or "", re.I):
+    tryout = is_tryout_request(text) or course_hint == "trial"
+    if tryout or re.search(r"\btrial\b|試堂|试听|placement\s+assessment", text or "", re.I):
         state["hide_register"] = True
-        if course_hint == "trial" and not state.get("course_key"):
+        interest = course_hint if course_hint and course_hint != "trial" else None
+        if interest:
+            state["interest_course"] = interest
+            if not state.get("programme_label"):
+                state["programme_label"] = course_label(interest)
+        # Force trial register even when "phonics" also matched in the same utterance
+        if tryout or course_hint == "trial":
             state["course_key"] = "trial"
 
     if _ABORT_RE.search(text):
@@ -829,7 +859,13 @@ def handle_turn(
     if named_prog:
         state["programme_label"] = named_prog
     if course:
-        state["course_key"] = course
+        # Try-out already locked course_key=trial — keep interest on the side
+        if state.get("course_key") == "trial" and course != "trial":
+            state["interest_course"] = course
+            if not state.get("programme_label"):
+                state["programme_label"] = course_label(course)
+        else:
+            state["course_key"] = course
     if teacher:
         state["teacher_id"] = teacher
     if when_bits:
@@ -920,9 +956,16 @@ def handle_turn(
                     mentioned = filled["child_name"]
                     steps.append("dst_child")
                 if not course and filled.get("course_key"):
-                    course = filled["course_key"]
-                    state["course_key"] = course
-                    steps.append("dst_course")
+                    filled_course = filled["course_key"]
+                    if state.get("course_key") == "trial" and filled_course != "trial":
+                        state["interest_course"] = filled_course
+                        if not state.get("programme_label"):
+                            state["programme_label"] = course_label(filled_course)
+                        steps.append("dst_interest_course")
+                    else:
+                        course = filled_course
+                        state["course_key"] = filled_course
+                        steps.append("dst_course")
                 if not when_bits:
                     soft_when: Dict[str, Any] = {}
                     if filled.get("window"):
@@ -1119,76 +1162,41 @@ def handle_turn(
         else ""
     )
 
-    # --- Assessment confirm (named English programmes need placement) ---
+    # --- Assessment confirm → book a live Trial Assessment seat (not SheetPro) ---
     if state.get("stage") == "confirm_assessment":
-        prog = state.get("programme_label") or course_label(state.get("course_key") or "phonics")
-        if is_affirmative(text):
-            from services import final_check
-
-            summary = (
-                f"Queue diagnostic assessment for {child_name} toward {prog} "
-                f"(phone {state.get('phone') or 'demo'})."
-            )
-            # Sticky confirm + clear yes — no second LLM vote.
-            gate = final_check.affirmative_proceed(
-                kind="book", proposed_summary=summary
-            )
-            clear_state(session_id)
-            answer = (
-                f"Great — we'll arrange a short **diagnostic assessment** for **{child_name}** "
-                f"toward **{prog}**.\n\n"
-                "Our team will reach out shortly with available time slots."
-            )
-            return {
-                "answer": answer,
-                "slots": None,
-                "provider": "booking_dialogue",
-                "admin_followup": {
-                    "reason": "assessment_request",
-                    "question": (
-                        f"Arrange diagnostic assessment for {child_name} "
-                        f"({prog})"
-                    ),
-                    "info_needed": (
-                        f"Parent confirmed assessment for {child_name} toward {prog}. "
-                        f"Propose 2–3 assessment slots on WhatsApp "
-                        f"({state.get('phone') or 'demo phone'})."
-                    ),
-                    "reply": answer,
-                    "parent_name": state.get("parent_name") or "",
-                    "child_name": child_name,
-                    "phone": state.get("phone") or "",
-                },
-                "trace_booking": {
-                    "stage": "assessment_queued",
-                    "child_name": child_name,
-                    "programme_label": prog,
-                    "course_key": state.get("course_key"),
-                    "final_check": gate,
-                    "steps": steps,
-                },
-                "state": None,
-            }
-        # Parent gave a when/teacher instead — fall through to seat offer
-        if when_bits or teacher:
-            state["stage"] = "need_when_asked" if not (state.get("when") or {}).get("window") else "offer_slots"
+        prog = state.get("programme_label") or course_label(
+            state.get("interest_course") or "phonics"
+        )
+        state["course_key"] = "trial"
+        state["hide_register"] = True
+        if is_affirmative(text) or when_bits or teacher:
+            # Fall through to when-ask / trial seat offer
+            if when_bits or (state.get("when") or {}).get("window") is not None or (
+                state.get("when") or {}
+            ).get("weekday") is not None:
+                state["stage"] = "offer_slots"
+            else:
+                state["stage"] = "need_when_asked"
+            steps.append(f"assessment_to_trial_seats·{prog}")
         else:
-            save_state(session_id, {**state, "stage": "confirm_assessment"})
+            save_state(session_id, {**state, "stage": "need_when_asked"})
             return {
                 "answer": (
-                    f"Just to confirm — should I ask the team to arrange a short diagnostic "
-                    f"assessment for **{child_name}** ({prog})?\n\n"
-                    "Reply **yes**, or tell me a preferred day/time to browse open seats instead."
+                    f"Great — **{child_name}** can sit a short **Trial Assessment** "
+                    f"toward **{prog}**.\n\n"
+                    "When works best — **this week**, **next week**, or a weekday "
+                    "(e.g. Thursday)?"
                 ),
                 "slots": None,
                 "provider": "booking_dialogue",
                 "trace_booking": {
-                    "stage": "confirm_assessment",
+                    "stage": "need_when",
                     "child_name": child_name,
                     "programme_label": prog,
+                    "course_key": "trial",
                     "steps": steps,
                 },
-                "state": state,
+                "state": {**state, "stage": "need_when_asked"},
             }
 
     # --- Confirm selected seat ---
@@ -1206,13 +1214,22 @@ def handle_turn(
                 kind="book", proposed_summary=summary
             )
             try:
+                interest = state.get("programme_label") or (
+                    course_label(state["interest_course"])
+                    if state.get("interest_course")
+                    else ""
+                )
+                book_key = state.get("course_key") or sel.get("course_key") or "phonics"
+                notes = "booked via WhatsApp booking dialogue"
+                if book_key == "trial" and interest:
+                    notes = f"trial toward {interest}"
                 booked = booking_svc.create_booking(
-                    course_key=state.get("course_key") or sel.get("course_key") or "phonics",
+                    course_key=book_key,
                     slot_start=sel["slot_start"],
                     parent_name=state.get("parent_name") or "",
                     child_name=child_name,
                     phone=state.get("phone") or "",
-                    notes="booked via WhatsApp booking dialogue",
+                    notes=notes,
                 )
             except Exception as e:
                 save_state(session_id, {**state, "stage": "offer_slots"})
@@ -1233,9 +1250,16 @@ def handle_turn(
                     "state": state,
                 }
             clear_state(session_id)
+            kind = (
+                "Trial Assessment"
+                if book_key == "trial"
+                else (booked.get("course_label") or course_label(book_key))
+            )
+            toward = f" toward **{interest}**" if book_key == "trial" and interest else ""
             return {
                 "answer": (
                     f"Booked — **{child_name}** is on the register for "
+                    f"**{kind}**{toward} on "
                     f"**{booked.get('slot_display') or sel.get('slot_display')}** "
                     f"({booked.get('teacher_name') or sel.get('teacher_name')} · "
                     f"{booked.get('room') or sel.get('room')}).\n\n"
@@ -1301,7 +1325,7 @@ def handle_turn(
             "state": state,
         }
 
-    # Named English programme just chosen → offer diagnostic assessment hand-off
+    # Named English programme → Trial Assessment seats on the live register
     if (
         state.get("programme_label")
         and state.get("course_key") == "phonics"
@@ -1310,25 +1334,30 @@ def handle_turn(
         and state.get("when", {}).get("weekday") is None
     ):
         prog = state["programme_label"]
-        save_state(session_id, {**state, "stage": "confirm_assessment", "hide_register": True})
+        state["interest_course"] = state.get("interest_course") or "phonics"
+        state["course_key"] = "trial"
+        state["hide_register"] = True
+        state["stage"] = "need_when_asked"
+        save_state(session_id, state)
         return {
             "answer": (
-                f"Wonderful choice — **{prog}** builds early phonics foundations in a small group.\n\n"
-                f"Placement is confirmed with a short **diagnostic assessment** before the first class.\n\n"
-                f"Would you like us to arrange that assessment for **{child_name}**?"
+                f"Wonderful choice — **{prog}** starts with a short **Trial Assessment** "
+                f"so we place **{child_name}** at the right level.\n\n"
+                "When works best — **this week**, **next week**, or a weekday "
+                "(e.g. Thursday)?"
             ),
             "slots": None,
             "provider": "booking_dialogue",
             "trace_booking": {
-                "stage": "confirm_assessment",
+                "stage": "need_when",
                 "child_name": child_name,
                 "programme_label": prog,
-                "course_key": state.get("course_key"),
+                "course_key": "trial",
                 "phone": state.get("phone"),
                 "parent_name": state.get("parent_name"),
                 "steps": steps,
             },
-            "state": {**state, "stage": "confirm_assessment"},
+            "state": state,
         }
 
     # --- Default when-window if still empty ---
@@ -1337,9 +1366,12 @@ def handle_turn(
         if not when_bits and state.get("stage") != "need_when_asked":
             save_state(session_id, {**state, "stage": "need_when_asked"})
             sched_block = f"{schedule_blurb}\n\n" if schedule_blurb else ""
+            look = course_label(state["course_key"])
+            if state.get("course_key") == "trial" and state.get("programme_label"):
+                look = f"Trial Assessment toward {state['programme_label']}"
             return {
                 "answer": (
-                    f"Looking at **{course_label(state['course_key'])}** for **{child_name}**.\n\n"
+                    f"Looking at **{look}** for **{child_name}**.\n\n"
                     f"{sched_block}"
                     "When works best — **this week**, **next week**, or a weekday (e.g. Tuesday)?"
                 ),
@@ -1425,7 +1457,9 @@ def handle_turn(
                     f"Perfect — **{sel.get('slot_display')}** with "
                     f"**{sel.get('teacher_name')}** ({sel.get('room')}, "
                     f"{sel.get('seats_left')} left).\n\n"
-                    f"Shall I book **{child_name}** into that class? Reply **yes** to confirm."
+                    f"Shall I book **{child_name}** into that "
+                    f"{'trial assessment' if state.get('course_key') == 'trial' else 'class'}? "
+                    "Reply **yes** to confirm."
                 ),
                 "slots": [sel],
                 "provider": "booking_dialogue",
@@ -1446,9 +1480,12 @@ def handle_turn(
         teacher_bit = (
             f" with {sheets.teacher_name(state['teacher_id'])}" if state.get("teacher_id") else ""
         )
+        checked = course_label(state["course_key"])
+        if state.get("course_key") == "trial" and state.get("programme_label"):
+            checked = f"Trial Assessment toward {state['programme_label']}"
         return {
             "answer": (
-                f"I checked **{course_label(state['course_key'])}**{teacher_bit} for **{child_name}** "
+                f"I checked **{checked}**{teacher_bit} for **{child_name}** "
                 f"({when_label}), skipping times that clash with their existing classes.\n\n"
                 f"{schedule_blurb}\n\n"
                 "No open seats matched. Want a different course, teacher, or week?"
@@ -1482,7 +1519,9 @@ def handle_turn(
                 f"I have **{sel.get('slot_display')}** with "
                 f"**{sel.get('teacher_name')}** ({sel.get('room')}, "
                 f"{sel.get('seats_left')} left).\n\n"
-                f"Shall I book **{child_name}** into that class? Reply **yes** to confirm."
+                f"Shall I book **{child_name}** into that "
+                f"{'trial assessment' if state.get('course_key') == 'trial' else 'class'}? "
+                "Reply **yes** to confirm."
             ),
             "slots": [sel],
             "provider": "booking_dialogue",
@@ -1501,8 +1540,11 @@ def handle_turn(
     state["offered_slot_starts"] = [s["slot_start"] for s in offer]
     save_state(session_id, state)
 
+    offer_label = course_label(state["course_key"])
+    if state.get("course_key") == "trial" and state.get("programme_label"):
+        offer_label = f"Trial Assessment toward {state['programme_label']}"
     lines = [
-        f"Here are open **{course_label(state['course_key'])}** seats for **{child_name}** "
+        f"Here are open **{offer_label}** seats for **{child_name}** "
         f"({when_label}) that don't clash with their register:",
     ]
     for s in offer:

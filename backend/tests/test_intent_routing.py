@@ -75,6 +75,8 @@ def test_static_faqs_are_rag(msg: str):
     [
         ("Show trial class availability", "booking_tool"),
         ("I want to book a trial class", "booking_dialogue"),
+        ("Hello I want to try out phonics for my child", "booking_dialogue"),
+        ("I'd love to try a phonics class", "booking_dialogue"),
         ("Can I speak to a real person?", "staff_escalation"),
         ("This is unacceptable get me a manager", "staff_escalation"),
         (

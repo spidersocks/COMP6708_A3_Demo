@@ -289,6 +289,7 @@ def seed_sheets_if_needed(*, force: bool = False) -> Path:
         {"id": "tr-wed-1115", "teacher_id": "priya", "weekday": 2, "start": "11:15", "duration_min": 45, "capacity": 1, "room": "Studio 1"},
         {"id": "tr-wed-1700j", "teacher_id": "jordan", "weekday": 2, "start": "17:00", "duration_min": 45, "capacity": 1, "room": "Room C"},
         {"id": "tr-wed-1200t", "teacher_id": "tom", "weekday": 2, "start": "12:00", "duration_min": 45, "capacity": 1, "room": "Room D"},
+        {"id": "tr-thu-1600a", "teacher_id": "avery", "weekday": 3, "start": "16:00", "duration_min": 45, "capacity": 1, "room": "Room A"},
         {"id": "tr-thu-1700h", "teacher_id": "hana", "weekday": 3, "start": "17:00", "duration_min": 45, "capacity": 1, "room": "Room B"},
         {"id": "tr-fri-1400", "teacher_id": "avery", "weekday": 4, "start": "14:00", "duration_min": 45, "capacity": 1, "room": "Room A"},
         {"id": "tr-fri-1700", "teacher_id": "priya", "weekday": 4, "start": "17:00", "duration_min": 45, "capacity": 1, "room": "Studio 1"},

@@ -1175,56 +1175,55 @@ def chat(req: ChatRequest) -> ChatResponse:
             )
         )
 
-    # Affirmative after bot offered assessment → SheetPro (skip RAG)
+    # Affirmative after bot offered assessment → book a live trial seat (not SheetPro-only)
     if dialogue_svc.is_affirmative(message) and _history_offered_assessment():
         todo_parent, todo_child = _family_names()
-        answer = (
-            f"Great — we'll arrange a short diagnostic assessment"
-            f"{f' for **{todo_child}**' if todo_child else ''}.\n\n"
-            "Our team will reach out shortly with available time slots."
-        )
-        admin_todo = admin_todos.add_todo(
-            question="Arrange diagnostic assessment (parent confirmed)",
-            reply=answer,
-            info_needed=(
-                f"Parent said yes to assessment"
-                f"{f' for {todo_child}' if todo_child else ''}. "
-                f"Propose slots on WhatsApp ({phone})."
-            ),
-            reason="assessment_request",
+        st = dialogue_svc.get_state(session_id) or {
+            "stage": "need_when_asked",
+            "phone": phone or "",
+            "parent_name": "",
+            "child_name": "",
+            "course_key": "trial",
+            "hide_register": True,
+            "when": {},
+            "child_schedule": [],
+        }
+        st["course_key"] = "trial"
+        st["hide_register"] = True
+        st["parent_name"] = todo_parent or parent_name or st.get("parent_name") or ""
+        st["child_name"] = todo_child or child_name or st.get("child_name") or ""
+        if phone:
+            st["phone"] = phone
+        if st.get("stage") in {None, "start", "confirm_assessment", "done", ""}:
+            st["stage"] = "need_when_asked"
+        dialogue_svc.save_state(session_id, st)
+        result = dialogue_svc.handle_turn(
+            session_id=session_id,
+            message=message,
             phone=phone,
-            parent_name=todo_parent,
-            child_name=todo_child,
-            session_id=session_id,
+            parent_name=parent_name,
+            child_name_hint=child_name,
+            lang=lang,
         )
-        steps.append(_step("rag", "RAG retrieve → generate", "skipped", "assessment_confirm"))
-        steps.append(
-            _step(
-                "admin_todo",
-                "Flag for admin to-do",
+        tb = result.get("trace_booking") or {}
+        trace["booking"] = tb
+        return _fact_response(
+            route_name="booking_dialogue",
+            answer=result["answer"],
+            citations=[
+                {"source": "services/timetable", "title": "Trial assessment register"},
+            ],
+            provider="booking_dialogue",
+            extra_step=_step(
+                "booking_dialogue",
+                "Assessment → trial seats",
                 "done",
-                f"{admin_todo.get('id')} · assessment_request",
-            )
+                tb.get("stage") or "trial",
+            ),
+            slots=result.get("slots"),
+            debug={"dialogue": tb, "assessment_to_trial": True},
+            adapt=False,
         )
-        trace["admin_todo"] = admin_todo
-        trace["route"] = "rag"
-        trace["rag"] = {"assessment_confirm": True, "hit_count": 0}
-        trace["provider"] = "assessment_followup"
-        trace["answer_provider"] = "assessment_followup"
-        trace["llm"] = _llm_trace_summary(decision.debug or {}, steps, "assessment_followup")
-        trace["latency_ms"] = int((time.perf_counter() - t0) * 1000)
-        llm_io.attach(trace)
-        resp = ChatResponse(
-            answer=answer,
-            citations=[],
-            provider="assessment_followup",
-            slots=None,
-            session_id=session_id,
-            debug={"admin_todo": admin_todo, "assessment_confirm": True},
-            trace=trace,
-        )
-        _persist_turn(session_id, message, answer, lang, use_history)
-        return resp
 
     result = chat_with_rag(
         message,
@@ -1243,6 +1242,71 @@ def chat(req: ChatRequest) -> ChatResponse:
             f"{rag_debug.get('hit_count', 0)} hits · {result.get('provider')}",
         )
     )
+    # Never let RAG invent a completed booking — hand off to the trial/class FSM
+    if re.search(
+        r"\b(we(?:'ve| have) booked|i(?:'ve| have) booked|booked .{0,60} for|"
+        r"is on the register|booking ref)\b",
+        answer or "",
+        re.I,
+    ):
+        todo_parent, todo_child = _family_names()
+        st = dialogue_svc.get_state(session_id) or {
+            "stage": "start",
+            "phone": phone or "",
+            "parent_name": todo_parent or parent_name or "",
+            "child_name": todo_child or child_name or "",
+            "course_key": "trial",
+            "hide_register": True,
+            "when": {},
+            "child_schedule": [],
+        }
+        if not st.get("course_key"):
+            st["course_key"] = "trial"
+            st["hide_register"] = True
+        dialogue_svc.save_state(session_id, st)
+        rescued = dialogue_svc.handle_turn(
+            session_id=session_id,
+            message=message,
+            phone=phone,
+            parent_name=parent_name,
+            child_name_hint=child_name,
+            lang=lang,
+        )
+        if rescued.get("answer") and not rescued.get("yield_to_rag"):
+            tb = rescued.get("trace_booking") or {}
+            trace["booking"] = tb
+            steps.append(
+                _step(
+                    "booking_dialogue",
+                    "Rescue fake RAG booking",
+                    "done",
+                    tb.get("stage") or "trial",
+                )
+            )
+            return _fact_response(
+                route_name="booking_dialogue",
+                answer=rescued["answer"],
+                citations=[
+                    {"source": "services/timetable", "title": "Centre class register"},
+                ],
+                provider="booking_dialogue",
+                slots=rescued.get("slots"),
+                debug={"dialogue": tb, "rescued_fake_booking": True},
+                adapt=False,
+            )
+        answer = (
+            "I can book that on the live register — I just need to confirm the seat first.\n\n"
+            "Share the class (Phonics / Trial / …) and a preferred day or time, "
+            "and I'll show open seats to lock in."
+        )
+        steps.append(
+            _step(
+                "booking_dialogue",
+                "Rescue fake RAG booking",
+                "done",
+                "rewrote_claim",
+            )
+        )
     # Still surface hours parse when the query looked date-like but lost to RAG
     try:
         soft_facts = _get_opening_facts(message, lang=lang, is_general=False)
