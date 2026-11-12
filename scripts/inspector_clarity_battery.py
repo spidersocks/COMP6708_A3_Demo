@@ -5,25 +5,11 @@ import json
 import os
 import sys
 import time
-import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
+
 API = os.environ.get("BRIGHTNEST_API", "https://seanfontaine.dev/brightnest-api").rstrip("/")
-
-
-class _PostRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if code in (301, 302, 303, 307, 308) and req.get_method() == "POST":
-            return urllib.request.Request(
-                newurl,
-                data=req.data,
-                headers={k: v for k, v in req.header_items()},
-                method="POST",
-            )
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-_OPENER = urllib.request.build_opener(_PostRedirect)
 
 # id, message, expect_routes, must_source_ids (any), forbid_refuse
 CASES: List[Tuple[str, str, List[str], List[str], bool]] = [
@@ -41,14 +27,15 @@ CASES: List[Tuple[str, str, List[str], List[str], bool]] = [
 
 
 def req(method: str, path: str, body: Optional[Dict] = None) -> Any:
-    data = None
-    headers = {"Accept": "application/json"}
-    if body is not None:
-        data = json.dumps(body).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    r = urllib.request.Request(f"{API}{path}", data=data, headers=headers, method=method)
-    with _OPENER.open(r, timeout=120) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    with httpx.Client(timeout=120.0, follow_redirects=True) as client:
+        r = client.request(
+            method,
+            f"{API}{path}",
+            json=body,
+            headers={"Accept": "application/json"},
+        )
+        r.raise_for_status()
+        return r.json()
 
 
 def chat(msg: str, sid: str) -> Dict:

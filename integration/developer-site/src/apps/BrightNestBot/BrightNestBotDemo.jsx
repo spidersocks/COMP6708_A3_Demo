@@ -290,11 +290,24 @@ export default function BrightNestBotDemo() {
     refreshFamilies({ markSeen: true });
   }, []);
 
-  function refreshSchedule() {
+  function refreshSchedule(attempt = 0) {
     fetch(`${API_BASE}/schedule?days=${SCHEDULE_DAYS}`)
-      .then((r) => r.json())
-      .then((d) => setSchedule(d))
-      .catch(() => setSchedule(null));
+      .then((r) => {
+        if (!r.ok) throw new Error(`schedule ${r.status}`);
+        return r.json();
+      })
+      .then((d) => {
+        if (d && (d.days || d.teachers)) setSchedule(d);
+        else throw new Error("schedule empty");
+      })
+      .catch(() => {
+        // SAE cold start / brief 502 after redeploy — retry a few times.
+        if (attempt < 4) {
+          window.setTimeout(() => refreshSchedule(attempt + 1), 600 * (attempt + 1));
+        } else {
+          setSchedule(null);
+        }
+      });
   }
 
   function refreshAdminTodos() {

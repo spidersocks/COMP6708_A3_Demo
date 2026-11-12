@@ -133,11 +133,11 @@ _GREETING_RE = re.compile(
 
 
 def _content_tokens(text: str) -> set[str]:
-    # Latin words ≥3; age digits; CJK runs ≥2 (港鐵, 候補, etc.)
-    # Digits matter for “5 year old” ↔ age_4-5 / age_5-6 FAQ grounding.
-    toks = re.findall(r"[A-Za-z]{3,}|[\u4e00-\u9fff]{2,}|\d{1,2}", (text or "").lower())
+    # Latin words ≥3; age digits; CJK character bigrams (aligned with BM25 tokenize)
+    # so 「月費幾多」yields 月費 / 費幾 / 幾多 — not one opaque run.
+    raw = text or ""
     out: set[str] = set()
-    for t in toks:
+    for t in re.findall(r"[A-Za-z]{3,}|\d{1,2}", raw.lower()):
         if t in _STOP:
             continue
         if t in ("years", "year", "yrs", "yr"):
@@ -155,6 +155,12 @@ def _content_tokens(text: str) -> set[str]:
             out.add("location")
             continue
         out.add(t)
+    cjk = re.findall(r"[\u4e00-\u9fff]", raw)
+    if len(cjk) == 1:
+        out.add(cjk[0])
+    elif len(cjk) >= 2:
+        for i in range(len(cjk) - 1):
+            out.add(cjk[i] + cjk[i + 1])
     return out
 
 
