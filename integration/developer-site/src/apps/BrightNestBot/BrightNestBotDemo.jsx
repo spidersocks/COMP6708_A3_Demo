@@ -20,6 +20,23 @@ const MYCALENDAR_ICON = "/projects/brightnest/mycalendar.webp";
 /** How many calendar days MyCalendar loads (API max 21). */
 const SCHEDULE_DAYS = 14;
 
+/** Staff desk app order — swipe left/right cycles these. */
+const STAFF_TABS = ["calendar", "sheet", "mail", "families"];
+
+const STAFF_URL = {
+  calendar: "calendar.google.com/calendar/u/0/r/week",
+  sheet: "sheetpro.app/d/brightnest-followups",
+  mail: "mailbox.app/u/0/#inbox",
+  families: "families.app/d/brightnest-roster",
+};
+
+const STAFF_URL_SHORT = {
+  calendar: "calendar.google.com",
+  sheet: "sheetpro.app",
+  mail: "mailbox.app",
+  families: "families.app",
+};
+
 /** Demo WhatsApp identities — Jason is on families.csv; New Parent is blank. */
 const PARENT_PROFILES = [
   {
@@ -245,10 +262,14 @@ export default function BrightNestBotDemo() {
     addr: "A1",
     text: "Follow-up sheet",
   });
+  /** Live drag offset (px) while swiping staff apps. */
+  const [staffSwipeX, setStaffSwipeX] = useState(0);
 
   const chatWindowRef = useRef(null);
   const textAreaRef = useRef(null);
   const familiesBaselineRef = useRef(false);
+  const staffTabsRef = useRef(null);
+  const staffSwipeRef = useRef(null);
 
   useEffect(() => {
     const setVh = () => {
@@ -560,6 +581,97 @@ export default function BrightNestBotDemo() {
     });
   }
 
+  function selectStaffTab(next) {
+    if (!STAFF_TABS.includes(next) || next === staffTab) return;
+    setStaffTab(next);
+    setStaffSwipeX(0);
+    if (next === "calendar") refreshSchedule();
+    if (next === "families") refreshFamilies({ markSeen: true });
+  }
+
+  // Keep the active Chrome-style tab visible in the horizontal strip.
+  useEffect(() => {
+    const root = staffTabsRef.current;
+    if (!root) return;
+    const active = root.querySelector(".bn-browser-tab.active");
+    active?.scrollIntoView({
+      behavior: "smooth",
+      inline: "nearest",
+      block: "nearest",
+    });
+  }, [staffTab]);
+
+  function onStaffPagePointerDown(e) {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    // Don't steal clicks from inputs / mail rows / calendar controls.
+    if (
+      e.target.closest(
+        "input, textarea, button, select, a, .bn-mail-row, .bn-sheet-grid, .bn-cal-body"
+      )
+    ) {
+      return;
+    }
+    staffSwipeRef.current = {
+      id: e.pointerId,
+      x: e.clientX,
+      y: e.clientY,
+      dx: 0,
+      axis: null,
+      moved: false,
+    };
+    try {
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function onStaffPagePointerMove(e) {
+    const s = staffSwipeRef.current;
+    if (!s || s.id !== e.pointerId) return;
+    const dx = e.clientX - s.x;
+    const dy = e.clientY - s.y;
+    if (!s.axis) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      s.axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+      if (s.axis === "y") {
+        staffSwipeRef.current = null;
+        setStaffSwipeX(0);
+        return;
+      }
+    }
+    if (s.axis !== "x") return;
+    s.dx = dx;
+    s.moved = true;
+    const idx = STAFF_TABS.indexOf(staffTab);
+    // Resist edge swipes past first/last app.
+    let clamped = dx;
+    if ((idx <= 0 && dx > 0) || (idx >= STAFF_TABS.length - 1 && dx < 0)) {
+      clamped = dx * 0.28;
+    }
+    setStaffSwipeX(clamped);
+  }
+
+  function onStaffPagePointerUp(e) {
+    const s = staffSwipeRef.current;
+    if (!s || s.id !== e.pointerId) return;
+    staffSwipeRef.current = null;
+    const dx = s.dx || 0;
+    const idx = STAFF_TABS.indexOf(staffTab);
+    const threshold = 48;
+    if (s.moved && s.axis === "x" && Math.abs(dx) >= threshold) {
+      if (dx < 0 && idx < STAFF_TABS.length - 1) {
+        selectStaffTab(STAFF_TABS[idx + 1]);
+        return;
+      }
+      if (dx > 0 && idx > 0) {
+        selectStaffTab(STAFF_TABS[idx - 1]);
+        return;
+      }
+    }
+    setStaffSwipeX(0);
+  }
+
   return (
     <div className="bn-app">
       <header className="bn-top">
@@ -794,16 +906,18 @@ export default function BrightNestBotDemo() {
                   <span />
                   <span />
                 </div>
-                <div className="bn-browser-tabs" role="tablist" aria-label="Staff apps">
+                <div
+                  className="bn-browser-tabs"
+                  role="tablist"
+                  aria-label="Staff apps"
+                  ref={staffTabsRef}
+                >
                   <button
                     type="button"
                     role="tab"
                     aria-selected={staffTab === "calendar"}
                     className={`bn-browser-tab ${staffTab === "calendar" ? "active" : ""}`}
-                    onClick={() => {
-                      setStaffTab("calendar");
-                      refreshSchedule();
-                    }}
+                    onClick={() => selectStaffTab("calendar")}
                   >
                     <img
                       src={MYCALENDAR_ICON}
@@ -818,7 +932,7 @@ export default function BrightNestBotDemo() {
                     role="tab"
                     aria-selected={staffTab === "sheet"}
                     className={`bn-browser-tab ${staffTab === "sheet" ? "active" : ""}`}
-                    onClick={() => setStaffTab("sheet")}
+                    onClick={() => selectStaffTab("sheet")}
                   >
                     <img
                       src={SHEETPRO_ICON}
@@ -836,7 +950,7 @@ export default function BrightNestBotDemo() {
                     role="tab"
                     aria-selected={staffTab === "mail"}
                     className={`bn-browser-tab ${staffTab === "mail" ? "active" : ""}`}
-                    onClick={() => setStaffTab("mail")}
+                    onClick={() => selectStaffTab("mail")}
                   >
                     <img
                       src={MAILBOX_ICON}
@@ -854,10 +968,7 @@ export default function BrightNestBotDemo() {
                     role="tab"
                     aria-selected={staffTab === "families"}
                     className={`bn-browser-tab ${staffTab === "families" ? "active" : ""}`}
-                    onClick={() => {
-                      setStaffTab("families");
-                      refreshFamilies({ markSeen: true });
-                    }}
+                    onClick={() => selectStaffTab("families")}
                   >
                     <img
                       src={FAMILIES_ICON}
@@ -874,18 +985,27 @@ export default function BrightNestBotDemo() {
               </div>
               <div className="bn-browser-url">
                 <span className="bn-browser-lock" aria-hidden="true" />
-                <code>
-                  {staffTab === "calendar"
-                    ? "calendar.google.com/calendar/u/0/r/week"
-                    : staffTab === "sheet"
-                      ? "sheetpro.app/d/brightnest-followups"
-                      : staffTab === "mail"
-                        ? "mailbox.app/u/0/#inbox"
-                        : "families.app/d/brightnest-roster"}
-                </code>
+                <code className="bn-browser-url-full">{STAFF_URL[staffTab]}</code>
+                <code className="bn-browser-url-short">{STAFF_URL_SHORT[staffTab]}</code>
               </div>
 
-              <div className="bn-browser-page">
+              <div
+                className={`bn-browser-page${staffSwipeX ? " is-swiping" : ""}`}
+                onPointerDown={onStaffPagePointerDown}
+                onPointerMove={onStaffPagePointerMove}
+                onPointerUp={onStaffPagePointerUp}
+                onPointerCancel={onStaffPagePointerUp}
+                style={
+                  staffSwipeX
+                    ? {
+                        transform: `translateX(${staffSwipeX}px)`,
+                      }
+                    : undefined
+                }
+              >
+                <p className="bn-staff-swipe-hint" aria-hidden="true">
+                  Swipe for apps
+                </p>
                 {staffTab === "calendar" ? (
                   <MyCalendar
                     schedule={schedule}

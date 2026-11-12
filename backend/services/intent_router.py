@@ -967,4 +967,13 @@ def decide_intent(
         scores=cleaned,
     )
 
+    try:
+        from services import tool_registry
+
+        debug["tools"] = tool_registry.build_tools_trace(
+            route=route, scores=cleaned, debug=debug
+        )
+    except Exception as e:
+        debug["tools"] = {"error": str(e), "selected": route}
+
     return IntentDecision(route, cleaned, debug)

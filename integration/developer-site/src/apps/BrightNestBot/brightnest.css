@@ -2207,6 +2207,26 @@ code,
   min-width: 0;
   flex: 1;
   overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+  mask-image: linear-gradient(
+    90deg,
+    transparent 0,
+    #000 12px,
+    #000 calc(100% - 12px),
+    transparent 100%
+  );
+}
+
+.bn-browser-tabs::-webkit-scrollbar {
+  height: 3px;
+}
+.bn-browser-tabs::-webkit-scrollbar-thumb {
+  background: rgba(60, 64, 67, 0.35);
+  border-radius: 999px;
 }
 
 .bn-browser-tab {
@@ -2215,6 +2235,7 @@ code,
   gap: 7px;
   max-width: 220px;
   min-width: 120px;
+  flex: 0 0 auto;
   border: 0;
   border-radius: 10px 10px 0 0;
   background: #cfd3d9;
@@ -2223,6 +2244,7 @@ code,
   font: 500 0.78rem "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   cursor: pointer;
   position: relative;
+  scroll-snap-align: start;
 }
 
 .bn-browser-tab.active {
@@ -2276,6 +2298,18 @@ code,
   background: #fff;
   border: 1px solid #c6c9ce;
   font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  min-width: 0;
+}
+.bn-browser-url code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  color: #3c4043;
+}
+.bn-browser-url-short {
+  display: none;
 }
 
 .bn-browser-lock {
@@ -2298,19 +2332,32 @@ code,
   border-radius: 6px 6px 0 0;
 }
 
-.bn-browser-url code {
-  font-family: inherit;
-  font-size: 0.78rem;
-  color: #3c4043;
-}
-
 .bn-browser-page {
+  position: relative;
   min-height: 0;
   background: #fff;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   border-radius: 0 0 13px 13px;
+  touch-action: pan-y;
+  transition: transform 0.18s ease;
+  will-change: transform;
+}
+.bn-browser-page.is-swiping {
+  transition: none;
+}
+.bn-staff-swipe-hint {
+  display: none;
+  margin: 0;
+  padding: 4px 10px 0;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #80868b;
+  text-align: center;
+  flex-shrink: 0;
+  pointer-events: none;
 }
 
 .bn-sheet-widget,
@@ -3189,18 +3236,23 @@ code,
   }
 
   .bn-phone,
-  .bn-inspector--staff {
+  .bn-inspector--staff,
+  .bn-inspector--system {
     min-height: 420px;
-    height: min(58dvh, 640px);
-    max-height: min(58dvh, 640px);
+    height: min(70dvh, 720px);
+    max-height: min(70dvh, 720px);
   }
 
   .bn-inspector {
-    max-height: min(58dvh, 640px);
+    max-height: min(70dvh, 720px);
   }
 
   .bn-browser {
     min-height: 0;
+  }
+
+  .bn-staff-swipe-hint {
+    display: block;
   }
 }
 
@@ -3213,14 +3265,59 @@ code,
     gap: 2px;
   }
 
+  .bn-browser-dots {
+    display: none;
+  }
+
+  .bn-browser-chrome {
+    padding: 6px 4px 0 6px;
+    gap: 4px;
+  }
+
+  .bn-browser-tab {
+    min-width: 96px;
+    max-width: 140px;
+    padding: 7px 8px;
+    gap: 5px;
+    font-size: 0.72rem;
+  }
+
+  .bn-browser-url {
+    margin: 0 6px 6px;
+    padding: 5px 10px;
+  }
+
+  .bn-browser-url-full {
+    display: none;
+  }
+
+  .bn-browser-url-short {
+    display: block;
+  }
+
+  .bn-sheet-menuline,
+  .bn-sheet-toolbar {
+    display: none;
+  }
+
   .bn-mail-layout {
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .bn-mail-nav {
+    display: none;
   }
 
   .bn-mail-list {
-    max-height: 200px;
+    max-height: min(36dvh, 260px);
     border-right: 0;
     border-bottom: 1px solid #e8eaed;
+  }
+
+  .bn-mail-read {
+    min-height: 0;
+    overflow: auto;
   }
 
   .bn-mail-search {
@@ -3233,6 +3330,15 @@ code,
 
   .bn-families-layout {
     grid-template-columns: 1fr;
+  }
+
+  .bn-browser-page {
+    overflow: auto;
+  }
+
+  .bn-cal-board {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   .bn-cal-body,

@@ -431,11 +431,13 @@ def chat(req: ChatRequest) -> ChatResponse:
             "score_ledger": (decision.debug or {}).get("score_ledger") or [],
             "score_origins": (decision.debug or {}).get("score_origins") or {},
             "score_source_guide": (decision.debug or {}).get("score_source_guide") or [],
+            "tools": (decision.debug or {}).get("tools") or {},
             "hours_followup_promoted": followup_promoted,
             "dialogue_active": dialogue_active,
             "cancel_active": cancel_active,
             "left_booking": leave_booking and not dialogue_active,
         },
+        "tools": (decision.debug or {}).get("tools") or {},
         "pipeline_steps": steps,
     }
 

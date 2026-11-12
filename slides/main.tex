@@ -148,16 +148,16 @@
       {\scriptsize Retrieval $s(q,c)=\mathrm{sim}(E(q),E(c))$ · inspector shows rank, $s$, chunk.}
     \end{column}
     \begin{column}{0.46\textwidth}
-      \textbf{Hybrid router}
+      \textbf{Tool cascade (not LLM-first)}
       \begin{itemize}\setlength\itemsep{0.16em}
-        \item Scores = \textbf{detector awards}, not RAG sim
-        \item UI groups: \textbf{Tool / dialogue} · \textbf{Live info} · \textbf{RAG default}
-        \item Live paths: grounded compose (card $>$ KB)
-        \item Hard FSM \textbf{bypass retrieve} + \textbf{final check}
-        \item Fees / programmes = pure RAG (no fee tool)
+        \item Registry of tools; L1 detectors pick in $<$1\,ms
+        \item L2 cheap policy only on ambiguous RAG
+        \item UI: \textbf{Tool / dialogue} · \textbf{Live info} · \textbf{RAG}
+        \item Hard FSM + \textbf{final check} before commits
+        \item Fees / programmes = pure RAG
       \end{itemize}
       \vspace{0.35em}
-      \pill{tool · live · RAG}\quad\pill{KB may enrich}\\[0.25em]
+      \pill{cascade not agent-loop}\quad\pill{KB may enrich}\\[0.25em]
       \pill{proceed / clarify / abort}
     \end{column}
   \end{columns}
@@ -250,7 +250,7 @@
   ]
     \node[soft] (ui) at (0,2.55) {\textbf{React UI}\\seanfontaine.dev};
     \node[soft] (api) at (2.85,2.55) {\textbf{FastAPI}\\Alibaba SAE};
-    \node[box] (route) at (5.7,2.55) {\textbf{Hybrid router}\\rules + arbiter};
+    \node[box] (route) at (5.7,2.55) {\textbf{Tool cascade}\\L1$\rightarrow$L2$\rightarrow$tool};
 
     \node[box] (tools) at (1.4,1.0) {\textbf{Hard FSM}\\book · cancel · escalate};
     \node[box] (compose) at (4.0,1.0) {\textbf{Grounded compose}\\card + KB enrich};

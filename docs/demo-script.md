@@ -44,7 +44,7 @@
 ### 0:40–1:20 · Technique (Technique / Architecture ≤20s, then live)
 
 **Narrator:**
-> This is a **training-free** system on purpose — centre docs change weekly, so fine-tuning is the wrong loop. We built our own **RAG** pipeline: markdown KB → DashScope embeddings → Chroma ∥ BM25 → **channel pack — three dense hits plus two BM25 supplements** → Qwen with citations. Above that sits a **hybrid intent router**. The scores you see are **not** retrieval similarities — they are detector awards, grouped into **tool / dialogue**, **live info**, and **RAG default**. Live hours and typhoon use privileged facts plus KB enrich. Hard paths — book, cancel, escalate — **bypass retrieve**, then a **cheap final check** may proceed, clarify, or abort. Parent chat stays WhatsApp-shaped: conversation only.
+> This is a **training-free** system on purpose — centre docs change weekly, so fine-tuning is the wrong loop. We built our own **RAG** pipeline: markdown KB → DashScope embeddings → Chroma ∥ BM25 → **channel pack — three dense hits plus two BM25 supplements** → Qwen with citations. Tools are listed in a **registry**, but we do **not** LLM-tool-call every turn — that would be slow and unsafe for typhoon or booking. Instead a **cascade**: detectors pick tools in under a millisecond; a cheap action policy only on ambiguous RAG turns; a **final check** before irreversible writes. Inspector scores are detector awards grouped into **tool / dialogue**, **live info**, and **RAG default**.
 
 **Pilot:** Flash Architecture; return to live UI.
 

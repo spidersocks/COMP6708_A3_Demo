@@ -20,24 +20,28 @@ Fictional brand **BrightNest / 亮巢**. This document explains **what the syste
 BrightNest is a WhatsApp-shaped parent assistant for a fictional HK learning centre.
 
 1. The parent types a message (demo phone UI — chat only, no booking form).
-2. A **hybrid intent router** scores detectors in two buckets — **tool / dialogue** (book, cancel, escalate, seats) and **live info** (hours, typhoon) — then falls through to **pure RAG** for static FAQs (fees, programmes, policies).
-3. That specialist answers from structured truth (JSON / CSV / calendar) and/or retrieved Markdown.
-4. Live-info routes **grounded-compose** (privileged live doc + KB enrich via channel pack). Hard FSM paths **bypass retrieve**, then a **cheap LLM final check** may `proceed` / `clarify` / `abort` before irreversible writes.
+2. A **tool registry** lists specialists (book, cancel, escalate, seats, hours, weather, RAG). A **cascade** selects one — **not** LLM-first function calling every turn (that would add hundreds of ms and risk misrouting safety/book commits).
+3. **L1** hard detectors / sticky FSM (&lt;1ms) → **L2** cheap `action_policy` only when RAG would otherwise win on an ambiguous tool ask → **L3** run the selected tool → **L4** `final_check` before irreversible writes.
+4. Live-info tools **grounded-compose** (privileged live doc + KB enrich via channel pack). Static FAQs (fees, programmes, policies) stay **pure RAG**.
 5. Soft answers may get a main-LLM **tone rewrite** (`adapt`) — it must not invent policy.
-6. The inspector shows the decision: grouped scores, lit path (FSM · DST · Final check · Staff email · Live · Pack 3+2 · LLM), RAG chunks, SheetPro / MailBox.
+6. The inspector shows the cascade: selected tool · selector · grouped L1 scores · lit path (FSM · DST · Final check · Staff email · Live · Pack 3+2 · LLM).
 
 ```text
 Parent message
     │
     ▼
-Intent router (+ optional action policy / route arbiter)
+Tool registry + cascade
+  L1 detectors / sticky  (<1ms)
+  L2 action_policy       (cheap LLM, long-tail only)
+  L3 selected tool       (live / FSM / RAG)
+  L4 final_check         (before commits)
     │
-    ├─ live info ──► hours / typhoon (+ HKO) ──► grounded compose (live doc + KB pack)
-    ├─ tool FSM  ──► book / cancel / escalate / seats ──► DST · final check · staff email
+    ├─ live info ──► hours / typhoon (+ HKO) ──► grounded compose
+    ├─ tool FSM  ──► book / cancel / escalate / seats ──► DST · staff email
     └─ pure RAG  ──► dense∥BM25 → channel pack (3+2) → Qwen + citations
     │
     ▼
-answer + trace (inspector)
+answer + trace.tools (inspector)
 ```
 
 ---
@@ -117,15 +121,18 @@ Inspector: `trace.grounding.{mode,why,composed,live_doc,ask_tool_ok,invoke_tool,
 **Files:** `backend/services/intent_router.py`  
 **Helpers:** `centre_facts.py` (regex facts), `escalation.py`, `intent_classifier.py` (soft prototypes), `intent_arbiter.py` (route review), `final_check.py` (commit gate).
 
-### 3.1 Why hybrid?
+### 3.1 Why cascade (not LLM-first tool calling)?
+
+Full agent tool-calling every turn is flexible but wrong for BrightNest: +200–900ms latency, nondeterministic safety/weather routing, and easy misroutes into SheetPro/MailBox. Production practice is a **cascade** — fast deterministic selectors first, cheap LLM only on the ambiguous tail. That is what we ship.
 
 | Layer | Role | Example |
 |-------|------|---------|
-| Hard regex / detectors | Tool intents must be deterministic | Typhoon → weather tool; seats → register; book/cancel → FSM |
-| Conflict resolution | When two tool detectors fire, pick the safer owner | Weather beats hours |
-| Soft prototypes | Catch paraphrases the regex missed | Blended only when no hard veto (≥ 0.98) |
-| Cheap route arbiter | Second look on ambiguous **tool** routes | Skipped when top score ≥ 0.9 and no material conflict |
-| Cheap **final check** | Second look before **commits** (book / cancel / escalate / refuse) | `proceed` · `clarify` · `abort` (fail-open; safety never blocked) |
+| **Tool registry** | OpenAI-style schemas for each specialist (`trace.tools.catalog`) | `opening_hours`, `booking_dialogue`, `rag`, … |
+| **L1** Hard regex / sticky | Deterministic tool pick (&lt;1ms) | Typhoon → weather; seats → register; book/cancel → FSM |
+| Conflict / priority | When two detectors fire, pick the safer owner | Escalation &gt; weather &gt; cancel &gt; book … |
+| **L2** Cheap `action_policy` | Promote a RAG miss into a tool when the long-tail ask is tool-shaped | Skipped when L1 already owns the turn |
+| Cheap route arbiter | Second look on ambiguous **tool** routes | Skipped when top ≥ 0.9 |
+| **L4** Cheap **final check** | Before **commits** (book / cancel / escalate / refuse) | `proceed` · `clarify` · `abort` (safety fail-open) |
 
 ### 3.2 Where intent scores come from
 

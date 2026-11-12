@@ -1362,6 +1362,13 @@ function NodeDetail({
     }
 
     case "router": {
+      const tools =
+        routing?.tools ||
+        routing?.debug?.tools ||
+        trace?.tools ||
+        {};
+      const selectedTool = tools.selected_tool || {};
+      const cascade = Array.isArray(tools.cascade) ? tools.cascade : [];
       const whyShort =
         path === "rag"
           ? "No tool owned this turn → RAG"
@@ -1373,12 +1380,24 @@ function NodeDetail({
       return (
         <>
           <p className="bn-rules-hint">
-            One decision: <strong>FSM</strong> (tools / sticky) or{" "}
-            <strong>RAG</strong> (retrieve → generate), from detector scores
-            {arbiter?.called ? " + arbiter" : ""}.
+            Cascade selects a <strong>tool</strong> from the registry — not
+            LLM-first function calling every turn.{" "}
+            {tools.blurb ||
+              "Detectors pick tools in <1ms; cheap LLM only on ambiguous RAG turns."}
           </p>
           <MatchSummaryCard summary={matchSummary} />
           <ul className="bn-fact-list">
+            <li>
+              <span>Selected tool</span>
+              <code>
+                {tools.selected || route || "—"}
+                {selectedTool.group ? ` · ${selectedTool.group}` : ""}
+              </code>
+            </li>
+            <li>
+              <span>Selector</span>
+              <code>{tools.selector || "—"}</code>
+            </li>
             <li>
               <span>Branch</span>
               <code>
@@ -1390,6 +1409,12 @@ function NodeDetail({
               <span>Why</span>
               <code>{whyShort}</code>
             </li>
+            {selectedTool.commit_gated ? (
+              <li>
+                <span>Commit gated</span>
+                <code>yes · final check before write</code>
+              </li>
+            ) : null}
             {routing?.debug?.action_policy ? (
               <li>
                 <span>Action policy</span>
@@ -1415,11 +1440,35 @@ function NodeDetail({
               </li>
             ) : null}
           </ul>
+          {cascade.length > 0 ? (
+            <div className="bn-score-group">
+              <p className="bn-rules-hint">
+                <strong>Cascade</strong> · this turn
+              </p>
+              <ol className="bn-score-ledger">
+                {cascade.map((layer) => (
+                  <li
+                    key={layer.id || layer.label}
+                    className={`bn-led-${layer.status === "ran" ? "award" : "note"}`}
+                  >
+                    <strong>{layer.id || "·"}</strong>
+                    <span>
+                      {layer.label}
+                      {layer.status ? ` · ${layer.status}` : ""}
+                      {layer.detail ? ` — ${layer.detail}` : ""}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          ) : null}
           <StageIO
             request={{ scores: routing?.scores || {} }}
             payload={{
               branch: path || null,
               route: route || null,
+              tool: tools.selected || route || null,
+              selector: tools.selector || null,
               why: whyShort,
             }}
           />
@@ -1467,9 +1516,10 @@ function NodeDetail({
       return (
         <>
           <p className="bn-rules-hint">
-            Detector awards (not RAG similarity), split by what they unlock:
-            sticky tools vs live centre facts vs RAG default. Highest in each
-            group; overall winner feeds the router.
+            L1 detector awards (not RAG similarity), split by tool registry
+            groups: <strong>Tool / dialogue</strong> · <strong>Live info</strong>{" "}
+            · <strong>RAG default</strong>. Highest overall becomes the selected
+            tool unless L2 action_policy promotes a RAG miss.
           </p>
           {groupedScores.length > 0 ? (
             groupedScores.map((g) => (
@@ -2425,6 +2475,9 @@ export default function TurnPipeline({
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const viewportRef = useRef(null);
   const dragRef = useRef(null);
+  /** Active pointers for Maps-style pan + pinch (pointerId → {x,y}). */
+  const pointersRef = useRef(new Map());
+  const pinchRef = useRef(null);
   const closeBtnRef = useRef(null);
   const fittedRef = useRef(false);
   const zoomRef = useRef(zoom);
@@ -3104,46 +3157,163 @@ export default function TurnPipeline({
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
 
-  const onPointerDown = (e) => {
-    if (e.button !== 0 && e.button !== 1) return;
-    if (e.target.closest(".bn-flow-controls")) return;
-    const nodeEl = e.target.closest?.("[data-node-id]");
-    dragRef.current = {
-      x: e.clientX,
-      y: e.clientY,
-      panX: panRef.current.x,
-      panY: panRef.current.y,
-      moved: false,
-      nodeId: nodeEl?.getAttribute("data-node-id") || null,
+  const applyZoomAt = (mx, my, nextZoom, width, height) => {
+    const z = zoomRef.current;
+    const p = panRef.current;
+    const wx = (mx - p.x) / z;
+    const wy = (my - p.y) / z;
+    const nextPan = clampPan(
+      { x: mx - wx * nextZoom, y: my - wy * nextZoom },
+      nextZoom,
+      width || 1,
+      height || 1
+    );
+    zoomRef.current = nextZoom;
+    panRef.current = nextPan;
+    setZoom(nextZoom);
+    setPan(nextPan);
+  };
+
+  const pinchMetrics = (pts) => {
+    const [a, b] = pts;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    return {
+      dist: Math.hypot(dx, dy) || 1,
+      mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
     };
-    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+
+  const onPointerDown = (e) => {
+    if (e.pointerType === "mouse" && e.button !== 0 && e.button !== 1) return;
+    if (e.target.closest(".bn-flow-controls")) return;
+    const el = e.currentTarget;
+    const rect = el.getBoundingClientRect();
+    const pts = pointersRef.current;
+    pts.set(e.pointerId, {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+      cx: e.clientX,
+      cy: e.clientY,
+    });
+
+    if (pts.size === 1) {
+      // Do not capture — a second finger must still reach this element for pinch.
+      const nodeEl = e.target.closest?.("[data-node-id]");
+      dragRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+        panX: panRef.current.x,
+        panY: panRef.current.y,
+        moved: false,
+        nodeId: nodeEl?.getAttribute("data-node-id") || null,
+      };
+      pinchRef.current = null;
+      el.classList.add("is-panning");
+    } else if (pts.size >= 2) {
+      dragRef.current = null;
+      const pair = [...pts.values()].slice(0, 2);
+      const m = pinchMetrics(pair);
+      pinchRef.current = {
+        startDist: m.dist,
+        startZoom: zoomRef.current,
+        lastMid: m.mid,
+      };
+      el.classList.add("is-panning");
+    }
   };
 
   const onPointerMove = (e) => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const pts = pointersRef.current;
+    if (!pts.has(e.pointerId)) return;
+    pts.set(e.pointerId, {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+      cx: e.clientX,
+      cy: e.clientY,
+    });
+
+    if (pts.size >= 2 && pinchRef.current) {
+      const pair = [...pts.values()].slice(0, 2);
+      const m = pinchMetrics(pair);
+      const pinch = pinchRef.current;
+      const ratio = m.dist / pinch.startDist;
+      const next = Math.min(
+        MAX_ZOOM,
+        Math.max(MIN_ZOOM, pinch.startZoom * ratio)
+      );
+      // Zoom about current midpoint, then pan by midpoint drift (Maps-style).
+      applyZoomAt(m.mid.x, m.mid.y, next, rect.width, rect.height);
+      const dx = m.mid.x - pinch.lastMid.x;
+      const dy = m.mid.y - pinch.lastMid.y;
+      if (dx || dy) {
+        const shifted = clampPan(
+          { x: panRef.current.x + dx, y: panRef.current.y + dy },
+          zoomRef.current,
+          rect.width,
+          rect.height
+        );
+        panRef.current = shifted;
+        setPan(shifted);
+      }
+      pinch.lastMid = m.mid;
+      return;
+    }
+
     const d = dragRef.current;
-    if (!d) return;
+    if (!d || pts.size !== 1) return;
     const dx = e.clientX - d.x;
     const dy = e.clientY - d.y;
     if (Math.abs(dx) + Math.abs(dy) > 4) d.moved = true;
     if (!d.moved) return;
-    const el = viewportRef.current;
-    const { width, height } = el?.getBoundingClientRect?.() || {
-      width: 0,
-      height: 0,
-    };
     const next = clampPan(
       { x: d.panX + dx, y: d.panY + dy },
       zoomRef.current,
-      width || 1,
-      height || 1
+      rect.width || 1,
+      rect.height || 1
     );
     panRef.current = next;
     setPan(next);
   };
 
-  const onPointerUp = () => {
+  const onPointerUp = (e) => {
+    const el = viewportRef.current;
+    const pts = pointersRef.current;
+    pts.delete(e.pointerId);
+
+    if (pts.size >= 2) {
+      const pair = [...pts.values()].slice(0, 2);
+      const m = pinchMetrics(pair);
+      pinchRef.current = {
+        startDist: m.dist,
+        startZoom: zoomRef.current,
+        lastMid: m.mid,
+      };
+      dragRef.current = null;
+      return;
+    }
+
+    if (pts.size === 1) {
+      pinchRef.current = null;
+      const remaining = [...pts.values()][0];
+      dragRef.current = {
+        x: remaining.cx,
+        y: remaining.cy,
+        panX: panRef.current.x,
+        panY: panRef.current.y,
+        moved: true,
+        nodeId: null,
+      };
+      return;
+    }
+
     const d = dragRef.current;
     dragRef.current = null;
+    pinchRef.current = null;
+    el?.classList.remove("is-panning");
     if (d && !d.moved && d.nodeId) setActiveId(d.nodeId);
   };
 
@@ -3155,7 +3325,7 @@ export default function TurnPipeline({
       }${trace.language ? ` · ${trace.language}` : ""}${
         liveOn ? " · live" : ""
       }`
-    : "Drag to pan · scroll to zoom · click a node";
+    : "Pinch to zoom · drag to pan · click a node";
 
   return (
     <div className="bn-pipeline bn-pipeline--canvas">

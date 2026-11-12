@@ -14,7 +14,7 @@ Browser (HTTPS)
        ▼
      FastAPI on Alibaba SAE (cn-hongkong) · Docker brightnest-api:vN
        │
-       ├─ hybrid intent router (tool / live / RAG scores + optional arbiters)
+       ├─ tool registry + cascade (L1 detectors → L2 action_policy → tool/RAG → L4 final check)
        ├─ centre facts / opening hours / CSV register
        ├─ booking FSM · cancel FSM · escalation (+ DST · final check · staff email)
        ├─ grounded compose (live doc + channel-pack enrich) / adapt / pure RAG
@@ -115,9 +115,18 @@ flowchart TB
 
 ---
 
-## Intent scores (not retrieval sim)
+## Tool registry + cascade (not LLM-first)
 
-Scores are **fixed detector awards** (`hard_regex`, `sticky_state`, …), conflict clears, and optional prototype blends — **not** Chroma/BM25 similarities. The inspector **Rules · scores** panel groups them for the demo:
+We expose OpenAI-style **tool schemas** (`trace.tools.catalog`) but **select** them with a cascade — the production pattern for latency and safety. Full function-calling every turn would add hundreds of ms and risk misrouting commits.
+
+```text
+L1 detectors / sticky  →  L2 action_policy (ambiguous RAG only)
+  → L3 selected tool  →  L4 final_check before writes
+```
+
+Inspector shows `selected`, `selector` (`hard_regex` | `sticky` | `action_policy` | `default_rag`), and cascade steps.
+
+**L1 scores** are fixed detector awards — **not** Chroma/BM25 similarities. Grouped as:
 
 | Group | Examples | Unlocks |
 |-------|----------|---------|

@@ -25,7 +25,7 @@ Built for COMP6708 Advanced Big Data Computing — Mini Demo (live system, RAG-f
 ## Techniques demonstrated (show these live)
 
 1. **Training-free RAG** — chunk Markdown → DashScope embeddings → Chroma ∥ in-process BM25 → **channel pack (3 dense + 2 BM25)** → Qwen + citations
-2. **Hybrid intent router** — detector awards (not retrieval sim), grouped in the inspector as **Tool / dialogue**, **Live info**, **RAG default**
+2. **Tool registry + cascade** — OpenAI-style tool schemas; L1 detectors (&lt;1ms) then L2 cheap action_policy on ambiguous RAG — **not** LLM-first tool-calling every turn. Inspector groups: **Tool / dialogue**, **Live info**, **RAG default**
 3. **Live info paths** — opening hours calendar / typhoon+HKO with privileged live docs + KB enrich
 4. **Tool FSMs** — sticky book/cancel with cheap **DST JSON**, **final check** before commits, assessment → SheetPro
 5. **Staff escalation** — Final check → Staff email draft → MailBox (safety fail-open)
