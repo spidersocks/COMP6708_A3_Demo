@@ -1,13 +1,17 @@
 ---
-language: zh-HK
+language: zh-CN
 type: centre
 canonical: location
 folder: centre
-aliases: 位置; 地址; 地點; 中心地址; 中心位置; 係邊; 如何到達; 地圖; google map; 地圖連結; 路線; 地方; 去邊; 地理位置
+aliases: 位置; 地址; 地点; 中心地址; 中心位置; 在哪; 如何到达; 地图; google map; 地图链接; 路线; 地方; 地铁
 ---
 
 # 位置
 
-地址：香港上環荷李活道233號荷李活中心一樓
+**地址：** 香港中环皇后大道中88号海景广场2楼
 
-地圖：https://share.google/LSbst50FiX5qk5ceB
+**地铁：** 中环站 **D2 出口**，沿皇后大道中步行约 **3 分钟**。  
+**泊车：** 大厦内设收费停车场（不设泊车优惠）。  
+**进出：** 大堂升降机上 **2 楼**；访客请先到接待处登记。
+
+地图：https://maps.google.com/?q=88+Queen's+Road+Central+Hong+Kong
