@@ -12,6 +12,23 @@ from typing import Any, Dict, List, Optional, Tuple
 API = os.environ.get("BRIGHTNEST_API", "http://47.242.157.72:8000").rstrip("/")
 REFUSE_MARK = "outside what our BrightNest materials cover"
 
+
+class _NoLoopRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow one hop of 307 without POST→GET downgrade loops on Vercel."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if code in (301, 302, 303, 307, 308) and req.get_method() == "POST":
+            return urllib.request.Request(
+                newurl,
+                data=req.data,
+                headers={k: v for k, v in req.header_items()},
+                method="POST",
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_NoLoopRedirect)
+
 # (id, message, expected_route or None, expect_refuse, must_contain_any)
 # expected_route None = any non-refuse answer OK but prefer rag for FAQs
 CASES: List[Tuple[str, str, Optional[str], bool, List[str]]] = [
@@ -53,8 +70,12 @@ def req(method: str, path: str, body: Dict | None = None) -> Any:
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
-    r = urllib.request.Request(f"{API}{path}", data=data, headers=headers, method=method)
-    with urllib.request.urlopen(r, timeout=120) as resp:
+    # Prefer explicit trailing paths that Vercel does not 307-loop.
+    url = f"{API}{path}"
+    if path == "/chat" and not url.endswith("/"):
+        url = url  # POST /chat is fine; opener follows a single 307 with body
+    r = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with _OPENER.open(r, timeout=120) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 

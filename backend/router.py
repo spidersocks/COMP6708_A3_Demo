@@ -203,6 +203,90 @@ def _step(step_id: str, label: str, status: str, detail: str = "") -> Dict[str, 
     return {"id": step_id, "label": label, "status": status, "detail": detail}
 
 
+def _attach_data_sources(
+    trace: Dict[str, Any],
+    *,
+    route_name: str,
+    live_doc: str = "",
+    enrich_hits: int = 0,
+) -> None:
+    """Record which stores/APIs this tool turn actually consulted (inspector)."""
+    from services import data_sources as ds
+
+    consulted: List[Dict[str, Any]] = []
+    oh = (trace.get("opening_hours") or {}).get("facts") or {}
+    grounding = trace.get("grounding") or {}
+    rag = trace.get("rag") or {}
+
+    def _add(sid: str, status: str, detail: str = "") -> None:
+        if any(c.get("id") == sid for c in consulted):
+            return
+        consulted.append(ds.mark(sid, status=status, detail=detail))
+
+    rn = route_name or ""
+    if rn == "severe_weather":
+        _add("centre_weather_json", "read", "structured T8 / black-rain policy card")
+        if live_doc or oh.get("weather_hint"):
+            _add(
+                "hko_opendata",
+                "read" if (live_doc or oh.get("weather_hint")) else "checked_clear",
+                str(oh.get("weather_hint") or "live warning feed"),
+            )
+        elif oh:
+            _add("hko_opendata", "checked_clear", "same-day HKO check · no closure signal")
+        if oh:
+            _add("hours_calendar", "read", "today window alongside weather policy")
+    elif rn in {"opening_hours", "deterministic_opening_hours"}:
+        _add("hours_calendar", "read", "weekday / holiday / open-now engine")
+        if oh.get("weather_hint") or live_doc:
+            _add("hko_opendata", "read", str(oh.get("weather_hint") or "live signal"))
+        else:
+            # Hours engine attempts same-day HKO; clear = no severe signal.
+            _add("hko_opendata", "checked_clear", "same-day HKO · no severe signal")
+    elif rn == "booking_tool":
+        _add(
+            "class_register_csv",
+            "read",
+            f"live seats · {(trace.get('debug') or {}).get('slot_count', '')} slots".strip(),
+        )
+        _add("families_csv", "read", "optional identity from WhatsApp phone")
+    elif rn == "booking_dialogue":
+        _add("bookings_sqlite", "read", "sticky booking / DST session state")
+        _add("class_register_csv", "read", "open seats / assessment slots")
+        _add("families_csv", "read", "phone → parent → child")
+        if trace.get("admin_todo"):
+            _add("admin_todos", "wrote", "SheetPro assessment / follow-up row")
+    elif rn == "cancel_dialogue":
+        _add("bookings_sqlite", "read", "upcoming classes for cancel FSM")
+        _add("class_register_csv", "read", "timetable labels")
+        _add("families_csv", "read", "phone → family")
+        if (trace.get("cancel") or {}).get("committed"):
+            _add("cancellations_csv", "wrote", "confirmed cancellation row")
+    elif rn == "staff_escalation":
+        _add("staff_messages", "wrote", "MailBox urgent inbox + email draft")
+        _add("families_csv", "read", "parent / child context on the ticket")
+    elif rn in {"rag", "off_domain"}:
+        _add("chroma_kb", "read", f"dense hits={rag.get('hit_count') or enrich_hits or 0}")
+        if (rag.get("hybrid") or {}).get("mode") == "channel_pack" or rag.get("hits"):
+            _add("bm25_index", "read", "BM25 supplements in channel pack")
+
+    # Grounded enrich / pure RAG retrieve always touches the hybrid indexes.
+    if grounding.get("used_rag") or enrich_hits or (rag.get("mode") == "grounded_enrich"):
+        _add(
+            "chroma_kb",
+            "enrich" if rn not in {"rag", "off_domain"} else "read",
+            f"KB enrich hits={grounding.get('rag_hit_count') or enrich_hits or rag.get('hit_count') or 0}",
+        )
+        _add("bm25_index", "enrich" if rn not in {"rag", "off_domain"} else "read", "channel pack")
+
+    if live_doc and "HKO" in live_doc:
+        _add("hko_opendata", "read", "privileged live weather doc")
+    if live_doc and "REGISTER" in live_doc.upper():
+        _add("class_register_csv", "read", "privileged live register doc")
+
+    trace["data_sources"] = ds.build_turn_sources(route=rn, consulted=consulted)
+
+
 def _llm_trace_summary(
     routing_debug: Dict[str, Any],
     steps: List[Dict[str, str]],
@@ -720,6 +804,12 @@ def chat(req: ChatRequest) -> ChatResponse:
             trace["final_check"] = dbg["final_check"]
         if dbg.get("staff_message") and "staff_message" not in trace:
             trace["staff_message"] = dbg["staff_message"]
+        _attach_data_sources(
+            trace,
+            route_name=route_name,
+            live_doc=live_doc or "",
+            enrich_hits=int((trace.get("grounding") or {}).get("rag_hit_count") or 0),
+        )
         llm_io.attach(trace)
         resp = ChatResponse(
             answer=final,
@@ -1577,6 +1667,11 @@ def chat(req: ChatRequest) -> ChatResponse:
     trace["answer_provider"] = rag_provider
     trace["llm"] = _llm_trace_summary(decision.debug or {}, steps, rag_provider)
     trace["latency_ms"] = int((time.perf_counter() - t0) * 1000)
+    _attach_data_sources(
+        trace,
+        route_name="rag",
+        enrich_hits=int(rag_debug.get("hit_count") or 0),
+    )
     llm_io.attach(trace)
     resp = ChatResponse(
         answer=answer,

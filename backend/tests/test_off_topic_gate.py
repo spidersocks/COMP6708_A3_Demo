@@ -55,6 +55,24 @@ def test_fish_vs_hours_is_off_topic():
     assert _off_topic("How do fish breathe underwater?", hit)
 
 
+def test_zh_monthly_fee_grounds_on_fees_folder():
+    """Cross-lingual: 月費 must not false-refuse against EN/ZH fees chunks."""
+    hit = {
+        "metadata": {
+            "title": "Tuition enquiry",
+            "source": "en/fees/tuition_enquiry.md",
+            "folder": "fees",
+            "type": "fees",
+            "canonical": "Tuition enquiry",
+        },
+        "text": "Phonics package guide fee is HK$3,200–3,680 for 8 sessions.",
+        "score": 0.55,
+    }
+    assert not _off_topic("月費幾多？", hit)
+    assert not _off_topic("學費幾多？", hit)
+    assert not _off_topic("拼音班幾錢？", hit)
+
+
 def test_generic_lessons_with_weak_hit_off_topic():
     hit = _hit(
         "Opening hours",

@@ -3,7 +3,7 @@ language: en
 type: fees
 canonical: TuitionEnquiry
 folder: fees
-aliases: tuition; fee; price; cost; class fee; how much; how much is; per hour; per lesson; session fee; charges; private class fee; private tuition price; 1:1 fee; one-on-one fee; private math price; private english price; quotation; quote; fee by request
+aliases: tuition; fee; fees; monthly fee; price; cost; class fee; how much; how much is; per hour; per lesson; session fee; charges; private class fee; private tuition price; 1:1 fee; one-on-one fee; private math price; private english price; quotation; quote; fee by request; 月費; 學費
 ---
 # Tuition FAQ
 

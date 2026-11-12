@@ -1462,6 +1462,29 @@ function NodeDetail({
               </ol>
             </div>
           ) : null}
+          {(trace?.data_sources?.consulted || []).length > 0 ? (
+            <div className="bn-score-group">
+              <p className="bn-rules-hint">
+                <strong>Pulled from</strong> · live stores / APIs / indexes
+              </p>
+              <ul className="bn-fact-list">
+                {trace.data_sources.consulted.map((s) => (
+                  <li key={`src-${s.id}`}>
+                    <span>
+                      {s.label || s.id}
+                      {s.kind ? (
+                        <em className="bn-score-src"> · {s.kind}</em>
+                      ) : null}
+                    </span>
+                    <code>
+                      {s.status || "consulted"}
+                      {s.locator ? ` · ${s.locator}` : ""}
+                    </code>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           <StageIO
             request={{ scores: routing?.scores || {} }}
             payload={{
@@ -1469,6 +1492,7 @@ function NodeDetail({
               route: route || null,
               tool: tools.selected || route || null,
               selector: tools.selector || null,
+              data_sources: trace?.data_sources || null,
               why: whyShort,
             }}
           />
@@ -1958,19 +1982,50 @@ function NodeDetail({
         </>
       );
 
-    case "live":
+    case "live": {
       if (!liveOn) {
         return <Skipped>No live feed on this turn.</Skipped>;
       }
+      const sources =
+        trace?.data_sources ||
+        routing?.tools?.data_sources ||
+        null;
+      const consulted = Array.isArray(sources?.consulted)
+        ? sources.consulted
+        : [];
       return (
         <>
           <p className="bn-rules-hint">
-            Live feed (HKO, hours engine, register seats, weather card). Privileged
-            over KB when present
+            Live feed — show where numbers came from (HKO API, hours calendar,
+            class-register CSV). Privileged over KB when present
             {enrichMode
               ? " — KB enrich continues via Pack · 3+2 (not the Dense/Sparse RAG arm)."
               : "."}
           </p>
+          {consulted.length > 0 ? (
+            <div className="bn-score-group">
+              <p className="bn-rules-hint">
+                <strong>Data sources consulted</strong>
+              </p>
+              <ul className="bn-fact-list">
+                {consulted.map((s) => (
+                  <li key={s.id || s.label}>
+                    <span>
+                      {s.label || s.id}
+                      {s.kind ? (
+                        <em className="bn-score-src"> · {s.kind}</em>
+                      ) : null}
+                    </span>
+                    <code>
+                      {s.status || "consulted"}
+                      {s.locator ? ` · ${s.locator}` : ""}
+                      {s.detail ? ` — ${s.detail}` : ""}
+                    </code>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           {facts ? (
             <ul className="bn-fact-list">
               <li>
@@ -2013,12 +2068,14 @@ function NodeDetail({
               live_doc: grounding?.live_doc
                 ? `${grounding.live_doc_chars || "?"} chars`
                 : false,
+              data_sources: sources,
               facts: facts || null,
               opening_hours: trace?.opening_hours || null,
             }}
           />
         </>
       );
+    }
 
     case "dense": {
       const hy = rag?.hybrid;

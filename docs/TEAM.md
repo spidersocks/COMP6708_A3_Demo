@@ -24,7 +24,7 @@ BrightNest is a WhatsApp-shaped parent assistant for a fictional HK learning cen
 3. **L1** hard detectors / sticky FSM (&lt;1ms) → **L2** cheap `action_policy` only when RAG would otherwise win on an ambiguous tool ask → **L3** run the selected tool → **L4** `final_check` before irreversible writes.
 4. Live-info tools **grounded-compose** (privileged live doc + KB enrich via channel pack). Static FAQs (fees, programmes, policies) stay **pure RAG**.
 5. Soft answers may get a main-LLM **tone rewrite** (`adapt`) — it must not invent policy.
-6. The inspector shows the cascade: selected tool · selector · grouped L1 scores · lit path (FSM · DST · Final check · Staff email · Live · Pack 3+2 · LLM).
+6. The inspector shows the cascade: selected tool · selector · **data sources consulted** (HKO API, hours calendar, class-register CSV, bookings SQLite, Chroma/BM25) · grouped L1 scores · lit path (FSM · DST · Final check · Staff email · Live · Pack 3+2 · LLM).
 
 ```text
 Parent message

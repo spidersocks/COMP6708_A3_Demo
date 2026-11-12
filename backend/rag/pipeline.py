@@ -174,18 +174,158 @@ def _overlap_count(question: str, hit_text: str) -> int:
     return len(q & h)
 
 
+# Cross-lingual domain families: query cue → KB folder / path segment.
+# Fixes false off-topic when EN fee docs are retrieved for ZH「月費」asks (and peers).
+_DOMAIN_FOLDER = {
+    "fees": "fees",
+    "hours": "centre",
+    "location": "centre",
+    "teachers": "centre",
+    "programmes": "programmes",
+    "admissions": "admissions",
+    "policies": "policies",
+    "attendance": "attendance",
+}
+_DOMAIN_CUES: Dict[str, set[str]] = {
+    "fees": {
+        "fee",
+        "fees",
+        "tuition",
+        "price",
+        "pricing",
+        "cost",
+        "package",
+        "hk$",
+        "月費",
+        "學費",
+        "费用",
+        "費用",
+        "收費",
+        "收费",
+        "價錢",
+        "价钱",
+        "幾錢",
+        "几钱",
+        "堂費",
+        "班費",
+        "报名费",
+        "報名費",
+    },
+    "hours": {
+        "hours",
+        "open",
+        "opening",
+        "closed",
+        "holiday",
+        "holidays",
+        "開門",
+        "开门",
+        "營業",
+        "营业",
+        "幾點",
+        "几点",
+        "開放",
+        "开放",
+    },
+    "location": {
+        "location",
+        "address",
+        "where",
+        "mtr",
+        "directions",
+        "喺邊",
+        "在哪",
+        "地址",
+        "港鐵",
+        "地铁",
+    },
+    "teachers": {
+        "teacher",
+        "teachers",
+        "tutor",
+        "tutors",
+        "老師",
+        "老师",
+        "導師",
+        "导师",
+    },
+    "programmes": {
+        "phonics",
+        "mandarin",
+        "putonghua",
+        "programme",
+        "program",
+        "課程",
+        "课程",
+        "拼音",
+        "普通話",
+        "普通话",
+    },
+    "admissions": {
+        "trial",
+        "assessment",
+        "enrol",
+        "enroll",
+        "waitlist",
+        "試堂",
+        "试听",
+        "評估",
+        "评估",
+        "候補",
+        "候补",
+    },
+}
+
+
+def _query_domains(question: str, q_tokens: set[str]) -> set[str]:
+    text = (question or "").lower()
+    found: set[str] = set()
+    for domain, cues in _DOMAIN_CUES.items():
+        for cue in cues:
+            if cue in q_tokens or cue.lower() in text or cue in (question or ""):
+                found.add(domain)
+                break
+    return found
+
+
+def _hit_domains(hit: Dict[str, Any] | str) -> set[str]:
+    if not isinstance(hit, dict):
+        blob = (hit or "").lower()
+        return {d for d, folder in _DOMAIN_FOLDER.items() if folder in blob}
+    meta = hit.get("metadata") or {}
+    folder = str(meta.get("folder") or meta.get("type") or "").lower()
+    source = str(meta.get("source") or meta.get("canonical") or "").lower()
+    blob = f"{folder} {source} {_hit_blob(hit)}".lower()
+    found: set[str] = set()
+    for domain, folder_name in _DOMAIN_FOLDER.items():
+        if folder == folder_name or f"/{folder_name}/" in source or folder_name in source:
+            found.add(domain)
+    # Fee docs often live under fees/ even when type metadata is missing.
+    if "fee" in blob or "tuition" in blob or "學費" in blob or "月費" in blob:
+        found.add("fees")
+    return found
+
+
 def _off_topic(question: str, hit: Dict[str, Any] | str) -> bool:
     """True when the parent question is not grounded in the hit.
 
     One strong cue (programme name / long token) is enough — stopwords include
     lesson/class, so \"phonics lessons\" must not look ungrounded against a
     Phonics chunk.
+
+    Cross-lingual: if the query domain (fees/hours/…) matches the hit's KB
+    folder, treat as grounded even when token scripts differ (月費 vs tuition).
     """
     blob = _hit_blob(hit) if isinstance(hit, dict) else (hit or "")
     q = _content_tokens(question)
     h = _content_tokens(blob)
     if not q:
         return True
+    # Domain ↔ folder alignment (architectural cross-lingual grounding)
+    q_domains = _query_domains(question, q)
+    h_domains = _hit_domains(hit)
+    if q_domains and h_domains and (q_domains & h_domains):
+        return False
     shared = q & h
     if len(shared) >= 2:
         return False
