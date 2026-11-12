@@ -6,10 +6,11 @@ import os
 import sys
 import time
 import urllib.parse
-import urllib.request
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-API = os.environ.get("BRIGHTNEST_API", "http://47.242.157.72:8000").rstrip("/")
+import httpx
+
+API = os.environ.get("BRIGHTNEST_API", "https://seanfontaine.dev/brightnest-api").rstrip("/")
 REFUSE_MARK = "outside what our BrightNest materials cover"
 
 # expect_refuse: True = must refuse; False = must answer from KB (no hard refuse)
@@ -66,15 +67,16 @@ CASES: List[Tuple[str, str, bool]] = [
 ]
 
 
-def req(method: str, path: str, body: Dict | None = None) -> Any:
-    data = None
-    headers = {"Accept": "application/json"}
-    if body is not None:
-        data = json.dumps(body).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    r = urllib.request.Request(f"{API}{path}", data=data, headers=headers, method=method)
-    with urllib.request.urlopen(r, timeout=120) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+def req(method: str, path: str, body: Optional[Dict] = None) -> Any:
+    with httpx.Client(timeout=120.0, follow_redirects=True) as client:
+        r = client.request(
+            method,
+            f"{API}{path}",
+            json=body,
+            headers={"Accept": "application/json"},
+        )
+        r.raise_for_status()
+        return r.json()
 
 
 def chat(msg: str, sid: str) -> Dict:
