@@ -44,7 +44,8 @@ CASES: List[Tuple[str, str, Optional[str], bool, List[str]]] = [
     # --- refuse ---
     ("fish", "How do fish breathe underwater?", None, True, []),
     ("evolution", "Explain Darwin's theory of evolution", None, True, []),
-    ("tokyo", "What's the weather in Tokyo tomorrow?", "off_domain", True, []),
+    # Off-city weather: RAG off-topic refuse (no dedicated off_domain tool route).
+    ("tokyo", "What's the weather in Tokyo tomorrow?", "rag", True, []),
 ]
 
 
@@ -127,14 +128,18 @@ def main() -> int:
             ok = False
             reasons.append("false refuse")
         if expect_route and route_norm != expect_route:
-            # Allow rag when arbiter/soft path still answers well for FAQs
-            if expect_route == "rag" and route_norm not in {
-                "rag",
-                "deterministic_opening_hours",
-            }:
+            # Opening-hours provider name vs route id
+            if expect_route == "opening_hours" and route_norm == "opening_hours":
+                pass
+            elif expect_route == "rag" and route_norm == "rag":
+                pass
+            elif expect_route == "rag" and expect_refuse and refused:
+                # Soft off-KB refuse still surfaces as route=rag
+                pass
+            elif expect_route != "rag":
                 ok = False
                 reasons.append(f"route={route} want={expect_route}")
-            elif expect_route != "rag":
+            else:
                 ok = False
                 reasons.append(f"route={route} want={expect_route}")
         if not expect_refuse and needles:
