@@ -153,8 +153,7 @@ TOOL_CATALOG: List[Dict[str, Any]] = [
 _BY_NAME = {t["name"]: t for t in TOOL_CATALOG}
 
 CASCADE_BLURB = (
-    "Detectors pick tools in <1ms; cheap LLM action_policy only on ambiguous RAG turns "
-    "— not full agent tool-calling every message."
+    "Tool registry cascade · detectors first, cheap LLM only if needed."
 )
 
 

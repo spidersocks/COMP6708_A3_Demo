@@ -141,7 +141,5 @@ def build_turn_sources(
     return {
         "declared": declared,
         "consulted": used,
-        "blurb": (
-            "Where this tool pulled from — live APIs, SQLite, CSV registers, or the KB index."
-        ),
+        "blurb": "Live APIs · SQLite · CSV · KB indexes",
     }
