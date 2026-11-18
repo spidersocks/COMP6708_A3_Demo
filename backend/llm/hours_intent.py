@@ -80,12 +80,27 @@ _ALL_HOLIDAY_KW = sorted(
 )
 
 
-def _score(message: str, patterns: List[str]) -> Tuple[int, List[str]]:
+def _score(
+    message: str, patterns: List[str]
+) -> Tuple[int, List[str], List[Dict[str, Any]]]:
+    """Return hit count, matched pattern strings, and concrete message spans."""
     hits: List[str] = []
+    spans: List[Dict[str, Any]] = []
+    msg = message or ""
     for pat in patterns:
-        if re.search(pat, message or "", flags=re.IGNORECASE):
-            hits.append(pat)
-    return len(hits), hits
+        m = re.search(pat, msg, flags=re.IGNORECASE)
+        if not m:
+            continue
+        hits.append(pat)
+        spans.append(
+            {
+                "text": m.group(0),
+                "start": m.start(),
+                "end": m.end(),
+                "pattern": pat,
+            }
+        )
+    return len(hits), hits, spans
 
 
 def _holiday_hits(message: str) -> List[str]:
@@ -117,8 +132,8 @@ def detect_opening_hours_intent(message: str, lang: str = "en") -> Tuple[bool, D
     else:
         strong, weak = _EN_STRONG, _EN_WEAK
 
-    strong_score, strong_hits = _score(m, strong)
-    weak_score, weak_hits = _score(m, weak)
+    strong_score, strong_hits, strong_spans = _score(m, strong)
+    weak_score, weak_hits, weak_spans = _score(m, weak)
     hol_hits = _holiday_hits(m)
     weather_policy = centre_facts.is_severe_weather_intent(m)
 
@@ -134,10 +149,28 @@ def detect_opening_hours_intent(message: str, lang: str = "en") -> Tuple[bool, D
         )
     )
 
+    # Prefer the longest concrete substring parents can see in the message.
+    primary_span: Optional[Dict[str, Any]] = None
+    if strong_spans:
+        primary_span = max(strong_spans, key=lambda s: len(str(s.get("text") or "")))
+    elif hol_hits:
+        kw = hol_hits[0]
+        idx = m.lower().find(kw.lower()) if re.search(r"[a-zA-Z]", kw) else m.find(kw)
+        if idx < 0:
+            idx = m.find(kw)
+        if idx >= 0:
+            primary_span = {"text": m[idx : idx + len(kw)], "start": idx, "end": idx + len(kw)}
+    elif weak_spans:
+        primary_span = weak_spans[0]
+
     debug: Dict[str, Any] = {
         "is_intent": is_intent,
         "strong_hits": strong_hits,
         "weak_hits": weak_hits,
+        "strong_spans": strong_spans,
+        "weak_spans": weak_spans,
+        "matched_span": primary_span,
+        "cue": (primary_span or {}).get("text") or "",
         "weather_hits": ["severe_weather"] if weather_policy else [],
         "holiday_hits": hol_hits,
         "overridden_by_avail": False,

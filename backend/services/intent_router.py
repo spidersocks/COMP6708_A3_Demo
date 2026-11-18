@@ -186,18 +186,18 @@ def score_intents(
 
     hours_intent, hours_debug = detect_opening_hours_intent(message, lang)
     if hours_intent:
-        via = (
-            "strong"
-            if hours_debug.get("strong_hits")
-            else "holiday"
-            if hours_debug.get("holiday_hits")
-            else "weak+open"
+        cue = str((hours_debug or {}).get("cue") or "").strip()
+        why = (
+            f"Matched «{cue}» → opening-hours tool (0.8)"
+            if cue
+            else "Opening-hours / date / holiday wording → tool (0.8)"
         )
         _award(
             "opening_hours",
             0.8,
             source="hard_regex",
-            why=f"detect_opening_hours_intent · fixed 0.8 · via {via}",
+            why=why,
+            cue=cue,
         )
         debug["hours_debug"] = hours_debug
 
@@ -414,15 +414,23 @@ def _summarize_winning_match(
     rules: List[Dict[str, Any]],
     scores: Dict[str, float],
 ) -> Dict[str, Any]:
-    winner = next((r for r in rules if r.get("id") == route), None)
+    # Tool execute routes (e.g. deterministic_opening_hours) map back to detector ids.
+    alias = {
+        "deterministic_opening_hours": "opening_hours",
+        "severe_weather": "severe_weather",
+    }
+    rule_id = alias.get(route, route)
+    winner = next((r for r in rules if r.get("id") == rule_id), None)
+    if winner is None:
+        winner = next((r for r in rules if r.get("id") == route), None)
     evidence = (winner or {}).get("match_evidence") or {}
     cue = evidence.get("cue") or ((winner or {}).get("matched_span") or {}).get("text") or ""
     why = (winner or {}).get("why") or (winner or {}).get("status_reason") or ""
+    tool_label = (winner or {}).get("label") or rule_id or route
     headline = (
-        f"Matched because the message contains «{cue}» → route `{route}`."
+        f"Matched «{cue}» → {tool_label}."
         if cue
-        else f"Route `{route}` won"
-        + (f": {why}" if why else f" (score {scores.get(route)}).")
+        else (why or f"{tool_label} won this turn.")
     )
     return {
         "route": route,
@@ -454,16 +462,14 @@ def _build_rules_evaluated(
     msg = message or ""
     esc = debug.get("escalation") or escalation_svc.detect_escalation(message)
     hours_hit = "opening_hours" in scores
-    hours_detail = ""
-    if hours_hit and debug.get("hours_debug"):
-        hd = debug["hours_debug"] or {}
-        hours_detail = (
-            "strong"
-            if hd.get("strong_hits")
-            else "holiday"
-            if hd.get("holiday_hits")
-            else "weak+open"
-        )
+    hours_debug = debug.get("hours_debug") or {}
+    hours_span = hours_debug.get("matched_span") or None
+    hours_cue = str(hours_debug.get("cue") or (hours_span or {}).get("text") or "").strip()
+    if hours_hit and not hours_span and hours_cue:
+        idx = msg.find(hours_cue)
+        if idx >= 0:
+            hours_span = {"text": hours_cue, "start": idx, "end": idx + len(hours_cue)}
+    weather_overrode = bool(hours_debug.get("overridden_by_weather_policy"))
     leave_booking = dialogue_svc.should_yield_to_rag(session_id, message)
     dialogue_active = dialogue_svc.is_active(session_id)
     cancel_active = cancel_svc.is_active(session_id)
@@ -666,23 +672,60 @@ def _build_rules_evaluated(
             "Opening hours / date / holiday",
             matched=hours_hit,
             score=scores.get("opening_hours"),
-            mechanism="Hours/date intent → 0.8 calendar tool.",
-            pattern_summary="hours / open / holiday / tomorrow?",
+            mechanism="Hours/date wording → live calendar + HKO tool (KB enrich may still run).",
+            pattern_summary="open / hours / closed / holiday / tomorrow?",
+            matched_span=hours_span if hours_hit else None,
+            match_evidence=(
+                _match_evidence(
+                    msg,
+                    span=hours_span,
+                    cue=hours_cue,
+                    kind="substring" if hours_span or hours_cue else "predicate",
+                    explanation=(
+                        f"The parent message contains «{hours_cue}», so the opening-hours tool wins."
+                        if hours_cue
+                        else "Opening-hours / date wording matched."
+                    ),
+                )
+                if hours_hit
+                else None
+            ),
             why=(
-                f"Hours intent fired via {hours_detail or 'hours detector'}."
+                f"Matched «{hours_cue}» → opening-hours tool."
+                if hours_hit and hours_cue
+                else "Opening-hours / date wording → tool."
                 if hours_hit
                 else ""
             ),
-            why_not="No date/hours intent (weather policy asks go to severe_weather).",
-            checks=[
-                _check("hours intent", hours_hit, hours_detail or "not detected"),
-                _check(
-                    "weather policy override",
-                    bool((debug.get("hours_debug") or {}).get("overridden_by_weather_policy")),
-                    "hours detector skipped — centre_facts severe weather",
-                ),
-            ],
-            downstream="Deterministic opening-hours engine · adapt",
+            why_not=(
+                "Severe-weather wording took priority (not plain hours)."
+                if weather_overrode
+                else "No open/hours/holiday wording in this message."
+            ),
+            checks=(
+                [
+                    _check(
+                        "Matched wording",
+                        True,
+                        f"«{hours_cue}»" if hours_cue else "hours detector",
+                    )
+                ]
+                if hours_hit
+                else (
+                    [
+                        _check(
+                            "Severe-weather override",
+                            True,
+                            "Typhoon / rainstorm policy owns this turn",
+                        )
+                    ]
+                    if weather_overrode
+                    else [
+                        _check("Open / hours / holiday cue", False, "none found"),
+                    ]
+                )
+            ),
+            downstream="Live calendar + HKO · optional KB enrich into Pack",
         ),
         _rule_row(
             "rag",
