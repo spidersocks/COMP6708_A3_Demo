@@ -449,6 +449,58 @@ def _norm_person_name(raw: str) -> str:
     return s.title() if s.islower() or s.isupper() else s
 
 
+def _looks_like_name_correction(text: str, candidate: str = "") -> bool:
+    """True when the parent is correcting / stating the child's real name."""
+    t = text or ""
+    if re.search(r"\bname\s+is\s+not\b", t, re.I):
+        return True
+    if re.search(
+        r"\b(?:actually|correction|correct(?:ly)?|meant|not\s+that)\b",
+        t,
+        re.I,
+    ):
+        return True
+    cand = (candidate or "").strip()
+    if cand and re.search(
+        rf"\b(?:his|her|their|the\s+child(?:'s)?|kid(?:'s)?|son(?:'s)?|"
+        rf"daughter(?:'s)?)\s+name\s+is\s+(?!not\b){re.escape(cand)}\b",
+        t,
+        re.I,
+    ):
+        return True
+    return False
+
+
+def _should_apply_child_name(current: str, candidate: str, text: str) -> bool:
+    """Accept a new child name; allow override when the stored slot is bad or corrected."""
+    if not candidate or not families._is_plausible_person_name(candidate):  # noqa: SLF001
+        return False
+    cur = (current or "").strip()
+    if not cur:
+        return True
+    if not families._is_plausible_person_name(cur):  # noqa: SLF001
+        return True
+    if families.looks_like_programme_label(cur):
+        return True
+    if candidate.lower() == cur.lower():
+        return False
+    return _looks_like_name_correction(text, candidate)
+
+
+def _scrub_contaminated_person_slots(state: Dict[str, Any]) -> None:
+    """Drop programme titles / kinship junk that leaked into person slots."""
+    for key in ("child_name", "parent_name"):
+        val = (state.get(key) or "").strip()
+        if not val:
+            continue
+        if not families._is_plausible_person_name(val):  # noqa: SLF001
+            state[key] = ""
+            continue
+        prog = (state.get("programme_label") or "").strip().lower()
+        if prog and val.lower() in prog:
+            state[key] = ""
+
+
 def _parse_identity(text: str) -> Dict[str, str]:
     """Pull parent / child names from a new-parent reply."""
     t = (text or "").strip()
@@ -463,9 +515,13 @@ def _parse_identity(text: str) -> Dict[str, str]:
     )
     # No '.' inside names — periods end the capture (avoids "Jeff. My" / "Chester. I")
     _name = r"([A-Za-z][A-Za-z']*(?:\s+[A-Za-z][A-Za-z']*)?)"
+    # Word-bound "I'm" — bare i'?m also matches the "im" inside "him".
+    _parent_cue = r"(?:i'?m|i\s+am|my\s+name\s+is|parent(?:\s*name)?(?:\s+is)?)"
     patterns = [
         (
-            r"(?:i'?m|i\s+am|my\s+name\s+is|parent(?:\s*name)?(?:\s+is)?)\s+"
+            r"\b"
+            + _parent_cue
+            + r"\s+"
             + _name
             + r".{0,60}?"
             + r"(?:"
@@ -480,7 +536,7 @@ def _parse_identity(text: str) -> Dict[str, str]:
             + r"\s+"
             + _name
             + r".{0,60}?"
-            + r"(?:parent(?:\s*name)?(?:\s+is)?|i'?m|i\s+am|my\s+name\s+is)\s+"
+            + r"\b(?:parent(?:\s*name)?(?:\s+is)?|i'?m|i\s+am|my\s+name\s+is)\s+"
             + _name,
             "child",
             "parent",
@@ -516,25 +572,53 @@ def _parse_identity(text: str) -> Dict[str, str]:
             return out
 
     # Separate cues in one message: "My name is Jeff. My kid's name is Chester."
-    mp = re.search(
-        r"(?:i'?m|i\s+am|my\s+name\s+is|parent(?:\s*name)?(?:\s+is)?)\s+" + _name,
-        t,
-        re.I,
-    )
+    # Also "His/Her name is Marcus" (and skip "name is not …" negatives; last positive wins).
+    # Take the last *plausible* parent hit so "him"/"I want" noise cannot win.
+    parent_hit = ""
+    for m in re.finditer(r"\b" + _parent_cue + r"\s+" + _name, t, re.I):
+        p = _norm_person_name(m.group(1))
+        if families._is_plausible_person_name(p):  # noqa: SLF001
+            parent_hit = p
     # Require an identity verb. Bare "my son started …" is not a name.
     _child_id = (
         r"(?:my\s+)?(?:child|kid|son|daughter|girl|boy)(?:'?s)?"
         r"(?:\s*name\s+is|\s+is(?:\s+(?:named|called))?|\s+(?:named|called))"
     )
     mc = re.search(_child_id + r"\s+" + _name, t, re.I)
-    if mp:
-        p = _norm_person_name(mp.group(1))
-        if families._is_plausible_person_name(p):  # noqa: SLF001
-            out["parent"] = p
+    his_pos = re.compile(
+        r"\b(?:his|her|their|the\s+child(?:'s)?)\s+name\s+is\s+(?!not\b)" + _name,
+        re.I,
+    )
+    his_neg = re.compile(
+        r"\b(?:his|her|their|the\s+child(?:'s)?)\s+name\s+is\s+not\s+" + _name,
+        re.I,
+    )
+    rejected = {
+        _norm_person_name(m.group(1)).lower()
+        for m in his_neg.finditer(t)
+        if _norm_person_name(m.group(1))
+    }
+    his_child = ""
+    for m in his_pos.finditer(t):
+        c = _norm_person_name(m.group(1))
+        if (
+            c
+            and c.lower() not in rejected
+            and families._is_plausible_person_name(c)  # noqa: SLF001
+        ):
+            his_child = c
+    if parent_hit:
+        out["parent"] = parent_hit
     if mc:
         c = _norm_person_name(mc.group(1))
-        if families._is_plausible_person_name(c):  # noqa: SLF001
+        if (
+            c
+            and c.lower() not in rejected
+            and families._is_plausible_person_name(c)  # noqa: SLF001
+        ):
             out["child"] = c
+    if his_child:
+        out["child"] = his_child
     if out.get("parent") and out.get("child"):
         return out
     if out.get("parent") or out.get("child"):
@@ -560,12 +644,13 @@ def _match_offered_slots(
     wd = _detect_weekday(text)
     clock = _detect_clock(text)
     day = _detect_day_of_month(text)
-    tid = teacher_id or _detect_teacher(text)
+    # Message-named teacher beats sticky state (parent correcting Tom → Priya)
+    tid = _detect_teacher(text) or teacher_id
 
     if tid:
         by_t = [s for s in out if s.get("teacher_id") == tid]
-        if by_t:
-            out = by_t
+        # Hard filter: named teacher must win or clear — never keep Tom when parent said Priya
+        out = by_t
     if wd is not None:
         kept = []
         for s in out:
@@ -655,20 +740,33 @@ def _window_bounds(when: Dict[str, Any]) -> Tuple[datetime, datetime]:
     return start, end
 
 
-def child_upcoming_sessions(child_name: str, *, days_ahead: int = 21) -> List[Dict[str, Any]]:
-    """Standing register + chat bookings for this child."""
+def child_upcoming_sessions(
+    child_name: str,
+    *,
+    days_ahead: int = 21,
+    phone: str = "",
+) -> List[Dict[str, Any]]:
+    """Standing register + chat bookings for this child.
+
+    Exact full-name match only — never first-name collide (Jason ≠ Jason Chan).
+    When phone is provided, chat bookings are further scoped to that WhatsApp.
+    """
     reg = sheets.get_register()
     now = datetime.now(HK_TZ)
     out: List[Dict[str, Any]] = []
     target = (child_name or "").strip().lower()
+    if not target:
+        return out
+    want_phone = families._norm_phone(phone) if phone else ""  # noqa: SLF001
 
     for sess in reg["standing_sessions"]:
-        enrolled_names = [e["child"].lower() for e in (sess.get("enrolled") or [])]
-        if target not in enrolled_names and not any(target.split()[0] == n.split()[0] for n in enrolled_names if n):
-            # also allow first-name match
-            first = target.split()[0] if target else ""
-            if not first or not any(n.split()[0] == first for n in enrolled_names if n):
-                continue
+        enrolled_names = [
+            (e.get("child") or "").strip().lower()
+            for e in (sess.get("enrolled") or [])
+        ]
+        # Exact full name only — "Jason" must not inherit "Jason Chan" classes
+        if target not in enrolled_names:
+            continue
         for offset in range(0, days_ahead + 1):
             d = (now + timedelta(days=offset)).date()
             if d.weekday() != int(sess["weekday"]):
@@ -694,10 +792,12 @@ def child_upcoming_sessions(child_name: str, *, days_ahead: int = 21) -> List[Di
 
     for row in sheets._read_csv(sheets.sheets_dir() / "chat_bookings.csv"):  # noqa: SLF001
         cn = (row.get("child_name") or "").strip().lower()
-        if not cn:
+        if not cn or cn != target:
             continue
-        if cn != target and cn.split()[0] != (target.split()[0] if target else ""):
-            continue
+        if want_phone:
+            row_phone = families._norm_phone(row.get("phone") or "")  # noqa: SLF001
+            if row_phone and row_phone != want_phone:
+                continue
         try:
             start_dt = datetime.fromisoformat(row["slot_start"])
         except Exception:
@@ -878,6 +978,9 @@ def handle_turn(
         merged_when.update(when_bits)
         state["when"] = merged_when
 
+    # Programme titles must never stick in person slots (scrub before merge / DST).
+    _scrub_contaminated_person_slots(state)
+
     family = families.list_family_by_phone(state.get("phone") or "")
     known = [c["child_name"] for c in family.get("children") or []]
     mentioned = families.extract_child_mention(text, known)
@@ -890,15 +993,26 @@ def handle_turn(
     identity = _parse_identity(text)
     regex_identity = dict(identity)
     if identity.get("parent") and not family.get("matched"):
-        state["parent_name"] = identity["parent"]
-    if identity.get("child") and not state.get("child_name"):
+        cur_parent = (state.get("parent_name") or "").strip()
+        # Explicit "my name is …" / empty / contaminated → take the parse
+        if (
+            not cur_parent
+            or not families._is_plausible_person_name(cur_parent)  # noqa: SLF001
+            or re.search(r"\b(?:i'?m|i\s+am|my\s+name\s+is)\b", text or "", re.I)
+        ):
+            state["parent_name"] = identity["parent"]
+    if identity.get("child") and _should_apply_child_name(
+        state.get("child_name") or "", identity["child"], text
+    ):
         mentioned = identity["child"]
+        state["child_name"] = ""  # force re-bind from mentioned below
     elif identity.get("single"):
         # Fill whichever identity field is still missing for a new parent
         if not family.get("matched") and not (state.get("parent_name") or "").strip():
             state["parent_name"] = identity["single"]
-        elif not state.get("child_name"):
+        elif _should_apply_child_name(state.get("child_name") or "", identity["single"], text):
             mentioned = identity["single"]
+            state["child_name"] = ""
 
     # Prefer UI-provided parent name once the New Parent profile is chosen
     if not family.get("matched") and parent_name and not (state.get("parent_name") or "").strip():
@@ -924,9 +1038,15 @@ def handle_turn(
         try:
             from services import demo_polish
 
+            prior_child = (state.get("child_name") or mentioned or "").strip()
+            if prior_child and not families._is_plausible_person_name(prior_child):  # noqa: SLF001
+                prior_child = ""
+            prior_parent = (state.get("parent_name") or "").strip()
+            if prior_parent and not families._is_plausible_person_name(prior_parent):  # noqa: SLF001
+                prior_parent = ""
             prior_slots = {
-                "parent_name": state.get("parent_name") or "",
-                "child_name": state.get("child_name") or mentioned or "",
+                "parent_name": prior_parent,
+                "child_name": prior_child,
                 "course_key": state.get("course_key") or "",
                 "weekday": (state.get("when") or {}).get("weekday"),
                 "window": (state.get("when") or {}).get("window"),
@@ -954,15 +1074,17 @@ def handle_turn(
                 ):
                     state["parent_name"] = filled["parent_name"]
                     steps.append("dst_parent")
-                if (
-                    filled.get("child_name")
-                    and families._is_plausible_person_name(filled["child_name"])  # noqa: SLF001
-                    and not (
-                        mentioned and families._is_plausible_person_name(mentioned)  # noqa: SLF001
-                    )
+                if filled.get("child_name") and _should_apply_child_name(
+                    state.get("child_name") or mentioned or "",
+                    filled["child_name"],
+                    text,
                 ):
-                    mentioned = filled["child_name"]
-                    steps.append("dst_child")
+                    # Prefer regex identity when it already found a real person name
+                    if not (
+                        mentioned and families._is_plausible_person_name(mentioned)  # noqa: SLF001
+                    ):
+                        mentioned = filled["child_name"]
+                        steps.append("dst_child")
                 if not course and filled.get("course_key"):
                     filled_course = filled["course_key"]
                     if state.get("course_key") == "trial" and filled_course != "trial":
@@ -1008,6 +1130,14 @@ def handle_turn(
         ) or bool(
             mentioned and families._is_plausible_person_name(mentioned)  # noqa: SLF001
         )
+        # Persist a validated mentioned child even while still asking for parent
+        if (
+            mentioned
+            and families._is_plausible_person_name(mentioned)  # noqa: SLF001
+            and _should_apply_child_name(state.get("child_name") or "", mentioned, text)
+        ):
+            state["child_name"] = mentioned
+            child_ok = True
         need_parent = not (state.get("parent_name") or "").strip()
         need_child = not child_ok
         need_class = not (state.get("course_key") or state.get("programme_label"))
@@ -1140,7 +1270,9 @@ def handle_turn(
         state["child_name"] = child["child_name"]
         state["parent_name"] = state.get("parent_name") or family.get("parent_name") or ""
         state["preferred_courses"] = list(child.get("preferred_courses") or [])
-        state["child_schedule"] = child_upcoming_sessions(child["child_name"])
+        state["child_schedule"] = child_upcoming_sessions(
+            child["child_name"], phone=state.get("phone") or ""
+        )
         steps.append(f"resolved_child={child['child_name']}")
         steps.append(f"child_upcoming={len(state['child_schedule'])}")
 
@@ -1154,7 +1286,9 @@ def handle_turn(
             child = resolved["child"]
             state["child_name"] = child["child_name"]
             state["preferred_courses"] = list(child.get("preferred_courses") or [])
-            state["child_schedule"] = child_upcoming_sessions(child["child_name"])
+            state["child_schedule"] = child_upcoming_sessions(
+                child["child_name"], phone=state.get("phone") or ""
+            )
             state["course_key"] = None
             steps.append(f"switched_child={child['child_name']}")
 
@@ -1238,6 +1372,8 @@ def handle_turn(
                     child_name=child_name,
                     phone=state.get("phone") or "",
                     notes=notes,
+                    teacher_id=sel.get("teacher_id"),
+                    session_id=sel.get("session_id"),
                 )
             except Exception as e:
                 save_state(session_id, {**state, "stage": "offer_slots"})
@@ -1420,17 +1556,30 @@ def handle_turn(
             when["weekday"]
         ]
 
-    # Rebuild the last offered pool so "Friday 10:00" can commit instead of re-listing
-    prior_starts = list(state.get("offered_slot_starts") or [])
+    # Rebuild the last offered pool so "Friday 10:00" can commit instead of re-listing.
+    # Identity is slot_start|teacher|session — never timestamp alone (Priya ≠ Tom at 17:00).
+    prior_keys = list(state.get("offered_slot_keys") or [])
+    prior_starts_legacy = list(state.get("offered_slot_starts") or [])
     prior_pool: List[Dict[str, Any]] = []
-    if prior_starts:
-        by_start = {s["slot_start"]: s for s in filtered}
-        # Also search raw_slots in case weekday filter narrowed too hard
-        for s in raw_slots:
-            by_start.setdefault(s["slot_start"], s)
-        prior_pool = [by_start[s] for s in prior_starts if s in by_start]
-        if not prior_pool:
-            prior_pool = list(filtered)
+    by_id = {booking_svc.slot_identity(s): s for s in filtered}
+    for s in raw_slots:
+        by_id.setdefault(booking_svc.slot_identity(s), s)
+    if prior_keys:
+        prior_pool = [by_id[k] for k in prior_keys if k in by_id]
+    elif prior_starts_legacy:
+        # Legacy sessions stored timestamps only — expand to every teacher at that clock
+        seen = set()
+        for start in prior_starts_legacy:
+            for s in list(filtered) + list(raw_slots):
+                if s.get("slot_start") != start:
+                    continue
+                key = booking_svc.slot_identity(s)
+                if key in seen:
+                    continue
+                seen.add(key)
+                prior_pool.append(s)
+    if not prior_pool and (prior_keys or prior_starts_legacy):
+        prior_pool = list(filtered)
 
     pick_pool = prior_pool or list(filtered)
     if state.get("stage") in {"offer_slots", "confirm_slot", "no_slots"} or (
@@ -1441,6 +1590,27 @@ def handle_turn(
             text,
             teacher_id=state.get("teacher_id"),
         )
+        # If named teacher emptied a stale prior pool, rematch against full availability
+        if (
+            not matched
+            and _detect_teacher(text)
+            and (prior_pool or pick_pool)
+        ):
+            matched = _match_offered_slots(
+                list(filtered) or list(raw_slots),
+                text,
+                teacher_id=None,
+            )
+        # Dedupe by seat identity (never list Tom twice for one Fri 17:00)
+        deduped: List[Dict[str, Any]] = []
+        seen_m: set = set()
+        for s in matched:
+            key = booking_svc.slot_identity(s)
+            if key in seen_m:
+                continue
+            seen_m.add(key)
+            deduped.append(s)
+        matched = deduped
         # Option index: "1" / "option 2"
         idx_m = re.search(r"\b(?:option|number|choice)\s*#?\s*(\d{1,2})\b", text or "", re.I)
         if not idx_m:
@@ -1458,7 +1628,8 @@ def handle_turn(
             sel = matched[0]
             state["selected_slot"] = sel
             state["stage"] = "confirm_slot"
-            state["offered_slot_starts"] = prior_starts or [sel["slot_start"]]
+            state["offered_slot_keys"] = prior_keys or [booking_svc.slot_identity(sel)]
+            state["offered_slot_starts"] = [sel["slot_start"]]
             save_state(session_id, state)
             return {
                 "answer": (
@@ -1520,6 +1691,7 @@ def handle_turn(
         sel = filtered[0]
         state["selected_slot"] = sel
         state["stage"] = "confirm_slot"
+        state["offered_slot_keys"] = [booking_svc.slot_identity(sel)]
         state["offered_slot_starts"] = [sel["slot_start"]]
         save_state(session_id, state)
         return {
@@ -1542,9 +1714,19 @@ def handle_turn(
             "state": state,
         }
 
-    offer = filtered[:6]
+    # Dedupe offer by seat identity before slicing
+    offer_dedup: List[Dict[str, Any]] = []
+    offer_seen: set = set()
+    for s in filtered:
+        key = booking_svc.slot_identity(s)
+        if key in offer_seen:
+            continue
+        offer_seen.add(key)
+        offer_dedup.append(s)
+    offer = offer_dedup[:6]
     state["stage"] = "offer_slots"
     state["selected_slot"] = None
+    state["offered_slot_keys"] = [booking_svc.slot_identity(s) for s in offer]
     state["offered_slot_starts"] = [s["slot_start"] for s in offer]
     save_state(session_id, state)
 

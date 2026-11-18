@@ -65,7 +65,7 @@ def test_new_parent_identity_from_jeff_chester(monkeypatch):
     """Regex + DST merge must accept Jeff/Chester in one turn (no identity loop)."""
     sid = "test-jeff-" + uuid.uuid4().hex[:8]
 
-    def _fake_dst(message, prior=None, missing=None):
+    def _fake_dst(message, prior=None, missing=None, history_preview=""):
         return {
             "ok": True,
             "called": True,
@@ -102,3 +102,98 @@ def test_new_parent_identity_from_jeff_chester(monkeypatch):
     assert tb.get("stage") != "need_identity"
     assert tb.get("stage") != "need_parent"
     assert tb.get("stage") != "need_child"
+
+
+def test_programme_title_never_becomes_child_name():
+    assert families.extract_child_mention(
+        "I think he's ready for Little Sound Explorer. I would love to arrange a placement",
+        [],
+    ) == ""
+    assert not families._is_plausible_person_name("Little Sound")  # noqa: SLF001
+    assert not families._is_plausible_person_name("Little Sound Explorer")  # noqa: SLF001
+    assert families.looks_like_programme_label("Sound Explorer")
+    assert families._is_plausible_person_name("Marcus")  # noqa: SLF001
+
+
+def test_parse_his_name_is_marcus_not_programme():
+    got = bd._parse_identity(
+        "His name is not Little Sound. That's the program I want him to join. "
+        "His name is Marcus. My name is James"
+    )
+    assert got.get("parent") == "James"
+    assert got.get("child") == "Marcus"
+
+
+def test_ready_for_little_sound_does_not_lock_child(monkeypatch):
+    """Programme mention must set programme_label, never child_name."""
+    sid = "test-lse-" + uuid.uuid4().hex[:8]
+
+    def _fake_dst(message, prior=None, missing=None, history_preview=""):
+        # Simulate a naive LLM that copies the programme into child_name — hard gate must drop it
+        return {
+            "ok": True,
+            "called": True,
+            "filled": {"child_name": "Little Sound", "course_key": "phonics"},
+            "confidence": 0.95,
+            "model": "test",
+            "how": ["test"],
+        }
+
+    monkeypatch.setattr("services.demo_polish.track_booking_slots", _fake_dst)
+    out = bd.handle_turn(
+        session_id=sid,
+        message=(
+            "I think he's ready for Little Sound Explorer. That's a great suggestion. "
+            "I would love to arrange a placement assessment."
+        ),
+        phone="+85290007777",
+        parent_name="",
+        child_name_hint="",
+    )
+    st = out.get("state") or {}
+    answer = out.get("answer") or ""
+    assert "little sound" not in (st.get("child_name") or "").lower()
+    assert "little sound" in (st.get("programme_label") or "").lower()
+    assert "booking for **little sound**" not in answer.lower()
+
+
+def test_marcus_james_corrects_contaminated_child(monkeypatch):
+    """If a prior turn poisoned child_name, explicit His/My name must override."""
+    sid = "test-marcus-" + uuid.uuid4().hex[:8]
+
+    def _noop_dst(message, prior=None, missing=None, history_preview=""):
+        return {"ok": False, "called": False, "reason": "test_skip", "how": ["test"]}
+
+    monkeypatch.setattr("services.demo_polish.track_booking_slots", _noop_dst)
+
+    # Turn 1: programme interest (must not set child)
+    bd.handle_turn(
+        session_id=sid,
+        message="I think he's ready for Little Sound Explorer. Arrange a placement assessment.",
+        phone="+85290006666",
+        parent_name="",
+        child_name_hint="",
+    )
+    # Inject contamination the way older builds did
+    st0 = bd.get_state(sid) or {}
+    st0["child_name"] = "Little Sound"
+    st0["programme_label"] = "Little Sound Explorer"
+    st0["course_key"] = "trial"
+    bd.save_state(sid, st0)
+
+    out = bd.handle_turn(
+        session_id=sid,
+        message=(
+            "His name is not Little Sound. That's the program I want him to join. "
+            "His name is Marcus. My name is James"
+        ),
+        phone="+85290006666",
+        parent_name="",
+        child_name_hint="",
+    )
+    st = out.get("state") or {}
+    answer = (out.get("answer") or "").lower()
+    assert (st.get("child_name") or "").lower() == "marcus"
+    assert (st.get("parent_name") or "").lower() == "james"
+    assert "for **little sound**" not in answer
+    assert "little sound**" not in answer or "explorer" in answer  # programme ok in copy

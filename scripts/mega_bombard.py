@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 API = os.environ.get("BRIGHTNEST_API", "http://47.242.157.72:8000").rstrip("/")
 TIMEOUT = 90
 PHONE = "+852 9000 0000"
-PARENT = "Demo Parent"
+PARENT = "Existing Parent"
 CHILD = "Jason Chan"
 
 LEAK_FRAGS = (

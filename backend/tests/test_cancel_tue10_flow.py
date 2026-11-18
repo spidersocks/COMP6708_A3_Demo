@@ -58,7 +58,7 @@ def test_cancel_tue_10_goes_to_confirm():
             session_id=sid,
             message="Can I cancel Jason's class next Tuesday?",
             phone="+852 9000 0000",
-            parent_name="Demo Parent",
+            parent_name="Existing Parent",
             child_name_hint="Jason Chan",
         )
         assert r1["trace_cancel"]["stage"] == "need_which"
@@ -68,7 +68,7 @@ def test_cancel_tue_10_goes_to_confirm():
             session_id=sid,
             message="Cancel Tue 08",
             phone="+852 9000 0000",
-            parent_name="Demo Parent",
+            parent_name="Existing Parent",
             child_name_hint="Jason Chan",
         )
         assert r2["trace_cancel"]["stage"] == "confirm", r2["answer"]

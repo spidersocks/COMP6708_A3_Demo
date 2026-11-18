@@ -31,7 +31,7 @@ def chat(msg: str, sid: str) -> Dict:
             "session_id": sid,
             "debug": True,
             "phone": "+852 9000 0000",
-            "parent_name": "Demo Parent",
+            "parent_name": "Existing Parent",
             "child_name": "Jason Chan",
         },
     )

@@ -7,11 +7,13 @@
 | 3 | MAO Shiwei | 25038479r |
 | 4 | YAN Xingzhuo | 25013043r |
 
-**Live demo:** https://seanfontaine.dev/COMP6708_A3_Demo  
+**Live demo:** https://www.seanfontaine.dev/comp6708-a3-demo.html  
 **API:** Alibaba SAE, reached from the SPA via same-origin `/brightnest-api`  
 **Code:** FastAPI (`backend/`) · React inspector (`developer-site` BrightNestBot) · KB `content/`
 
 Fictional brand **BrightNest / 亮巢**. This document explains **what the system does**, **why each path exists**, and **how a single parent message becomes an answer**.
+
+Demo WhatsApp profiles: **Existing parent** (Jason Chan / Mia Chan on `+852 9000 0000`) and **New parent** (blank `+852 9000 9999`). Roster `parent_name` is **Existing Parent** (not “Demo Parent”).
 
 ---
 
@@ -22,9 +24,9 @@ BrightNest is a WhatsApp-shaped parent assistant for a fictional HK learning cen
 1. The parent types a message (demo phone UI — chat only, no booking form).
 2. A **tool registry** lists specialists (book, cancel, escalate, seats, hours, weather, RAG). A **cascade** selects one — **not** LLM-first function calling every turn (that would add hundreds of ms and risk misrouting safety/book commits).
 3. **L1** hard detectors / sticky FSM (&lt;1ms) → **L2** cheap `action_policy` only when RAG would otherwise win on an ambiguous tool ask → **L3** run the selected tool → **L4** `final_check` before irreversible writes.
-4. Live-info tools **grounded-compose** (privileged live doc + KB enrich via channel pack). Static FAQs (fees, programmes, policies) stay **pure RAG**.
+4. Live-info tools build a privileged **`live_doc`** → **DashScope grounded compose**. Optional KB enrich runs the normal **RAG arm** (Dense ∥ Sparse → Channel pack) in parallel and joins at compose — live facts do **not** enter Channel pack ranking. Static FAQs stay **pure RAG**.
 5. Soft answers may get a main-LLM **tone rewrite** (`adapt`) — it must not invent policy.
-6. The inspector shows the cascade: selected tool · selector · **data sources consulted** (HKO API, hours calendar, class-register CSV, bookings SQLite, Chroma/BM25) · grouped L1 scores · lit path (FSM · DST · Final check · Staff email · Live · Pack 3+2 · LLM).
+6. The inspector shows L1→L3 cascade · **L2 Action policy** hexagon when the cheap LLM promoted · data sources · lit path (FSM · DST · Final check · Staff email · Live → LLM · optional Pack on the RAG arm).
 
 ```text
 Parent message
@@ -36,7 +38,8 @@ Tool registry + cascade
   L3 selected tool       (live / FSM / RAG)
   L4 final_check         (before commits)
     │
-    ├─ live info ──► hours / typhoon (+ HKO) ──► grounded compose
+    ├─ live info ──► hours / typhoon (+ HKO) ──► live_doc ──► DashScope compose
+    │                 └─ optional KB enrich ──► Dense∥BM25 → Pack ──► same compose
     ├─ tool FSM  ──► book / cancel / escalate / seats ──► DST · staff email
     └─ pure RAG  ──► dense∥BM25 → channel pack (3+2) → Qwen + citations
     │
@@ -50,7 +53,7 @@ answer + trace.tools (inspector)
 
 ```text
 Browser (HTTPS)
-  └─ React SPA  /COMP6708_A3_Demo
+  └─ React SPA  /comp6708-a3-demo.html
        │  same-origin fetch
        ▼
      Vercel rewrite  /brightnest-api/*  →  http://<SAE-EIP>:8000/*
@@ -58,14 +61,16 @@ Browser (HTTPS)
        ▼
      FastAPI  (Docker image brightnest-api:vN on Alibaba SAE)
        │
-       ├─ services/intent_router.py     hybrid scores + route arbiter + match evidence
-       ├─ services/intent_arbiter.py    cheap LLM keep|rag on ambiguous routes
+       ├─ services/intent_router.py     hybrid scores + match evidence + cascade
+       ├─ services/action_policy.py     L2 cheap LLM promote RAG → tool
+       ├─ services/intent_arbiter.py    cheap LLM keep|rag on ambiguous hard races
        ├─ services/final_check.py       cheap LLM proceed|clarify|abort before commits
        ├─ services/centre_facts.py      structured JSON facts + regex intents
        ├─ llm/opening_hours.py          deterministic calendar / holidays / HKO
        ├─ services/booking_*.py         sticky book dialogue + CSV register
+       ├─ services/families.py          roster + programme-label scrub for person slots
        ├─ services/cancel_dialogue.py   sticky cancel FSM + cancellations sheet
-       ├─ services/escalation.py        safety / anger / ask-human
+       ├─ services/escalation.py        safety / anger / poison / ask-human
        ├─ services/staff_*.py           MailBox inbox + optional mail draft
        ├─ services/admin_todos.py       SheetPro follow-up rows
        ├─ services/demo_polish.py       gap rewrite · booking parse · cancel pick
@@ -105,7 +110,7 @@ Tools own live / multi-turn work. Static FAQs (fees, address, payment, teachers,
 | Tier | Routes (examples) | What runs | Retrieve? |
 |------|-------------------|-----------|-----------|
 | **1 · Hard FSM / hand-off** | `booking_dialogue`, `cancel_dialogue`, `staff_escalation`, `off_domain` | Sticky dialogue / inbox / refuse templates. **Final check** before book assessment write, cancel write, escalate inbox, or hard refuse. | **Bypass** |
-| **2 · Live tools (+ enrich)** | `severe_weather`, `opening_hours`, `booking_tool` | Live HKO / holiday calendar / seat register → optional KB enrich via `compose_grounded_fact`. | **Enrich only** |
+| **2 · Live tools (+ enrich)** | `severe_weather`, `opening_hours`, `booking_tool` | Live HKO / holiday calendar / seat register → `live_doc` → `compose_grounded_fact` (LLM). Optional KB enrich retrieves via Channel pack in parallel; live docs stay privileged. | **Enrich only** (parallel RAG arm) |
 | **3 · Pure RAG** | `rag` (default for all static FAQs + programmes) | Retrieve → generate with citations; off-topic gate may refuse | **Full** generate |
 
 **Weather:** live HKO (when available) is a privileged live doc; centre severe-weather JSON is the structured card; KB may enrich.  
@@ -130,7 +135,7 @@ Full agent tool-calling every turn is flexible but wrong for BrightNest: +200–
 | **Tool registry** | OpenAI-style schemas for each specialist (`trace.tools.catalog`) | `opening_hours`, `booking_dialogue`, `rag`, … |
 | **L1** Hard regex / sticky | Deterministic tool pick (&lt;1ms) | Typhoon → weather; seats → register; book/cancel → FSM |
 | Conflict / priority | When two detectors fire, pick the safer owner | Escalation &gt; weather &gt; cancel &gt; book … |
-| **L2** Cheap `action_policy` | Promote a RAG miss into a tool when the long-tail ask is tool-shaped | Skipped when L1 already owns the turn |
+| **L2** Cheap `action_policy` | Promote a RAG miss into a tool when the long-tail ask is tool-shaped (escalate / book / cancel / hours / …). Inspector board lights the **Action policy** hexagon — not a hard-regex win. Match evidence shows `source: action_policy` and ★ score 0.99. | Skipped when L1 already owns the turn |
 | Cheap route arbiter | Second look on ambiguous **tool** routes | Skipped when top ≥ 0.9 |
 | **L4** Cheap **final check** | Before **commits** (book / cancel / escalate / refuse) | `proceed` · `clarify` · `abort` (safety fail-open) |
 
@@ -271,9 +276,10 @@ These are the stories the demo is built to tell. Each row is what you should see
 
 | | |
 |--|--|
-| **Parent says** | allergy + reaction + “call me ASAP” |
-| **Route** | `staff_escalation` (before the non-urgent `allergy` FAQ) |
+| **Parent says** | allergy + reaction + “call me ASAP” · or “you poisoned my child” · or soft threat with no hard regex |
+| **Route** | `staff_escalation` (hard safety regex **or** L2 `action_policy` act=`escalate`) |
 | **Side effect** | **Final check** (`force_proceed` on safety) → MailBox row + email draft |
+| **Inspector** | Hard hit → L1 ★. Soft promote → **Action policy** hexagon lit · match evidence `source: action_policy` (not a detector cue) |
 
 #### F. Cancel decline
 
@@ -287,7 +293,7 @@ These are the stories the demo is built to tell. Each row is what you should see
 
 | Rule id | Group | Detector | Typical score | Downstream |
 |---------|-------|----------|---------------|------------|
-| `staff_escalation` | Tool / dialogue | safety → angry → hard_conflict → ask_human | 1.0 | final check → MailBox + staff email |
+| `staff_escalation` | Tool / dialogue | safety / poison / hurt child → angry → hard_conflict → ask_human · **or** L2 promote | 1.0 / 0.99 | final check → MailBox + staff email |
 | `off_domain` | RAG default* | politics / foreign-city weather / crypto / malware | 0.98 | final check → refuse (or RAG on abort) |
 | `severe_weather` | Live info | T8, black rain, 風球… | 1.0 | weather fact + live HKO + grounded compose |
 | `opening_hours` | Live info | hours / open now / holiday calendar | 0.8 | calendar engine + optional enrich |
@@ -370,9 +376,12 @@ Typical soft-FAQ flow:
 CSV under `backend/data/sheets/`: teachers, windows, sessions, enrolments, trial_slots, families, cancellations.
 
 - **`booking_tool`:** `seats_left = capacity − enrolments` → **chat answer**. Live register is privileged under grounded compose; an LLM **tool gate** may hide structured seat payloads (`ask_tool_ok`). Demo UI is WhatsApp-shaped: **no Book buttons / seat cards**.
-- **`booking_dialogue`:** sticky FSM; identity from `phone` → `families.csv`. Resolves child → course → when → offers open seats as **bullet text**. Cheap LLM may fill missed course/when/teacher (`ARBITER_BOOKING_PARSE`). Named programmes open `confirm_assessment`; parent **yes** → **final check** → SheetPro `assessment_request`. Sticky state can yield to RAG when the parent leaves booking intent.
+- **`booking_dialogue`:** sticky FSM; identity from `phone` → `families.csv` (`Existing Parent` / Jason · Mia). Resolves child → course → when → offers open seats as **bullet text**. Cheap LLM may fill missed course/when/teacher (`ARBITER_BOOKING_PARSE`). Named programmes open `confirm_assessment`; parent **yes** → **final check** → SheetPro `assessment_request`. Sticky state can yield to RAG when the parent leaves booking intent.
+- **Person vs programme (hard rules):** `families.looks_like_programme_label` + expanded blocklist scrub `child_name` / `parent_name` so titles like “Little Sound Explorer” never stick as a child. Kinship fillers (`my`, …) stay blocked.
+- **Seat identity:** `slot_start|teacher_id|session_id` — two Fri 17:00 trials (Tom vs Priya) do **not** share a seat pool. Message-named teacher hard-filters the offer list; confirm uses the same composite key.
+- **Upcoming / cancel lists:** exact full child name only (`Jason` ≠ `Jason Chan`); phone-scoped where applicable so a new-parent first name cannot inherit another family’s classes.
 - **`cancel_dialogue`:** sticky FSM; list upcoming → confirm → **final check** on yes → `cancellations.csv`. Declines (`no` / `do not cancel`) keep the class. Ambiguous picks may use cheap LLM cancel pick (`ARBITER_CANCEL_PICK`).
-- **`POST /bookings`:** REST helper that can append `chat_bookings.csv` for tooling/tests. The **demo parent chat does not commit seat bookings** that way — assessment hand-off is the live book story.
+- **`POST /bookings`:** REST helper that can append `chat_bookings.csv` for tooling/tests. The **Existing-parent chat does not commit seat bookings** that way — assessment hand-off is the live book story.
 
 ### 4.4 Staff surfaces
 
@@ -420,7 +429,7 @@ Generation: DashScope chat with numbered excerpts; `enable_thinking: false`.
 
 `index_size`, `top_k`, `hit_count`, `top_score`, `embedding_mode`, `language_fallback`, `gap_reason`, `mode` (`rag` | `grounded_enrich`), `hybrid.mode=channel_pack`, `hits[]` (full `text`).
 
-Inspector shows hits when **pure RAG** owns the turn **or** when grounded enrich ran (`trace.grounding` / enrich mode). On FSM enrich (hours / weather / seats), the lit path is **Live → Pack · 3+2 → Ranked → Grade → LLM** — Dense/Sparse cylinders stay off so the diagram does not orphan the RAG arm.
+Inspector shows hits when **pure RAG** owns the turn **or** when grounded enrich ran (`trace.grounding` / enrich mode). On live hours / weather / seats, the lit path is **Live (calendar / HKO) → DashScope LLM** for facts; if enrich ran, the **RAG arm** also lights (**Dense ∥ Sparse → Channel pack · ranked → Grade → LLM**). Live docs never flow *into* Pack.
 
 ### 5.4 Soft gaps, off-KB refuse & guards
 
@@ -470,16 +479,15 @@ Used by: RAG prompt, fact adapt, hours follow-up (“tomorrow?”), arbiter hist
 
 ## 8. Demo UI contract
 
-**Left:** WhatsApp-shaped **parent chat only** (messages + composer). No Book buttons, no seat cards, no booking form.  
+**Left:** WhatsApp-shaped **parent chat only** (messages + composer). Profile switcher: **Existing parent** / **New parent**. No Book buttons, no seat cards, no booking form.  
 **Right — System inspector (flowchart + detail):**
 
-1. Lit path: Router · FSM|RAG → (tools) DST / Final check / Staff email / Live → (RAG) Dense∥BM25 → Pack 3+2 → Ranked → Grade → LLM → Answer
-2. One-tap **demo probes**
-3. **Rules · scores** — detector awards grouped into **Tool / dialogue**, **Live info**, **RAG default** (not RAG similarity)
-4. **Answer grounding** — bypass / grounded compose / pure RAG
-5. Hours / holiday / weather panel when relevant
-6. Channel-pack hits (labeled dense / BM25 scores) when retrieve or enrich ran
-7. Class register + session memory
+1. Lit path: Router ↔ **L2 cheap LLM** (Action policy / Intent arbiter) · FSM | Live | RAG → DST / Final check / Staff email · Live APIs (calendar left of Live, HKO under Live) → **facts → LLM** · RAG arm Dense∥BM25 → Pack · ranked → Grade → (optional rewrite loop clear of Sparse) → LLM → Answer
+2. **Rules · scores** — L1 detector awards; a ★ with `action_policy` means L2 promoted (open the hexagon)
+3. **Answer grounding** — bypass / grounded compose / pure RAG
+4. Hours / holiday / weather panel when relevant
+5. Channel-pack hits when retrieve or enrich ran
+6. Class register + session memory
 
 **Right — Staff desk:** SheetPro follow-ups | MailBox Gmail-style inbox.
 
@@ -487,12 +495,12 @@ Canonical probes:
 
 | Probe | Expected route | What to point at |
 |-------|----------------|------------------|
-| Typhoon | `severe_weather` | Live info scores · Live → Pack enrich · MailBox only if escalate |
-| Open right now | `opening_hours` | Live hours facts · enrich via Pack (Dense/Sparse stay dark) |
+| Typhoon | `severe_weather` | Live info · Live → LLM · optional RAG enrich arm · MailBox only if escalate |
+| Open right now | `opening_hours` | Live calendar + HKO · **facts → generate** · Pack only if KB enrich |
 | Phonics fee / `月費幾多？` | `rag` | RAG default · Pack 3+2 · fee chunk |
 | Phonics seats / `仲有冇位？` | `booking_tool` | Tool scores · chat seat counts + Class register |
-| Book Jason | `booking_dialogue` | DST JSON · Final check · SheetPro (not DashScope LLM node) |
-| Safety call | `staff_escalation` | Final check → Staff email → MailBox |
+| Book Jason (Existing parent) | `booking_dialogue` | DST JSON · Final check · SheetPro (not DashScope LLM node) |
+| Soft threat / “you poisoned my child” | `staff_escalation` | L2 Action policy **or** hard safety · Final check → Staff email → MailBox |
 
 ---
 
@@ -522,23 +530,42 @@ Stress: `python scripts/stress_intent_router.py`
 | Term | Meaning |
 |------|---------|
 | **Route** | Named specialist chosen for this turn (`opening_hours`, `booking_dialogue`, `rag`, …) |
-| **Channel pack** | Keep policy: dense ranks 1–3 + up to 2 BM25 supplements (skip duplicates) |
+| **Channel pack** | Keep policy: dense ranks 1–3 + up to 2 BM25 supplements (skip duplicates) — **KB only**, not live docs |
 | **DST** | Cheap JSON dialogue-state tracking for book/cancel slots (own inspector node) |
 | **Cue / matched span** | Exact substring in the parent message that fired a detector |
-| **Grounded compose** | Soft FAQ path: privileged structured/live doc + KB enrich → compose |
+| **Grounded compose** | Privileged `live_doc` / structured card + optional KB hits → DashScope compose |
 | **Adapt** | Main-LLM tone rewrite of a structured fact; must not invent policy |
-| **Route arbiter** | Cheap LLM that may keep an ambiguous route or send it to RAG |
+| **Action policy (L2)** | Cheap LLM that may promote RAG → tool (`escalate`, `book`, …) when detectors miss |
+| **Route / intent arbiter** | Cheap LLM for close hard-detector races (keep vs RAG) — separate from action policy |
 | **Final check** | Cheap LLM gate before book / cancel / escalate / refuse commits |
+| **Slot identity** | `slot_start\|teacher_id\|session_id` seat key |
+| **Programme scrub** | Hard reject of course titles in `child_name` / `parent_name` |
 | **Tool gate** | LLM flag on seat browse that may suppress exposing structured seat payloads |
 | **Hard veto** | Ultra-high-confidence score that blocks soft prototype dilution |
 | **RAG bypass** | Hard path skips KB retrieve on the answer; does not imply “no LLM” |
 | **RAG** | Retrieve Markdown chunks from Chroma, then generate with citations |
 | **Sticky dialogue** | Book/cancel FSM that stays active across turns for one `session_id` |
 | **SheetPro / MailBox** | Staff-desk clones of Sheets follow-ups and Gmail urgent inbox |
+| **Existing parent** | Demo profile / roster family for `+852 9000 0000` (Jason Chan, Mia Chan) |
 
 ---
 
-## 11. Related
+## 11. Recent hardening (API + inspector)
+
+| Area | Change |
+|------|--------|
+| Identity | Programme titles cannot contaminate `child_name`; exact child-name upcoming/cancel; phone-scoped lists |
+| Seats | Composite slot identity + teacher hard-filter (Priya ≠ Tom at same clock) |
+| Escalation | Poison / child-harm regex; L2 promote evidence labeled `action_policy` (not “booking verbs matched”) |
+| Live compose | `live_doc` → LLM; Pack is parallel enrich only |
+| Demo roster | `Existing Parent` replaces Demo Parent in sheets seed + UI profiles |
+| Inspector | L2 Action policy hexagon; Live → LLM edge; calendar/HKO straight ports; rewrite loop clears Sparse |
+
+Tests: `test_booking_identity.py`, `test_booking_slot_identity.py`, `test_escalation_poison.py`.
+
+---
+
+## 12. Related
 
 - [architecture.md](architecture.md) — compact diagram  
 - [demo-script.md](demo-script.md) — 5-minute talk track  

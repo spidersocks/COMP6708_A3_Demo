@@ -134,7 +134,7 @@ export default function App() {
         body: JSON.stringify({
           course_key: slot.course_key || courseKey,
           slot_start: slot.slot_start,
-          parent_name: parentName || "Demo Parent",
+          parent_name: parentName || "Existing Parent",
           child_name: childName || "Demo Child",
           phone: phone || "+852 9000 0000",
           notes: "Booked from COMP6708 demo UI",
@@ -360,7 +360,7 @@ export default function App() {
                 id="parent"
                 value={parentName}
                 onChange={(e) => setParentName(e.target.value)}
-                placeholder="Demo Parent"
+                placeholder="Existing Parent"
               />
               <label htmlFor="child">Child name</label>
               <input

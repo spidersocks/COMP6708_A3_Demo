@@ -41,10 +41,10 @@ const STAFF_URL_SHORT = {
 const PARENT_PROFILES = [
   {
     id: "jason",
-    label: "Demo Parent",
+    label: "Existing parent",
     short: "Jason Chan",
     blurb: "Known family · bookings on file",
-    parentName: "Demo Parent",
+    parentName: "Existing Parent",
     childName: "Jason Chan",
     phone: "+852 9000 0000",
     initials: "JC",
@@ -749,7 +749,7 @@ export default function BrightNestBotDemo() {
                 </div>
               </div>
             ) : (
-              <div className="bn-profile-switch" role="group" aria-label="Demo parent profile">
+              <div className="bn-profile-switch" role="group" aria-label="Existing parent profile">
                 {PARENT_PROFILES.map((p) => (
                   <button
                     key={p.id}

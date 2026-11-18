@@ -266,14 +266,14 @@ def main() -> None:
                 "hours",
                 msg,
                 known_phone,
-                "Demo Parent",
+                "Existing Parent",
                 "Jason Chan",
                 ["opening_hours", "deterministic_opening_hours"],
             )
         )
     for msg in WEATHER:
         record(
-            single("weather", msg, known_phone, "Demo Parent", "Jason Chan", ["severe_weather"])
+            single("weather", msg, known_phone, "Existing Parent", "Jason Chan", ["severe_weather"])
         )
     for msg in CANCEL:
         record(
@@ -281,7 +281,7 @@ def main() -> None:
                 "cancel",
                 msg,
                 known_phone,
-                "Demo Parent",
+                "Existing Parent",
                 "Jason Chan",
                 ["cancel_dialogue"],
             )
@@ -292,7 +292,7 @@ def main() -> None:
                 "escalate",
                 msg,
                 known_phone,
-                "Demo Parent",
+                "Existing Parent",
                 "Jason Chan",
                 ["staff_escalation"],
             )
@@ -305,7 +305,7 @@ def main() -> None:
                 f"known-book-{i}",
                 msg,
                 known_phone,
-                "Demo Parent",
+                "Existing Parent",
                 "Jason Chan",
                 ["booking_dialogue", "booking_tool"],
             )
@@ -342,7 +342,7 @@ def main() -> None:
         (
             "known-phonics-extra",
             known_phone,
-            "Demo Parent",
+            "Existing Parent",
             "Jason Chan",
             [
                 "Book another phonics class for Jason",
@@ -354,7 +354,7 @@ def main() -> None:
         (
             "known-fees-then-book",
             known_phone,
-            "Demo Parent",
+            "Existing Parent",
             "Jason Chan",
             [
                 "How much is phonics?",
@@ -379,7 +379,7 @@ def main() -> None:
         (
             "known-cancel",
             known_phone,
-            "Demo Parent",
+            "Existing Parent",
             "Jason Chan",
             [
                 "Please cancel one of Jason's phonics classes",
@@ -415,7 +415,7 @@ def main() -> None:
         (
             "weather-then-hours",
             known_phone,
-            "Demo Parent",
+            "Existing Parent",
             "Jason Chan",
             [
                 "Typhoon signal 8 tonight — is class on?",

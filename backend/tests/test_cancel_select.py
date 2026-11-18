@@ -54,7 +54,7 @@ def test_first_one_reaches_picker_not_reprompt(monkeypatch):
         {
             "stage": "need_which",
             "phone": "+852 9000 0000",
-            "parent_name": "Demo Parent",
+            "parent_name": "Existing Parent",
             "child_name": "Jason Chan",
             "candidates": pool,
         },
@@ -63,7 +63,7 @@ def test_first_one_reaches_picker_not_reprompt(monkeypatch):
         session_id=sid,
         message="the first one",
         phone="+852 9000 0000",
-        parent_name="Demo Parent",
+        parent_name="Existing Parent",
         child_name_hint="Jason Chan",
     )
     assert (out.get("trace_cancel") or {}).get("stage") == "confirm"

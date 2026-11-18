@@ -169,6 +169,14 @@ def _clean_person_slot(raw: Any) -> Optional[str]:
     # Prefer Title Case for single/multi English names
     if s.islower() or s.isupper():
         s = s.title()
+    # Hard gate: programme titles / course fragments are never person names
+    try:
+        from services import families
+
+        if not families._is_plausible_person_name(s):  # noqa: SLF001
+            return None
+    except Exception:
+        pass
     return s
 
 
@@ -232,10 +240,17 @@ def track_booking_slots(
         "If it is a follow-up (\"book one\", \"that class\", \"yes this week\") "
         "you may fill course_key or window from the recent chat, not from guesses. "
         "Do not invent names. Kinship words (my/kid/child/son) are NOT names — use null.\n"
+        "CRITICAL: Programme / class titles are NEVER child_name or parent_name. "
+        "Examples that must be null for person slots: Little Sound Explorer, Little Sound, "
+        "Sound Explorer, Little Linguist, Smart Spell, Language Arts, Phonics, Trial Assessment. "
+        "If the parent says they want a programme, put it in course_key (phonics/trial/…) only — "
+        "never copy the programme title into child_name. "
+        "\"His/Her name is Marcus\" → child_name=Marcus; \"My name is James\" → parent_name=James.\n"
         "course_key: phonics|mandarin|writing|playgroup|math|trial|null; "
         "weekday 0=Mon..6=Sun|null; window tomorrow|this_week|next_week|null.\n"
         "Return null for any slot the message and recent chat do not support.\n"
-        f"Already known (do not clear): {prior_compact or '{}'}\n"
+        f"Already known (do not clear — unless it looks like a programme title): "
+        f"{prior_compact or '{}'}\n"
         f"Still missing (prefer filling these): {miss or ['any stated']}\n"
         f"{('Recent chat:\n' + history_preview.strip()[-600:] + '\n') if (history_preview or '').strip() else ''}"
         'JSON: {"parent_name":..,"child_name":..,"course_key":..,"weekday":..,'

@@ -114,7 +114,7 @@ def list_all_families(*, days_ahead: int = 21) -> Dict[str, Any]:
         if not child_name:
             continue
         upcoming = dialogue_svc.child_upcoming_sessions(
-            child_name, days_ahead=days_ahead
+            child_name, days_ahead=days_ahead, phone=phone
         )
         bucket["children"].append(
             {
@@ -150,15 +150,32 @@ _COURSE_NAME_BLOCKLIST = {
     "playgroup",
     "trial",
     "assessment",
+    "placement",
     "class",
     "lesson",
     "course",
+    "programme",
+    "program",
+    "level",
+    "levels",
     "child",
     "kid",
     "son",
     "daughter",
     "baby",
     "parent",
+    # Named BrightNest programmes / fragments — never child names
+    "little",
+    "sound",
+    "explorer",
+    "explorers",
+    "linguist",
+    "smart",
+    "spell",
+    "language",
+    "arts",
+    "english",
+    "拼音",
     # Pronouns / fillers — "book for my child" must never yield child_name="my"
     "my",
     "our",
@@ -197,7 +214,37 @@ _COURSE_NAME_BLOCKLIST = {
     "about",
     "and",
     "to",
+    "ready",
+    "join",
+    "joining",
 }
+
+# Full / partial programme titles parents quote in chat
+_PROGRAMME_LABEL_PHRASES = (
+    "little sound explorer",
+    "little sound",
+    "sound explorer",
+    "sound explorers",
+    "little linguist",
+    "smart spell",
+    "language arts",
+    "trial assessment",
+    "placement assessment",
+    "diagnostic assessment",
+)
+
+
+def looks_like_programme_label(name: str) -> bool:
+    """True when a slot value is a course/programme title, not a person."""
+    low = re.sub(r"\s+", " ", (name or "").strip().lower())
+    if not low:
+        return False
+    if low in _PROGRAMME_LABEL_PHRASES:
+        return True
+    for phrase in _PROGRAMME_LABEL_PHRASES:
+        if low in phrase or phrase in low:
+            return True
+    return False
 
 
 def _is_plausible_person_name(name: str) -> bool:
@@ -205,6 +252,8 @@ def _is_plausible_person_name(name: str) -> bool:
     if len(raw) < 2:
         return False
     low = raw.lower()
+    if looks_like_programme_label(raw):
+        return False
     if low in _COURSE_NAME_BLOCKLIST:
         return False
     if any(tok in _COURSE_NAME_BLOCKLIST for tok in re.split(r"\s+", low)):

@@ -451,6 +451,153 @@ def _summarize_winning_match(
     }
 
 
+def _booking_dialogue_rule(
+    *,
+    message: str,
+    scores: Dict[str, float],
+    debug: Dict[str, Any],
+    dialogue_active: bool,
+    leave_booking: bool,
+) -> Dict[str, Any]:
+    """Explain *why* booking won — sticky, verbs, try-out, or action-policy promote."""
+    msg = message or ""
+    hit = bool(scores.get("booking_dialogue"))
+    origin = (debug.get("score_origins") or {}).get("booking_dialogue") or {}
+    ap_override = debug.get("action_policy_override") or {}
+    ap = debug.get("action_policy") or {}
+    book_span = _match_span(dialogue_svc._BOOK_REQUEST_RE, msg)  # noqa: SLF001
+    tryout_span = _match_span(dialogue_svc._TRYOUT_RE, msg)  # noqa: SLF001
+    book_req = dialogue_svc.is_booking_request(msg)
+    tryout_req = dialogue_svc.is_tryout_request(msg)
+    promoted = (
+        hit
+        and ap_override.get("to") == "booking_dialogue"
+    ) or (
+        hit
+        and origin.get("source") in {None, "default_floor", "action_policy"}
+        and ap.get("called")
+        and str(ap.get("route") or "") == "booking_dialogue"
+    )
+    if dialogue_active and not leave_booking and hit:
+        why = "Sticky booking dialogue already open for this session."
+        cue_span = None
+        kind = "sticky_state"
+        explanation = (
+            "Session already mid-booking; continue the FSM without needing new verbs."
+        )
+    elif promoted and hit:
+        act = ap_override.get("act") or ap.get("act") or "book"
+        why = (
+            f"Action policy promoted → booking ({act}) — "
+            "affirmative / follow-up after a placement or class offer, not a book-verb hit."
+        )
+        cue_span = None
+        kind = "action_policy"
+        explanation = (
+            f"Detectors left RAG; cheap action policy classified act={act} "
+            f"(confidence {ap.get('confidence') or ap_override.get('confidence') or '—'}) "
+            "and promoted to booking_dialogue at 0.99. "
+            "«Yes please» after «arrange a placement?» is the intended path."
+        )
+    elif tryout_req and tryout_span:
+        why = f"Try-out / placement cue «{tryout_span['text']}»."
+        cue_span = tryout_span
+        kind = "substring"
+        explanation = (
+            f"Try-out / placement wording «{tryout_span['text']}» at "
+            f"[{tryout_span['start']}:{tryout_span['end']}] → book a live trial seat."
+        )
+    elif book_req and book_span:
+        why = f"Booking verb «{book_span['text']}»."
+        cue_span = book_span
+        kind = "substring"
+        explanation = (
+            f"Book/enrol cue «{book_span['text']}» at "
+            f"[{book_span['start']}:{book_span['end']}] → booking dialogue."
+        )
+    elif hit:
+        why = origin.get("why") or "Booking score awarded."
+        cue_span = book_span or tryout_span
+        kind = "predicate"
+        explanation = origin.get("why") or "Booking detector awarded a score."
+    else:
+        why = ""
+        cue_span = None
+        kind = "predicate"
+        explanation = "No booking ask, sticky state, or action-policy promote."
+
+    why_not = (
+        "Booking chat was open but this message leaves booking for RAG."
+        if leave_booking and dialogue_active
+        else "No booking ask, booking chat is not open, and action policy did not promote."
+    )
+    return _rule_row(
+        "booking_dialogue",
+        "Book / enrol dialogue",
+        matched=hit,
+        score=scores.get("booking_dialogue"),
+        mechanism=(
+            "Sticky book, book/enrol/try-out verbs → 0.85; "
+            "or action-policy promote after RAG offer → 0.99."
+        ),
+        pattern_summary="book / enrol / try out / placement / 預約 · or yes after offer",
+        matched_span=cue_span,
+        match_evidence=_match_evidence(
+            msg,
+            span=cue_span,
+            kind=kind,
+            explanation=explanation,
+        ),
+        query=msg,
+        why=why,
+        why_not=why_not,
+        checks=[
+            _check(
+                "Booking chat already open?",
+                dialogue_active,
+                "yes — continue book FSM"
+                if dialogue_active
+                else "no — not mid-booking",
+            ),
+            _check(
+                "Book / enrol verb in this message?",
+                bool(book_req and book_span and not tryout_req),
+                (
+                    f"yes — «{book_span['text']}»"
+                    if book_req and book_span and not tryout_req
+                    else "no"
+                ),
+            ),
+            _check(
+                "Try-out / placement cue?",
+                bool(tryout_req),
+                (
+                    f"yes — «{tryout_span['text']}»"
+                    if tryout_req and tryout_span
+                    else "yes"
+                    if tryout_req
+                    else "no"
+                ),
+            ),
+            _check(
+                "Action policy promoted to booking?",
+                bool(promoted),
+                (
+                    f"yes — act={ap_override.get('act') or ap.get('act') or 'book'} · 0.99"
+                    if promoted
+                    else "no"
+                ),
+            ),
+            _check(
+                "Leave booking for RAG?",
+                leave_booking,
+                "yes — yield sticky booking" if leave_booking else "no",
+            ),
+        ],
+        downstream="Booking FSM",
+    )
+
+
 def _build_rules_evaluated(
     message: str,
     *,
@@ -480,6 +627,14 @@ def _build_rules_evaluated(
         if k != "rag" and float(scores.get(k) or 0) >= 0.8
     ]
 
+    esc_hit = bool(scores.get("staff_escalation"))
+    esc_origin = (debug.get("score_origins") or {}).get("staff_escalation") or {}
+    ap_override = debug.get("action_policy_override") or {}
+    ap = debug.get("action_policy") or {}
+    esc_promoted = esc_hit and (
+        ap_override.get("to") == "staff_escalation"
+        or esc_origin.get("source") == "action_policy"
+    )
     esc_checks = []
     for name, pat in (
         ("safety", escalation_svc._SAFETY_RE),  # noqa: SLF001
@@ -488,13 +643,31 @@ def _build_rules_evaluated(
         ("ask_human", escalation_svc._ASK_HUMAN_RE),  # noqa: SLF001
     ):
         sp = _match_span(pat, msg)
+        won_cat = bool(esc and (esc.get("category") or "") == name and sp)
         esc_checks.append(
             _check(
-                f"Escalation category «{name}»",
+                f"Hard regex «{name}»",
                 bool(sp),
-                f"matched «{sp['text']}»" if sp else "no match",
+                (
+                    f"matched «{sp['text']}» → wins"
+                    if won_cat
+                    else f"matched «{sp['text']}» (lower priority)"
+                    if sp
+                    else "no match"
+                ),
             )
         )
+    esc_checks.append(
+        _check(
+            "Action policy promoted to escalate?",
+            bool(esc_promoted),
+            (
+                f"yes — act={ap_override.get('act') or ap.get('act') or 'escalate'} · 0.99"
+                if esc_promoted
+                else "no"
+            ),
+        )
+    )
     esc_span = None
     if isinstance(esc, dict):
         cat = esc.get("category") or ""
@@ -507,37 +680,71 @@ def _build_rules_evaluated(
             if name == cat:
                 esc_span = _match_span(pat, msg)
                 break
+        # Prefer detector cue text even if span rebuild failed
+        if not esc_span and esc.get("cue"):
+            cue_t = str(esc["cue"])
+            idx = msg.lower().find(cue_t.lower())
+            if idx >= 0:
+                esc_span = {"text": msg[idx : idx + len(cue_t)], "start": idx, "end": idx + len(cue_t)}
+
+    if esc and esc_span:
+        esc_why = (
+            f"Hard regex «{esc.get('category')}» cue «{esc_span.get('text')}» "
+            f"({esc.get('priority')}): {esc.get('summary')}"
+        )
+        esc_kind = "substring"
+        esc_explain = (
+            f"Category «{esc.get('category')}» fired on «{esc_span.get('text')}» "
+            f"at [{esc_span.get('start')}:{esc_span.get('end')}]."
+        )
+    elif esc:
+        esc_why = (
+            f"Hard detector «{esc.get('category')}» ({esc.get('priority')}): "
+            f"{esc.get('summary')}"
+        )
+        esc_kind = "predicate"
+        esc_explain = esc.get("summary") or esc_why
+    elif esc_promoted:
+        act = ap_override.get("act") or ap.get("act") or "escalate"
+        esc_why = (
+            f"Action policy promoted → staff_escalation ({act}) — "
+            "no hard regex cue; cheap LLM judged this needs a human."
+        )
+        esc_kind = "action_policy"
+        esc_explain = (
+            f"Detectors left RAG; action policy act={act} "
+            f"(confidence {ap.get('confidence') or ap_override.get('confidence') or '—'}) "
+            "promoted to staff_escalation at 0.99."
+        )
+    else:
+        esc_why = ""
+        esc_kind = "predicate"
+        esc_explain = "No escalation cue and action policy did not promote."
 
     avail_span = _match_span(_AVAIL_STRONG_RE, msg)
     rows = [
         _rule_row(
             "staff_escalation",
             "Ask-human / anger / safety",
-            matched=bool(scores.get("staff_escalation")),
+            matched=esc_hit,
             score=scores.get("staff_escalation"),
-            mechanism="First matching escalation cue → score 1.0.",
-            pattern_summary="safety / anger / hard conflict / ask-human",
+            mechanism=(
+                "Hard safety/anger/conflict/ask-human cue → 1.0; "
+                "or action-policy promote → 0.99."
+            ),
+            pattern_summary="poison / hurt / angry / refund / speak to manager · or LLM escalate",
             matched_span=esc_span,
             match_evidence=_match_evidence(
                 msg,
                 span=esc_span,
-                kind="substring" if esc_span else "predicate",
-                explanation=(
-                    f"Escalation category «{(esc or {}).get('category')}» fired on cue "
-                    f"«{(esc_span or {}).get('text') or (esc or {}).get('summary') or 'n/a'}»."
-                    if esc
-                    else "No escalation cue in this message."
-                ),
+                kind=esc_kind,
+                explanation=esc_explain,
             ),
             query=msg,
-            why=(
-                f"Triggered as category «{(esc or {}).get('category')}» "
-                f"({(esc or {}).get('priority')}): {(esc or {}).get('summary')}"
-                if esc
-                else ""
-            ),
+            why=esc_why,
             why_not=(
-                "No safety, anger, hard-conflict, or ask-human cue matched. "
+                "No safety, anger, hard-conflict, or ask-human cue matched, "
+                "and action policy did not promote escalate. "
                 "Ordinary centre questions stay on tools/RAG."
             ),
             checks=esc_checks,
@@ -587,42 +794,12 @@ def _build_rules_evaluated(
             ],
             downstream="Cancel FSM",
         ),
-        _rule_row(
-            "booking_dialogue",
-            "Book / enrol dialogue",
-            matched=bool(scores.get("booking_dialogue")),
-            score=scores.get("booking_dialogue"),
-            mechanism="Sticky book or book/enrol verbs → 0.85.",
-            pattern_summary="book / enrol / 預約",
-            why=(
-                "Booking chat already open for this session."
-                if dialogue_active and not leave_booking
-                else "Booking verbs matched."
-                if scores.get("booking_dialogue")
-                else ""
-            ),
-            why_not=(
-                "Booking chat was open but this message leaves booking for RAG."
-                if leave_booking and dialogue_active
-                else "No booking ask, and booking chat is not open."
-            ),
-            checks=[
-                _check(
-                    "Booking chat already open?",
-                    dialogue_active,
-                    "yes — continue book FSM"
-                    if dialogue_active
-                    else "no — not mid-booking",
-                ),
-                _check(
-                    "Leave booking for RAG?",
-                    leave_booking,
-                    "yes — yield sticky booking"
-                    if leave_booking
-                    else "no",
-                ),
-            ],
-            downstream="Booking FSM",
+        _booking_dialogue_rule(
+            message=msg,
+            scores=scores,
+            debug=debug,
+            dialogue_active=dialogue_active,
+            leave_booking=leave_booking,
         ),
         _rule_row(
             "booking_tool",
@@ -976,6 +1153,30 @@ def decide_intent(
                     }
                     cleaned = dict(cleaned)
                     cleaned[new_route] = max(float(cleaned.get(new_route) or 0), 0.99)
+                    origins = dict(debug.get("score_origins") or {})
+                    origins[new_route] = {
+                        "source": "action_policy",
+                        "why": (
+                            f"Action policy promote · act={verdict.get('act')} "
+                            f"· confidence={verdict.get('confidence')}"
+                        ),
+                        "cue": "",
+                        "score": cleaned[new_route],
+                        "op": "promote",
+                    }
+                    debug["score_origins"] = origins
+                    ledger = list(debug.get("score_ledger") or [])
+                    ledger.append(
+                        {
+                            "op": "promote",
+                            "route": new_route,
+                            "score": cleaned[new_route],
+                            "source": "action_policy",
+                            "why": origins[new_route]["why"],
+                            "cue": "",
+                        }
+                    )
+                    debug["score_ledger"] = ledger
                     route = new_route
         except Exception as e:
             debug["action_policy"] = {

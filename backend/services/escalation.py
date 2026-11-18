@@ -47,7 +47,11 @@ _SAFETY_RE = re.compile(
     r"|\b(medical\s+emergency|ambulance|hospitalis|hospitaliz)\b"
     r"|\b(missing|lost)\s+(my\s+)?(child|kid|son|daughter)\b"
     r"|\b(child\s+)?(abuse|unsafe|danger(ous)?)\b"
-    r"|受傷|受伤|流血|過敏反應|过敏休克|走失|失踪|危險|危险|緊急|紧急|过敏.*反应|過敏.*反應"
+    # Harm / poisoning allegations about a child
+    r"|\bpoison(?:ed|ing|s)?\b"
+    r"|\b(harmed|hurt|injured)\s+(my\s+)?(child|kid|son|daughter)\b"
+    r"|\b(my\s+)?(child|kid|son|daughter).{0,40}\b(poison|harmed|abused|unsafe)\b"
+    r"|受傷|受伤|流血|過敏反應|过敏休克|走失|失踪|危險|危险|緊急|紧急|过敏.*反应|過敏.*反應|中毒|毒害"
     r")",
     re.I,
 )

@@ -156,9 +156,9 @@ def seed_sheets_if_needed(*, force: bool = False) -> Path:
 
     # Varied roster fill so some classes look nearly full
     enrol_seed = {
-        "ph-tue-1000": [("Emma Wong", "Mrs Wong"), ("Leo Chan", "Mr Chan"), ("Jason Chan", "Demo Parent"), ("Sophie Ng", "Ms Ng"), ("Ryan Ho", "Mrs Ho")],
+        "ph-tue-1000": [("Emma Wong", "Mrs Wong"), ("Leo Chan", "Mr Chan"), ("Jason Chan", "Existing Parent"), ("Sophie Ng", "Ms Ng"), ("Ryan Ho", "Mrs Ho")],
         "ph-tue-1500": [("Mia Lau", "Mrs Lau"), ("Noah Ip", "Mr Ip"), ("Chloe Yip", "Ms Yip")],
-        "ph-thu-1000": [("Emma Wong", "Mrs Wong"), ("Leo Chan", "Mr Chan"), ("Jason Chan", "Demo Parent"), ("Sophie Ng", "Ms Ng"), ("Ryan Ho", "Mrs Ho"), ("Aiden Tam", "Mrs Tam")],
+        "ph-thu-1000": [("Emma Wong", "Mrs Wong"), ("Leo Chan", "Mr Chan"), ("Jason Chan", "Existing Parent"), ("Sophie Ng", "Ms Ng"), ("Ryan Ho", "Mrs Ho"), ("Aiden Tam", "Mrs Tam")],
         "ph-sat-1030": [("Grace Fung", "Mrs Fung"), ("Ethan Kwok", "Mr Kwok")],
         "ph-sat-1400": [("Isla Mak", "Ms Mak"), ("Owen Tsui", "Mr Tsui"), ("Hannah Leung", "Mrs Leung"), ("Jacob Poon", "Mrs Poon"), ("Lily Siu", "Ms Siu")],
         "ph-mon-1600": [("Ken Lo", "Mr Lo"), ("Bella Chu", "Ms Chu"), ("Aaron Tse", "Mrs Tse")],
@@ -177,14 +177,14 @@ def seed_sheets_if_needed(*, force: bool = False) -> Path:
         "wr-sat-1300": [("Nathan Yu", "Mrs Yu"), ("Sara Pang", "Ms Pang")],
         "wr-mon-1430": [("Theo Pak", "Mr Pak"), ("Mila On", "Ms On"), ("Hugo Yan", "Mrs Yan")],
         "pg-mon-0930": [
-            ("Mia Chan", "Demo Parent"),
+            ("Mia Chan", "Existing Parent"),
             ("Ollie Bevan", "Mrs Bevan"),
             ("Poppy Cheung", "Ms Cheung"),
             ("Rex Dai", "Mrs Dai"),
             ("Sienna Eng", "Mrs Eng"),
         ],
         "pg-thu-0930": [
-            ("Mia Chan", "Demo Parent"),
+            ("Mia Chan", "Existing Parent"),
             ("Ollie Bevan", "Mrs Bevan"),
             ("Poppy Cheung", "Ms Cheung"),
             ("Uma Fok", "Mrs Fok"),
@@ -219,7 +219,7 @@ def seed_sheets_if_needed(*, force: bool = False) -> Path:
             ("Tess Varma", "Mr Varma"),
             ("Will Xu", "Ms Xu"),
             ("Yuki Zhou", "Mrs Zhou"),
-            ("Jason Chan", "Demo Parent"),
+            ("Jason Chan", "Existing Parent"),
         ],
         "ma-fri-1530": [("Sam Ueda", "Mrs Ueda"), ("Yuki Zhou", "Mrs Zhou")],
         "ma-sat-1030": [
@@ -246,7 +246,7 @@ def seed_sheets_if_needed(*, force: bool = False) -> Path:
 
     # Stable demo numbers for the WhatsApp profile switcher / probes
     phone_by_parent = {
-        "Demo Parent": "+852 9000 0000",
+        "Existing Parent": "+852 9000 0000",
         "Mrs Wong": "+852 9123 4567",
         "Mrs Cheng": "+852 9555 1212",
     }
@@ -258,8 +258,8 @@ def seed_sheets_if_needed(*, force: bool = False) -> Path:
             next_phone += 1
 
     notes_by_child = {
-        ("Demo Parent", "Jason Chan"): "Primary demo WhatsApp family",
-        ("Demo Parent", "Mia Chan"): "Sibling on same number · playgroup",
+        ("Existing Parent", "Jason Chan"): "Primary Existing Parent WhatsApp family",
+        ("Existing Parent", "Mia Chan"): "Sibling on same number · playgroup",
         ("Mrs Wong", "Emma Wong"): "Centre WhatsApp · phonics regular",
         ("Mrs Cheng", "Katie Cheng"): "Mandarin pathway",
     }
@@ -441,26 +441,52 @@ def teacher_name(teacher_id: str) -> str:
     return t["name"] if t else teacher_id
 
 
-def count_chat_bookings(course_key: str, slot_start_iso: str) -> int:
-    return len(list_chat_bookings(course_key, slot_start_iso))
+def count_chat_bookings(
+    course_key: str,
+    slot_start_iso: str,
+    *,
+    teacher_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> int:
+    return len(
+        list_chat_bookings(
+            course_key,
+            slot_start_iso,
+            teacher_id=teacher_id,
+            session_id=session_id,
+        )
+    )
 
 
-def list_chat_bookings(course_key: str, slot_start_iso: str) -> List[Dict[str, str]]:
+def list_chat_bookings(
+    course_key: str,
+    slot_start_iso: str,
+    *,
+    teacher_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> List[Dict[str, str]]:
     """Chat bookings for one course+slot (parent/child for calendar roster)."""
     root = sheets_dir()
     rows = _read_csv(root / "chat_bookings.csv")
     out: List[Dict[str, str]] = []
     for r in rows:
-        if r.get("course_key") == course_key and r.get("slot_start") == slot_start_iso:
-            out.append(
-                {
-                    "id": r.get("id") or "",
-                    "child": (r.get("child_name") or "").strip(),
-                    "parent": (r.get("parent_name") or "").strip(),
-                    "phone": (r.get("phone") or "").strip(),
-                    "via": "chat",
-                }
-            )
+        if r.get("course_key") != course_key or r.get("slot_start") != slot_start_iso:
+            continue
+        if teacher_id and (r.get("teacher_id") or "") != teacher_id:
+            continue
+        if session_id and (r.get("session_id") or "") != session_id:
+            continue
+        out.append(
+            {
+                "id": r.get("id") or "",
+                "child": (r.get("child_name") or "").strip(),
+                "parent": (r.get("parent_name") or "").strip(),
+                "phone": (r.get("phone") or "").strip(),
+                "teacher_id": (r.get("teacher_id") or "").strip(),
+                "session_id": (r.get("session_id") or "").strip(),
+                "via": "chat",
+            }
+        )
     return out
 
 

@@ -64,9 +64,52 @@ def list_teachers() -> List[Dict[str, Any]]:
     return out
 
 
-def _booked_count(course_key: str, slot_start_iso: str) -> int:
-    # Live admin sheet is source of truth for chat bookings
-    return sheets.count_chat_bookings(course_key, slot_start_iso)
+def _booked_count(
+    course_key: str,
+    slot_start_iso: str,
+    *,
+    teacher_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> int:
+    # Live admin sheet is source of truth for chat bookings — scope by teacher/session
+    # so two Fri 17:00 trials with different teachers do not share a seat pool.
+    return sheets.count_chat_bookings(
+        course_key,
+        slot_start_iso,
+        teacher_id=teacher_id,
+        session_id=session_id,
+    )
+
+
+def slot_identity(slot: Dict[str, Any]) -> str:
+    """Unique seat key: same clock can have multiple teachers/rooms."""
+    start = str(slot.get("slot_start") or "")
+    tid = str(slot.get("teacher_id") or "")
+    sid = str(slot.get("session_id") or "")
+    return f"{start}|{tid}|{sid}"
+
+
+def find_availability_slot(
+    course_key: str,
+    slot_start: str,
+    *,
+    teacher_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    days_ahead: int = 21,
+) -> Optional[Dict[str, Any]]:
+    """Resolve one concrete seat — never collapse by timestamp alone."""
+    avail = get_availability(course_key, days_ahead=days_ahead)
+    matches = [s for s in avail if s.get("slot_start") == slot_start]
+    if teacher_id:
+        matches = [s for s in matches if s.get("teacher_id") == teacher_id]
+    if session_id:
+        matches = [s for s in matches if s.get("session_id") == session_id]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        return None
+    # Ambiguous without teacher/session — refuse rather than pick arbitrarily
+    return None
 
 
 def _parse_hhmm(hhmm: str) -> time:
@@ -111,11 +154,14 @@ def _slot_dict(
     iso = start_dt.isoformat()
     enrolled_n = len(template.get("enrolled") or [])
     capacity = int(template["capacity"])
-    taken = enrolled_n + _booked_count(course_key, iso)
+    teacher_id = template["teacher_id"]
+    session_id = template["id"]
+    taken = enrolled_n + _booked_count(
+        course_key, iso, teacher_id=teacher_id, session_id=session_id
+    )
     remaining = max(0, capacity - taken)
     if remaining <= 0:
         return None
-    teacher_id = template["teacher_id"]
     return {
         "course_key": course_key,
         "course_label": sd.course_label(course_key, lang),
@@ -129,7 +175,7 @@ def _slot_dict(
         "teacher_name": sd.teacher_name(teacher_id),
         "room": template.get("room")
         or sheets.get_register()["teacher_by_id"].get(teacher_id, {}).get("room_default", ""),
-        "session_id": template["id"],
+        "session_id": session_id,
         "kind": "trial" if course_key == "trial" else "class",
     }
 
@@ -177,16 +223,35 @@ def create_booking(
     child_name: str = "",
     phone: str = "",
     notes: str = "",
+    teacher_id: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     if course_key not in sd.COURSE_LABELS:
         raise ValueError(f"Unknown course: {course_key}")
-    avail = {s["slot_start"]: s for s in get_availability(course_key, days_ahead=21)}
-    if slot_start not in avail:
-        raise ValueError("Selected slot is not available")
-    if avail[slot_start]["seats_left"] <= 0:
+    slot = find_availability_slot(
+        course_key,
+        slot_start,
+        teacher_id=teacher_id,
+        session_id=session_id,
+        days_ahead=21,
+    )
+    if not slot:
+        # Last-resort: unique timestamp among open seats (legacy callers)
+        matches = [
+            s
+            for s in get_availability(course_key, days_ahead=21)
+            if s.get("slot_start") == slot_start
+        ]
+        if len(matches) == 1:
+            slot = matches[0]
+        elif len(matches) > 1:
+            raise ValueError(
+                "Selected time has multiple teachers — pick a teacher or session"
+            )
+        else:
+            raise ValueError("Selected slot is not available")
+    if slot["seats_left"] <= 0:
         raise ValueError("Selected slot is full")
-
-    slot = avail[slot_start]
     booking_id = str(uuid.uuid4())[:8]
     created = datetime.now(HK_TZ).isoformat()
     sheet_row = {
