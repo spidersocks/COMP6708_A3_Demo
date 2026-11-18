@@ -1,6 +1,6 @@
 import re
 import unicodedata
-from typing import Optional
+from typing import Any, Dict, Optional, Tuple
 
 # --- Constants for Chinese Variant Detection ---
 
@@ -63,24 +63,76 @@ def _is_cjk(char: str) -> bool:
         0x20000 <= ord(char) <= 0x2A6DF, # CJK Unified Ideographs Extension B
     ])
 
+def _char_counts(text: str) -> Dict[str, int]:
+    """Count script buckets used by the language heuristic."""
+    counts = {
+        "cjk": 0,
+        "latin": 0,
+        "trad_only": 0,
+        "simp_only": 0,
+        "digits": 0,
+        "other": 0,
+    }
+    for char in text or "":
+        if char.isspace() or not char.isprintable():
+            continue
+        if char.isdigit():
+            counts["digits"] += 1
+            continue
+        if _is_cjk(char):
+            counts["cjk"] += 1
+            if char in TRAD_ONLY:
+                counts["trad_only"] += 1
+            elif char in SIMP_ONLY:
+                counts["simp_only"] += 1
+            continue
+        if "a" <= char <= "z" or char.isalpha():
+            counts["latin"] += 1
+            continue
+        counts["other"] += 1
+    return counts
+
+
 def _get_cjk_ratio(text: str) -> float:
     """
     Calculates the ratio of CJK characters to total alphabetic characters.
     """
-    if not text:
-        return 0.0
-    cjk_count = 0
-    letter_count = 0
-    for char in text:
-        if char.isspace() or char.isdigit() or not char.isprintable():
-            continue
-        if _is_cjk(char):
-            cjk_count += 1
-        if char.isalpha():
-            letter_count += 1
+    counts = _char_counts(text)
+    letter_count = counts["cjk"] + counts["latin"]
     if letter_count == 0:
         return 0.0
-    return cjk_count / letter_count
+    return counts["cjk"] / letter_count
+
+
+def _get_chinese_variant_scored(text: str) -> Tuple[str, Dict[str, Any]]:
+    """Traditional vs Simplified with explicit majority counts."""
+    trad_score = 0
+    simp_score = 0
+    for char in text:
+        if char in TRAD_ONLY:
+            trad_score += 1
+        elif char in SIMP_ONLY:
+            simp_score += 1
+    if trad_score > simp_score:
+        return "zh-HK", {
+            "trad_only": trad_score,
+            "simp_only": simp_score,
+            "winner": "trad_only",
+            "tie_break": None,
+        }
+    if simp_score > trad_score:
+        return "zh-CN", {
+            "trad_only": trad_score,
+            "simp_only": simp_score,
+            "winner": "simp_only",
+            "tie_break": None,
+        }
+    return "zh-HK", {
+        "trad_only": trad_score,
+        "simp_only": simp_score,
+        "winner": "tie",
+        "tie_break": "default_zh-HK",
+    }
 
 def _prefer_variant_from_accept_language(header: Optional[str]) -> Optional[str]:
     """
@@ -105,19 +157,99 @@ def _get_chinese_variant(text: str) -> str:
     Determine Traditional vs Simplified based on distinctive character counts.
     IMPORTANT: Ties and 'no distinctive chars' default to Traditional (zh-HK) for Hong Kong deployment.
     """
-    trad_score = 0
-    simp_score = 0
-    for char in text:
-        if char in TRAD_ONLY:
-            trad_score += 1
-        elif char in SIMP_ONLY:
-            simp_score += 1
-    if trad_score > simp_score:
-        return "zh-HK"
-    if simp_score > trad_score:
-        return "zh-CN"
-    # Tie or no distinctive characters: default to Traditional for HK
-    return "zh-HK"
+    variant, _ = _get_chinese_variant_scored(text)
+    return variant
+
+
+CJK_THRESHOLD = 0.3
+
+
+def explain_language_code(
+    user_message: str,
+    accept_language_header: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Same decision as get_language_code, plus inspector-friendly counts.
+
+    Majority steps:
+    1) Count CJK vs Latin letters → cjk_ratio.
+    2) If ratio ≥ 0.3, count TRAD_ONLY vs SIMP_ONLY distinctive chars (majority wins;
+       ties default zh-HK).
+    3) Optional Accept-Language override for zh variant.
+    """
+    normalized_message = _normalize_text(user_message)
+    counts = _char_counts(normalized_message)
+    letter_count = counts["cjk"] + counts["latin"]
+    cjk_ratio = (counts["cjk"] / letter_count) if letter_count else 0.0
+    header_pref = _prefer_variant_from_accept_language(accept_language_header)
+    base: Dict[str, Any] = {
+        "counts": counts,
+        "cjk_ratio": round(cjk_ratio, 4),
+        "cjk_threshold": CJK_THRESHOLD,
+        "accept_language": header_pref,
+        "normalized_len": len(normalized_message),
+    }
+
+    if not normalized_message:
+        decision = header_pref or "en"
+        return {
+            **base,
+            "decision": decision,
+            "method": "empty_default",
+            "why": (
+                f"Empty message · Accept-Language → {decision}"
+                if header_pref
+                else "Empty message · default en"
+            ),
+            "variant_counts": None,
+        }
+
+    common_english_greetings = {"hi", "hello", "thanks", "thank you", "ok", "yes", "no"}
+    if normalized_message in common_english_greetings:
+        return {
+            **base,
+            "decision": "en",
+            "method": "greeting_fast_path",
+            "why": f"Exact short English token «{normalized_message}»",
+            "variant_counts": None,
+        }
+
+    if cjk_ratio >= CJK_THRESHOLD:
+        variant, variant_counts = _get_chinese_variant_scored(normalized_message)
+        if header_pref in ("zh-HK", "zh-CN"):
+            return {
+                **base,
+                "decision": header_pref,
+                "method": "accept_language_override",
+                "why": (
+                    f"CJK ratio {cjk_ratio:.2f} ≥ {CJK_THRESHOLD} · "
+                    f"Accept-Language forces {header_pref}"
+                ),
+                "variant_counts": variant_counts,
+                "script_guess": variant,
+            }
+        why = (
+            f"CJK ratio {cjk_ratio:.2f} ≥ {CJK_THRESHOLD} · "
+            f"trad {variant_counts['trad_only']} vs simp {variant_counts['simp_only']}"
+        )
+        if variant_counts.get("tie_break"):
+            why += " · tie → zh-HK"
+        return {
+            **base,
+            "decision": variant,
+            "method": "cjk_majority",
+            "why": why,
+            "variant_counts": variant_counts,
+        }
+
+    return {
+        **base,
+        "decision": "en",
+        "method": "latin_majority",
+        "why": f"CJK ratio {cjk_ratio:.2f} < {CJK_THRESHOLD} → en",
+        "variant_counts": None,
+    }
+
 
 # --- Main Detection Logic ---
 
@@ -133,36 +265,7 @@ def get_language_code(
     - Respect Accept-Language when it explicitly specifies zh-Hans/zh-CN vs zh-Hant/zh-HK/zh-TW.
     - If Accept-Language only says 'zh', prefer Traditional (zh-HK).
     """
-    normalized_message = _normalize_text(user_message)
-
-    # Edge case: empty or whitespace-only messages
-    if not normalized_message:
-        # Prefer Traditional for ambiguous 'zh'; otherwise keep 'en'
-        lang_from_header = _prefer_variant_from_accept_language(accept_language_header)
-        if lang_from_header:
-            return lang_from_header
-        return "en"
-
-    # Short common English phrases — fast path
-    common_english_greetings = {"hi", "hello", "thanks", "thank you", "ok", "yes", "no"}
-    if normalized_message in common_english_greetings:
-        return "en"
-
-    # Core heuristic for Chinese vs English
-    cjk_ratio = _get_cjk_ratio(normalized_message)
-    CJK_THRESHOLD = 0.3
-    if cjk_ratio >= CJK_THRESHOLD:
-        # Determine variant with Traditional bias on ties
-        variant = _get_chinese_variant(normalized_message)
-        # If variant detection produced Traditional by tie and header explicitly says Simplified, respect header
-        header_pref = _prefer_variant_from_accept_language(accept_language_header)
-        if header_pref in ("zh-HK", "zh-CN"):
-            # Only override when header is explicit about variant (Hans/Hant or region)
-            return header_pref
-        return variant
-
-    # Non-Chinese default
-    return "en"
+    return explain_language_code(user_message, accept_language_header)["decision"]
 
 # --- Demonstration and Testing ---
 

@@ -23,7 +23,7 @@ from llm.hours_intent import (
     is_hours_followup,
     recent_was_hours,
 )
-from llm.lang import get_language_code
+from llm.lang import explain_language_code, get_language_code
 from llm.opening_hours import _get_opening_facts, compute_opening_answer
 from rag.generator import adapt_structured_fact, compose_grounded_fact
 from rag.pipeline import chat_with_rag, is_greeting, retrieve_for_enrich
@@ -343,7 +343,22 @@ def chat(req: ChatRequest) -> ChatResponse:
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
 
-    lang = req.language or get_language_code(message) or "en"
+    lang_explain = None
+    if req.language:
+        lang = req.language
+        lang_explain = {
+            "decision": lang,
+            "method": "client_override",
+            "why": "Language supplied by the demo client",
+            "counts": None,
+            "cjk_ratio": None,
+            "cjk_threshold": 0.3,
+            "variant_counts": None,
+            "accept_language": None,
+        }
+    else:
+        lang_explain = explain_language_code(message)
+        lang = lang_explain.get("decision") or get_language_code(message) or "en"
     session_id = _session_id(req)
     use_history = SETTINGS.chat_history_enabled and bool(session_id)
 
@@ -486,6 +501,7 @@ def chat(req: ChatRequest) -> ChatResponse:
 
     trace: Dict[str, Any] = {
         "language": lang,
+        "language_detection": lang_explain,
         "session_id": session_id,
         "history": {
             "enabled": use_history,

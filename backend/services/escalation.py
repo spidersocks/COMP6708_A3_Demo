@@ -116,36 +116,53 @@ _TEMPLATES = {
 }
 
 
+def _first_match(pattern: re.Pattern[str], text: str) -> Optional[str]:
+    m = pattern.search(text or "")
+    return m.group(0) if m else None
+
+
 def detect_escalation(text: str) -> Optional[Dict[str, Any]]:
-    """Return {category, priority, summary} or None."""
+    """Return {category, priority, summary, cue, method} or None."""
     t = (text or "").strip()
     if not t:
         return None
 
-    if _SAFETY_RE.search(t):
+    if cue := _first_match(_SAFETY_RE, t):
         return {
             "category": "safety",
             "priority": "urgent",
             "summary": "Urgent: possible child safety or medical concern — please call the parent now",
+            "cue": cue,
+            "method": "hard_regex",
+            "order": "safety → angry → hard_conflict → ask_human",
         }
     # Anger / hard conflict before ask_human so "manager + unacceptable" stays complaint-toned
-    if _ANGRY_RE.search(t):
+    if cue := _first_match(_ANGRY_RE, t):
         return {
             "category": "angry",
             "priority": "high",
             "summary": "Follow up: parent is upset and may escalate a complaint",
+            "cue": cue,
+            "method": "hard_regex",
+            "order": "safety → angry → hard_conflict → ask_human",
         }
-    if _HARD_CONFLICT_RE.search(t):
+    if cue := _first_match(_HARD_CONFLICT_RE, t):
         return {
             "category": "hard_conflict",
             "priority": "high",
             "summary": "Follow up: refund, withdrawal, or public-complaint request needs a staff decision",
+            "cue": cue,
+            "method": "hard_regex",
+            "order": "safety → angry → hard_conflict → ask_human",
         }
-    if _ASK_HUMAN_RE.search(t):
+    if cue := _first_match(_ASK_HUMAN_RE, t):
         return {
             "category": "ask_human",
             "priority": "high",
             "summary": "Follow up: parent asked to speak with a staff member",
+            "cue": cue,
+            "method": "hard_regex",
+            "order": "safety → angry → hard_conflict → ask_human",
         }
     return None
 
