@@ -756,6 +756,135 @@ def extract_opening_context(message: str, lang: Optional[str] = None) -> str:
         lines.append(f"Open hours: {_fmt_time(facts['open_time'])}–{_fmt_time(facts['close_time'])}")
     return "\n".join(lines)
 
+
+def _is_open_now_query(message: str) -> bool:
+    m = message or ""
+    return bool(
+        re.search(
+            r"\b(open\s+(right\s+)?now|right\s+now|currently\s+open|"
+            r"are\s+you\s+open|is\s+(the\s+)?(centre|center)\s+open)\b",
+            m,
+            flags=re.I,
+        )
+        or re.search(r"(而家|现在|現在).{0,8}(開|开)|而家有冇開|现在开门吗", m)
+    )
+
+
+def _within_open_window(facts: Dict[str, Any], when: Optional[datetime] = None) -> Optional[bool]:
+    """True/False if clock is inside today's window; None if closed day / no window."""
+    open_t, close_t = facts.get("open_time"), facts.get("close_time")
+    if not open_t or not close_t or facts.get("is_sunday") or facts.get("is_holiday"):
+        return None
+    if facts.get("weather_hint"):
+        return False
+    now = when or datetime.now(HK_TZ)
+    dt = facts.get("datetime")
+    if dt is not None:
+        try:
+            same_day = dt.astimezone(HK_TZ).date() == now.astimezone(HK_TZ).date()
+        except Exception:
+            same_day = True
+        if not same_day:
+            return None
+    cur = now.astimezone(HK_TZ).time()
+    return open_t <= cur < close_t
+
+
+def format_opening_live_doc(
+    facts: Dict[str, Any],
+    *,
+    answer: str = "",
+    message: str = "",
+) -> str:
+    """
+    Deterministic privileged LIVE/CARD summary for grounded compose.
+
+    Always includes calendar · Sunday · HKO check outcomes and the open/closed
+    decision — even when every check is clear (previously live_doc was empty).
+    """
+    dt = facts.get("datetime")
+    L = facts.get("lang") or "en"
+    dbg = facts.get("parse_debug") or {}
+    try:
+        dt_s = dt.astimezone(HK_TZ).strftime("%Y-%m-%d %H:%M %Z") if hasattr(dt, "astimezone") else str(dt)
+        date_h = _fmt_date_human(dt, L) if hasattr(dt, "weekday") else str(dt)
+    except Exception:
+        dt_s = str(dt)
+        date_h = str(dt)
+
+    weather_checked = bool(
+        dbg.get("weather_checked")
+        or dbg.get("weather_resolved_same_day")
+    )
+    if facts.get("weather_hint"):
+        hko_line = f"HKO severe-weather: SIGNAL — {facts['weather_hint']}"
+    elif weather_checked:
+        hko_line = "HKO severe-weather: checked · clear (no Black Rain / T8+ / Pre-T8)"
+    elif dbg.get("weather_same_day_only"):
+        hko_line = "HKO severe-weather: skipped · resolved date is not today (same-day only)"
+    else:
+        hko_line = "HKO severe-weather: not run"
+
+    if facts.get("is_holiday"):
+        hol = facts.get("holiday_name") or "public holiday"
+        cal_line = f"HK public holiday: YES — {hol}"
+    else:
+        cal_line = "HK public holiday: no"
+
+    if facts.get("is_sunday"):
+        sun_line = "Sunday closed check: YES — centre closed"
+    else:
+        sun_line = "Sunday closed check: no"
+
+    open_t, close_t = facts.get("open_time"), facts.get("close_time")
+    if open_t and close_t and not facts.get("is_holiday") and not facts.get("is_sunday"):
+        window_line = f"Weekday/Sat window: {_fmt_time(open_t)}–{_fmt_time(close_t)}"
+    elif facts.get("is_sunday") or facts.get("is_holiday"):
+        window_line = "Weekday/Sat window: n/a (closed day)"
+    else:
+        window_line = "Weekday/Sat window: unknown"
+
+    within = _within_open_window(facts)
+    if within is True:
+        clock_line = "Clock vs window: WITHIN open hours (open now)"
+    elif within is False and facts.get("weather_hint"):
+        clock_line = "Clock vs window: closed by severe weather"
+    elif within is False:
+        clock_line = "Clock vs window: OUTSIDE open hours (closed now)"
+    else:
+        clock_line = "Clock vs window: n/a (not a same-day open-now check)"
+
+    if facts.get("weather_hint"):
+        decision = f"CLOSED — severe weather ({facts['weather_hint']})"
+    elif facts.get("is_holiday"):
+        decision = f"CLOSED — public holiday ({facts.get('holiday_name') or 'holiday'})"
+    elif facts.get("is_sunday"):
+        decision = "CLOSED — Sunday"
+    elif within is False:
+        decision = "CLOSED — outside today's open window"
+    elif within is True:
+        decision = "OPEN — within today's window"
+    elif open_t and close_t:
+        decision = f"OPEN day — hours {_fmt_time(open_t)}–{_fmt_time(close_t)}"
+    else:
+        decision = "UNRESOLVED"
+
+    lines = [
+        "OPENING HOURS LIVE CHECKS (authoritative — do not contradict):",
+        f"Resolved datetime: {dt_s} ({date_h})",
+        cal_line,
+        sun_line,
+        hko_line,
+        window_line,
+        clock_line,
+        f"Decision: {decision}",
+    ]
+    if answer:
+        lines.append(f"Deterministic parent fact:\n{answer.strip()}")
+    if message and _is_open_now_query(message):
+        lines.append("Parent asked open-now — prefer the Decision line above.")
+    return "\n".join(lines)
+
 def compute_opening_answer(message: str, lang: Optional[str] = None, brief: bool = False, is_general: bool = False) -> str:
     """
     Deterministic opening-hours answer using a unified facts object.
@@ -805,10 +934,41 @@ def compute_opening_answer(message: str, lang: Optional[str] = None, brief: bool
     # --- Priority 4: Regular Open Day ---
     if facts["open_time"] and facts["close_time"]:
         open_str, close_str = _fmt_time(facts["open_time"]), _fmt_time(facts["close_time"])
-        if L == "zh-HK": base = f"{date_h} 中心開放，時間為 {open_str}–{close_str}。"
-        elif L == "zh-CN": base = f"{date_h} 中心开放，时间为 {open_str}–{close_str}。"
-        else: base = f"The center is open on {date_h}. Hours are {open_str}–{close_str}."
-        if facts["is_general_query"] and not facts["asked_specific_time"]: base += f"\n{canonical_line()}"
+        within = _within_open_window(facts)
+        open_now_q = _is_open_now_query(message)
+        if open_now_q and within is True:
+            if L == "zh-HK":
+                base = f"而家中心開放緊，今日（{date_h}）時間係 {open_str}–{close_str}。"
+            elif L == "zh-CN":
+                base = f"中心现在开放，今天（{date_h}）时间为 {open_str}–{close_str}。"
+            else:
+                base = (
+                    f"Yes — we're open right now. Today ({date_h}) "
+                    f"hours are {open_str}–{close_str}."
+                )
+        elif open_now_q and within is False:
+            if L == "zh-HK":
+                base = (
+                    f"而家中心已休息。今日（{date_h}）開放時間係 {open_str}–{close_str}。"
+                )
+            elif L == "zh-CN":
+                base = (
+                    f"中心现在已休息。今天（{date_h}）开放时间是 {open_str}–{close_str}。"
+                )
+            else:
+                base = (
+                    f"We're closed right now. Today ({date_h}) hours are "
+                    f"{open_str}–{close_str}."
+                )
+        else:
+            if L == "zh-HK":
+                base = f"{date_h} 中心開放，時間為 {open_str}–{close_str}。"
+            elif L == "zh-CN":
+                base = f"{date_h} 中心开放，时间为 {open_str}–{close_str}。"
+            else:
+                base = f"The center is open on {date_h}. Hours are {open_str}–{close_str}."
+        if facts["is_general_query"] and not facts["asked_specific_time"]:
+            base += f"\n{canonical_line()}"
         return base
 
     # --- Fallback (should be rare) ---

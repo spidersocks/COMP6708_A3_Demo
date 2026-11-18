@@ -24,7 +24,11 @@ from llm.hours_intent import (
     recent_was_hours,
 )
 from llm.lang import explain_language_code, get_language_code
-from llm.opening_hours import _get_opening_facts, compute_opening_answer
+from llm.opening_hours import (
+    _get_opening_facts,
+    compute_opening_answer,
+    format_opening_live_doc,
+)
 from rag.generator import adapt_structured_fact, compose_grounded_fact
 from rag.pipeline import chat_with_rag, is_greeting, retrieve_for_enrich
 from services import admin_todos
@@ -241,11 +245,17 @@ def _attach_data_sources(
             _add("hours_calendar", "read", "today window alongside weather policy")
     elif rn in {"opening_hours", "deterministic_opening_hours"}:
         _add("hours_calendar", "read", "weekday / holiday / open-now engine")
-        if oh.get("weather_hint") or live_doc:
-            _add("hko_opendata", "read", str(oh.get("weather_hint") or "live signal"))
-        else:
-            # Hours engine attempts same-day HKO; clear = no severe signal.
+        dbg = oh.get("parse_debug") or {}
+        if oh.get("weather_hint"):
+            _add("hko_opendata", "read", str(oh.get("weather_hint")))
+        elif dbg.get("weather_checked") or dbg.get("weather_resolved_same_day"):
             _add("hko_opendata", "checked_clear", "same-day HKO · no severe signal")
+        else:
+            _add(
+                "hko_opendata",
+                "skipped",
+                "not same-day (live HKO is today-only)",
+            )
     elif rn == "booking_tool":
         _add(
             "class_register_csv",
@@ -282,7 +292,8 @@ def _attach_data_sources(
         )
         _add("bm25_index", "enrich" if rn not in {"rag", "off_domain"} else "read", "channel pack")
 
-    if live_doc and "HKO" in live_doc:
+    # Only treat as an HKO "read" when a closure signal is present in the live doc.
+    if live_doc and re.search(r"HKO.*SIGNAL|Live HKO severe", live_doc, re.I):
         _add("hko_opendata", "read", "privileged live weather doc")
     if live_doc and "REGISTER" in live_doc.upper():
         _add("class_register_csv", "read", "privileged live register doc")
@@ -1041,18 +1052,30 @@ def chat(req: ChatRequest) -> ChatResponse:
                 ),
             )
         )
+        live_hours = format_opening_live_doc(
+            facts,
+            answer=answer,
+            message=hours_msg,
+        )
         trace["opening_hours"] = {
             "effective_message": hours_msg,
             "is_general": general,
             "facts": _serialize_hours_facts(facts),
+            "live_doc": live_hours,
+            "decision": (
+                "weather"
+                if facts.get("weather_hint")
+                else (
+                    "holiday"
+                    if facts.get("is_holiday")
+                    else (
+                        "sunday"
+                        if facts.get("is_sunday")
+                        else "open_window"
+                    )
+                )
+            ),
         }
-        live_hours = ""
-        wh = facts.get("weather_hint")
-        if wh:
-            live_hours = (
-                f"Live HKO severe-weather note for the resolved date:\n{wh}\n\n"
-                "Combine with the opening-hours card; do not invent a different signal."
-            )
         return _fact_response(
             route_name="deterministic_opening_hours",
             answer=answer,
