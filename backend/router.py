@@ -137,6 +137,9 @@ def _serialize_hours_facts(facts: Dict[str, Any]) -> Dict[str, Any]:
     holiday_name = facts.get("holiday_name")
     weather_hint = facts.get("weather_hint")
     weather_applied = bool(dbg.get("weather_applied"))
+    weather_checked = bool(dbg.get("weather_checked"))
+    if not weather_checked and "weather_resolved_same_day" in dbg:
+        weather_checked = bool(dbg.get("weather_resolved_same_day"))
     same_day_only = bool(dbg.get("weather_same_day_only"))
     # Explicit inspector rows: what we checked and what we found
     checks: List[Dict[str, Any]] = [
@@ -165,21 +168,21 @@ def _serialize_hours_facts(facts: Dict[str, Any]) -> Dict[str, Any]:
         {
             "id": "hko_weather",
             "label": "HKO severe-weather check (live)",
-            "checked": weather_applied or same_day_only,
+            "checked": weather_checked or weather_applied,
             "passed": bool(weather_hint),
             "detail": (
                 f"Live signal applied: {weather_hint}"
                 if weather_hint
                 else (
-                    "Checked for today — no Black Rain / T8+ / Pre-T8 closure active"
-                    if weather_applied
+                    "Checked live HKO for today — no Black Rain / T8+ / Pre-T8 closure"
+                    if weather_checked
                     else (
                         "Skipped — resolved date is not today "
                         "(live HKO is same-day only; future dates do not inherit tonight’s signal)"
                         if same_day_only
                         else "Weather check disabled or not run"
                     )
-                ),
+                )
             ),
         },
     ]

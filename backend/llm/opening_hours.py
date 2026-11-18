@@ -696,15 +696,21 @@ def _get_opening_facts(message: str, lang: Optional[str] = None, is_general: boo
     parse_debug["is_fallback_to_now"] = (dt is None)
 
     # --- Post-processing and Fact Assembly ---
-    # Improvement: only attach live HKO severe-weather closures when the resolved
-    # date is today. Future dates (e.g. Christmas) should not inherit tonight's T8.
+    # Live HKO only for the resolved calendar day == today. Future dates
+    # (e.g. Christmas) must not inherit tonight's T8. Track checked vs applied
+    # separately — a clear day still means the live call ran.
     weather_hint = None
+    weather_checked = False
+    same_day = False
     if SETTINGS.opening_hours_weather_enabled:
         same_day = final_dt.astimezone(HK_TZ).date() == now.astimezone(HK_TZ).date()
         if same_day:
+            weather_checked = True
             weather_hint = get_weather_hint_for_opening(L)
-        parse_debug['weather_applied'] = bool(weather_hint)
-        parse_debug['weather_same_day_only'] = True
+        parse_debug["weather_checked"] = weather_checked
+        parse_debug["weather_applied"] = bool(weather_hint)
+        parse_debug["weather_same_day_only"] = True
+        parse_debug["weather_resolved_same_day"] = same_day
     open_t, close_t = _dow_window(final_dt.weekday())
     
     # If we resolved a date but don't have a holiday reason yet, check if it's a holiday.
