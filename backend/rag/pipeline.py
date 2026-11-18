@@ -812,25 +812,34 @@ def _retrieval_debug_fields(corr: Dict[str, Any], *, message: str) -> Dict[str, 
     pass1_hits = _pack_citations(pass1)
     pass2_hits = _pack_citations(pass2) if pass2 else []
     final_hits = _pack_citations(pack)
-    # Prefer the retrieve pack that was kept for generation
-    hybrid = (pack.get("hybrid") if isinstance(pack, dict) else None) or pass1.get(
-        "hybrid"
+    hybrid_pass1 = pass1.get("hybrid") if isinstance(pass1, dict) else None
+    hybrid_pass2 = (
+        pass2.get("hybrid") if isinstance(pass2, dict) and pass2 else None
+    )
+    # Prefer the retrieve pack that was kept for generation (back-compat)
+    hybrid = (pack.get("hybrid") if isinstance(pack, dict) else None) or hybrid_pass1
+    retried = bool(rewrite.get("retried"))
+    kept = rewrite.get("kept") or (
+        "pass2" if retried and pack is pass2 else "pass1"
     )
     return {
         "pass1_query": message,
         "pass1_hits": pass1_hits,
         "pass1_hit_count": len(pass1_hits),
         "pass2_query": (rewrite.get("pass2_query") or rewrite.get("query"))
-        if rewrite.get("retried")
+        if retried
         else None,
         "pass2_hits": pass2_hits or None,
         "pass2_hit_count": len(pass2_hits) if pass2_hits else 0,
-        "final_pass": rewrite.get("kept")
-        or ("pass2" if rewrite.get("retried") and pack is pass2 else "pass1"),
+        "final_pass": kept,
         "retrieval_query": pack.get("query") or message,
         "query_rewrite": rewrite,
         "retrieval_grade": corr["grade"],
         "hybrid": hybrid,
+        # Per-pass channel pools so the inspector can tab Pass 1 vs Pass 2
+        # without mixing the rewritten query with pass-1 dense/sparse rows.
+        "hybrid_pass1": hybrid_pass1,
+        "hybrid_pass2": hybrid_pass2,
         "retrieve_mode": (hybrid or {}).get("mode") or "dense_only",
         "hits": final_hits,
     }
