@@ -399,7 +399,13 @@ def get_week_schedule(*, days: int = 7, lang: str = "en") -> Dict[str, Any]:
             start_dt = datetime(d.year, d.month, d.day, hour, minute, tzinfo=HK_TZ)
             iso = start_dt.isoformat()
             enrolled = list(tmpl.get("enrolled") or [])
-            chat_rows = sheets.list_chat_bookings(tmpl["course_key"], iso)
+            # Scope by teacher/session — never attach Priya's book to Tom's same clock
+            chat_rows = sheets.list_chat_bookings(
+                tmpl["course_key"],
+                iso,
+                teacher_id=tmpl.get("teacher_id"),
+                session_id=tmpl.get("id"),
+            )
             chat_extra = len(chat_rows)
             # Merge chat bookings into the roster so the calendar shows names
             roster = list(enrolled)
@@ -453,7 +459,12 @@ def get_week_schedule(*, days: int = 7, lang: str = "en") -> Dict[str, Any]:
             if start_dt.date() == now.date() and start_dt <= now:
                 continue
             iso = start_dt.isoformat()
-            chat_rows = sheets.list_chat_bookings("trial", iso)
+            chat_rows = sheets.list_chat_bookings(
+                "trial",
+                iso,
+                teacher_id=tmpl.get("teacher_id"),
+                session_id=tmpl.get("id"),
+            )
             chat_extra = len(chat_rows)
             roster = [
                 {

@@ -568,11 +568,16 @@ def chat(req: ChatRequest) -> ChatResponse:
         except Exception:
             fam = {}
 
-        # Sentinel new-parent number must not inherit Sean/David from a prior book.
+        # Demo blank WhatsApp: live dialogue names beat sheet; never trust sticky
+        # request-body hints (that re-injected David after profile switches).
         if families.is_demo_blank_parent(phone):
             st = dialogue_svc.get_state(session_id) or {}
-            p = (st.get("parent_name") or "").strip()
+            p = (st.get("parent_name") or "").strip() or (fam.get("parent_name") or "")
             c = (st.get("child_name") or "").strip()
+            if not c:
+                kids = fam.get("children") or []
+                if len(kids) == 1:
+                    c = kids[0].get("child_name") or ""
             return p, c
 
         p = parent_name or fam.get("parent_name") or ""

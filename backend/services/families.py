@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Optional
 
 from services import schedule_sheets as sheets
 
-# Demo UI "New parent" WhatsApp — must stay unmatched forever. Writing Sean/David
-# onto this number made Reset useless: every later escalation/todo inherited them.
+# Demo UI "New parent" WhatsApp. Rows may be written after a real booking; Reset
+# must clear them via clear_demo_blank_parent_families() so the next run starts blank.
 DEMO_BLANK_PARENT_PHONES = frozenset({"85290009999"})
 
 
@@ -30,9 +30,6 @@ def _read_families() -> List[Dict[str, str]]:
 
 
 def list_family_by_phone(phone: str) -> Dict[str, Any]:
-    # Sentinel demo number is never "on file", even if a stale row exists.
-    if is_demo_blank_parent(phone):
-        return {"phone": phone, "parent_name": "", "children": [], "matched": False}
     want = _norm_phone(phone)
     rows = [r for r in _read_families() if _norm_phone(r.get("phone", "")) == want]
     if not rows:
@@ -74,9 +71,8 @@ def ensure_family_on_sheet(
     child_s = (child_name or "").strip()
     if not phone_s or not child_s:
         return False
-    # Never promote the blank demo parent onto the roster sheet.
-    if is_demo_blank_parent(phone_s):
-        return False
+    # Demo New Parent may be written once a real booking supplies names.
+    # Reset still clears those rows via clear_demo_blank_parent_families().
     want = _norm_phone(phone_s)
     sheets.seed_sheets_if_needed()
     path = sheets.sheets_dir() / "families.csv"

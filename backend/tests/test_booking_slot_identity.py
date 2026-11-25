@@ -27,6 +27,78 @@ def test_slot_identity_distinguishes_teachers():
     assert booking_svc.slot_identity(a) != booking_svc.slot_identity(b)
 
 
+def test_week_schedule_scopes_chat_books_by_teacher(monkeypatch):
+    """Priya Fri 17:00 book must not appear on Tom's Fri 17:00 trial card."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from services import schedule_sheets as sheets
+
+    hk = ZoneInfo("Asia/Hong_Kong")
+    fri = datetime(2026, 11, 27, 17, 0, tzinfo=hk).isoformat()
+    calls = []
+
+    def _scoped(course_key, slot_start_iso, teacher_id=None, session_id=None):
+        calls.append(
+            {
+                "course_key": course_key,
+                "slot_start": slot_start_iso,
+                "teacher_id": teacher_id,
+                "session_id": session_id,
+            }
+        )
+        if (
+            course_key == "trial"
+            and slot_start_iso == fri
+            and teacher_id == "priya"
+            and session_id == "tr-fri-1700"
+        ):
+            return [
+                {
+                    "id": "e61e8918",
+                    "child": "Steven Fontaine",
+                    "parent": "Sean Fontaine",
+                    "phone": "+85290009999",
+                    "teacher_id": "priya",
+                    "session_id": "tr-fri-1700",
+                    "via": "chat",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(sheets, "list_chat_bookings", _scoped)
+
+    class _DT(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 27, 9, 0, tzinfo=tz or hk)
+
+    monkeypatch.setattr(booking_svc, "datetime", _DT)
+
+    week = booking_svc.get_week_schedule(days=1, lang="en")
+    fri_sessions = week["days"][0]["sessions"]
+    trials_1700 = [
+        s
+        for s in fri_sessions
+        if s.get("course_key") == "trial" and str(s.get("slot_start") or "").startswith("2026-11-27T17:00")
+    ]
+    assert len(trials_1700) >= 2
+    by_teacher = {s["teacher_id"]: s for s in trials_1700}
+    assert "priya" in by_teacher and "tom" in by_teacher
+    priya_kids = [e.get("child") for e in by_teacher["priya"].get("enrolled") or []]
+    tom_kids = [e.get("child") for e in by_teacher["tom"].get("enrolled") or []]
+    assert "Steven Fontaine" in priya_kids
+    assert "Steven Fontaine" not in tom_kids
+    # Calendar must ask list_chat_bookings with teacher+session, not bare timestamp
+    scoped = [
+        c
+        for c in calls
+        if c["course_key"] == "trial" and c["slot_start"] == fri
+    ]
+    assert scoped
+    assert all(c.get("teacher_id") and c.get("session_id") for c in scoped)
+
+
 def test_friday_1700_lists_both_teachers_not_duplicate(monkeypatch):
     sid = "test-fri-" + uuid.uuid4().hex[:8]
     phone = "+85290005555"
