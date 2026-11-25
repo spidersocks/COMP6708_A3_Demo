@@ -106,8 +106,9 @@ const LAYOUT = {
   fuse: { x: 370, y: 730, w: 176, h: 56, shape: "process" },
   grade: { x: 370, y: 850, w: 160, h: 48, shape: "rule" },
   rewrite: { x: 370, y: 950, w: 152, h: 48, shape: "llm" },
-  llm: { x: 60, y: 1050, w: 156, h: 52, shape: "llm" },
-  answer: { x: 60, y: 1160, w: 156, h: 42, shape: "terminal" },
+  // Sit under the RAG column so rewrite/grade → generate → answer stays one spine
+  llm: { x: 370, y: 1080, w: 168, h: 52, shape: "llm" },
+  answer: { x: 370, y: 1195, w: 168, h: 42, shape: "terminal" },
 };
 
 /** Corridor X between FSM column and centre (FSM/DST → LLM). */
@@ -154,7 +155,7 @@ const EDGES = [
   { id: "e-sheets-answer", from: "sheets", to: "answer" },
 ];
 
-const WORLD = { minX: -620, minY: -28, maxX: 660, maxY: 1240 };
+const WORLD = { minX: -620, minY: -28, maxX: 660, maxY: 1280 };
 /** Default Fit: top of the spine (parent → router), not the whole flowchart. */
 const FIT_FOCUS = { minX: -300, minY: -24, maxX: 300, maxY: 460 };
 const MIN_ZOOM = 0.5;
@@ -699,13 +700,13 @@ function edgeGeometry(fromId, toId) {
   } else if (fromId === "grade" && toId === "rewrite") {
     pts = [nodeAnchor("grade", "bottom"), nodeAnchor("rewrite", "top")];
   } else if (fromId === "grade" && toId === "llm") {
-    const s = nodeAnchor("grade", "bottom");
-    const e = nodeAnchor("llm", "right");
-    pts = [s, { x: s.x, y: e.y }, e];
+    // Enough grade → generate: skirt left of Rewrite when that node is idle
+    const s = nodeAnchor("grade", "left");
+    const e = nodeAnchor("llm", "left");
+    const x = Math.min(s.x, e.x) - 40;
+    pts = [s, { x, y: s.y }, { x, y: e.y }, e];
   } else if (fromId === "rewrite" && toId === "llm") {
-    const s = nodeAnchor("rewrite", "bottom");
-    const e = nodeAnchor("llm", "right");
-    pts = [s, { x: s.x, y: e.y }, e];
+    pts = [nodeAnchor("rewrite", "bottom"), nodeAnchor("llm", "top")];
   } else if (fromId === "rewrite" && toId === "rag") {
     // Far-right return — clear of Sparse (never under its cylinder)
     const s = nodeAnchor("rewrite", "right");
@@ -3149,14 +3150,24 @@ function NodeDetail({
         path === "fsm" &&
         llmCalls.some((c) => DST_LLM_ROLES.has(c.role)) &&
         genCalls.length === 0;
+      const extractiveRag =
+        (path === "rag" || enrichMode) &&
+        genCalls.length === 0 &&
+        Boolean(answer || hits.length);
       return (
         <>
-          <p className="bn-rules-hint">Parent-facing generate · DashScope.</p>
+          <p className="bn-rules-hint">
+            {extractiveRag
+              ? "Parent-facing answer · extractive fallback (no DashScope generate)."
+              : "Parent-facing generate · DashScope."}
+          </p>
           {genCalls.length === 0 ? (
             <Skipped>
-              {dstOnly
-                ? "No parent-facing LLM — see DST for slot JSON."
-                : "No LLM call (template / deterministic)."}
+              {extractiveRag
+                ? "Retrieval ran; answer was built from the top packed chunk locally (see Parent answer + citations)."
+                : dstOnly
+                  ? "No parent-facing LLM — see DST for slot JSON."
+                  : "No LLM call (template / deterministic)."}
             </Skipped>
           ) : (
             <div className="bn-llm-calls">
@@ -3851,10 +3862,20 @@ export default function TurnPipeline({
       },
       {
         id: "llm",
-        label: "LLM (DashScope)",
+        label:
+          genN > 0
+            ? "LLM (DashScope)"
+            : path === "rag" || enrichMode
+              ? "Generate · extractive"
+              : "LLM (DashScope)",
         kind: "llm",
         shape: "llm",
-        status: !hasTrace ? "idle" : genN ? "done" : "skipped",
+        // RAG always lands here (DashScope or local extractive) — never orphan Parent answer
+        status: !hasTrace
+          ? "idle"
+          : genN > 0 || path === "rag" || enrichMode
+            ? "done"
+            : "skipped",
       },
       {
         id: "sheets",
@@ -3975,14 +3996,15 @@ export default function TurnPipeline({
       if (hits.length || enrichMode) lightRetrieve();
     } else if (path === "rag") {
       lightRetrieve();
+      // Retrieve → (optional rewrite) → generate → Parent answer — always
+      lit.add("llm");
       if (adminTodo) lit.add("sheets");
     }
     if (llmCalls.some((c) => isMainLlmCall(c))) lit.add("llm");
-    // Grade enough with no rewrite still feeds generate
+    // Live enrich / grade-enough still feed the generate node
     if (
       lit.has("grade") &&
-      !lit.has("rewrite") &&
-      llmCalls.some((c) => isMainLlmCall(c))
+      (llmCalls.some((c) => isMainLlmCall(c)) || enrichMode)
     ) {
       lit.add("llm");
     }
@@ -4064,6 +4086,7 @@ export default function TurnPipeline({
     if (on("grade") && on("rewrite")) {
       link("grade", "rewrite", "e-grade-rewrite");
     }
+    // Enough → generate directly; weak → rewrite then generate (after optional 2nd retrieve)
     if (on("grade") && on("llm") && !on("rewrite")) {
       link("grade", "llm", "e-grade-llm");
     }
@@ -4074,12 +4097,12 @@ export default function TurnPipeline({
     if (on("rewrite") && on("llm")) {
       link("rewrite", "llm", "e-rewrite-llm");
     }
-    // Live docs join at DashScope compose — not Channel pack (pack is KB enrich only).
+    // Live docs join at generate — not Channel pack (pack is KB enrich only).
     if (on("live") && on("llm")) {
       link("live", "llm", "e-live-llm");
     }
-    if (on("llm")) link("llm", "answer", "e-llm-answer");
-    if (on("sheets")) link("sheets", "answer", "e-sheets-answer");
+    if (on("llm") && on("answer")) link("llm", "answer", "e-llm-answer");
+    if (on("sheets") && on("answer")) link("sheets", "answer", "e-sheets-answer");
     return lit;
   }, [
     trace,
@@ -4173,8 +4196,9 @@ export default function TurnPipeline({
         ? "2nd retrieve · same KB"
         : "",
       "e-rewrite-llm": rag?.query_rewrite?.retried
-        ? `kept ${rag?.final_pass || rag?.query_rewrite?.kept || "pass2"}`
-        : "",
+        ? `kept ${rag?.final_pass || rag?.query_rewrite?.kept || "pass2"} → generate`
+        : "→ generate",
+      "e-llm-answer": "parent reply",
       "e-live-llm":
         path === "live" || liveOn || enrichMode ? "facts → generate" : "",
     };
