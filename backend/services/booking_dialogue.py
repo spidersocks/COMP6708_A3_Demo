@@ -45,9 +45,27 @@ _TRYOUT_RE = re.compile(
     r")",
     re.I,
 )
-# Abort the *booking chat* — not "cancel my class" (that belongs to cancel_dialogue)
+# Abort the *booking chat* — not "cancel my Tuesday class" (cancel_dialogue)
 _ABORT_RE = re.compile(
-    r"\b(never\s*mind|forget\s+it|stop\s+booking|cancel\s+booking|算了|唔使啦)\b",
+    r"("
+    r"\b(never\s*mind|forget\s+it|stop\s+booking|changed\s+my\s+mind|"
+    r"not\s+interested|no\s+longer\s+want|"
+    r"cancel\s+(?:the\s+)?booking|cancel\s+that|"
+    r"don'?t\s+want\s+to(?:\s+\w+){0,4}\s+anymore|"
+    r"don'?t\s+want\s+(?:to\s+)?(?:book|anymore)|"
+    r"don'?t\s+bother)\b|"
+    r"算了|唔使啦|先唔好|不要了|不约了|不約了"
+    r")",
+    re.I,
+)
+# FAQ / programme explainer — must not count as booking refine just because
+# the sentence names "phonics" while sticky identity is open.
+_INFO_ASK_RE = re.compile(
+    r"("
+    r"\b(tell\s+me\s+about|what\s+(?:is|are)|how\s+(?:does|do)|"
+    r"explain|describe|info(?:rmation)?\s+on|details?\s+(?:on|about)|"
+    r"can\s+you\s+(?:tell|explain|describe))\b"
+    r")",
     re.I,
 )
 # Leave booking and answer via RAG / admin-gap instead
@@ -268,8 +286,27 @@ def is_affirmative(text: str) -> bool:
     return bool(_AFFIRM_RE.match((text or "").strip()))
 
 
+def is_booking_abort(text: str) -> bool:
+    """Parent is abandoning the in-progress booking chat (not cancelling a held class)."""
+    return bool(_ABORT_RE.search(text or ""))
+
+
+def _is_info_ask(text: str) -> bool:
+    return bool(_INFO_ASK_RE.search(text or ""))
+
+
 def _is_booking_refine(text: str) -> bool:
     """Signals that should stay inside the booking dialogue."""
+    # "Tell me about phonics" is FAQ, not a booking slot refine.
+    if (
+        _is_info_ask(text)
+        and not is_booking_request(text)
+        and not _has_slot_pick_signal(text)
+        and not _parse_when(text)
+        and not _detect_teacher(text)
+        and not _parse_identity(text)
+    ):
+        return False
     if _detect_course(text) or _detect_teacher(text) or _parse_when(text):
         return True
     if _named_english_programme(text):
@@ -295,11 +332,20 @@ def should_yield_to_rag(session_id: str, text: str) -> bool:
     A fresh turn is not ejected here. Detectors and the action policy already
     chose booking; a word like "holiday" or "fee" inside that sentence must
     not bounce it back to RAG. Keywords only interrupt a dialogue that is open.
+
+    Abandon phrases stay *inside* booking so handle_turn can clear state with a
+    polite stop — they must not yield-to-RAG (or cancel) first.
     """
     st = get_state(session_id)
     active = bool(st and st.get("stage") and st.get("stage") != "done")
     if not active:
         return bool(unknown_programme(text))
+    # Let handle_turn abort cleanly — do not eject to RAG/cancel mid-clear.
+    if is_booking_abort(text):
+        return False
+    # Programme FAQ while sticky ("tell me about phonics") → leave for RAG
+    if _is_info_ask(text) and not is_booking_request(text) and not _parse_identity(text):
+        return True
     # Still a booking act — stay, even if the sentence also mentions fees/holiday.
     if is_booking_request(text) or _is_booking_refine(text):
         return False
@@ -929,13 +975,13 @@ def handle_turn(
         if tryout or course_hint == "trial":
             state["course_key"] = "trial"
 
-    if _ABORT_RE.search(text):
+    if is_booking_abort(text):
         clear_state(session_id)
         return {
             "answer": "No problem — I've stopped the booking chat. Say if you'd like to start again.",
             "slots": None,
             "provider": "booking_dialogue",
-            "trace_booking": {"stage": "cancelled"},
+            "trace_booking": {"stage": "cancelled", "reason": "parent_abort"},
             "state": None,
         }
 
@@ -1066,6 +1112,39 @@ def handle_turn(
             dst["regex_when"] = when_bits or {}
             state["arbiter_booking"] = dst
             state["booking_dst"] = dst
+            # Cheap LLM says sticky booking is no longer appropriate
+            if dst.get("ok") and dst.get("continue_booking") is False:
+                clear_state(session_id)
+                # FAQ / off-topic → yield so router can RAG; pure abandon → stop chat
+                if _is_info_ask(text) or _OFF_TOPIC_RE.search(text or "") or unknown_programme(text):
+                    return {
+                        "answer": "",
+                        "slots": None,
+                        "provider": "booking_dialogue",
+                        "yield_to_rag": True,
+                        "trace_booking": {
+                            "stage": "yield_to_rag",
+                            "reason": "dst_exit_booking",
+                            "booking_dst": dst,
+                            "steps": steps + ["dst_exit"],
+                        },
+                        "state": None,
+                    }
+                return {
+                    "answer": (
+                        "No problem — I've stopped the booking chat. "
+                        "Say if you'd like to start again."
+                    ),
+                    "slots": None,
+                    "provider": "booking_dialogue",
+                    "trace_booking": {
+                        "stage": "cancelled",
+                        "reason": "dst_exit_booking",
+                        "booking_dst": dst,
+                        "steps": steps + ["dst_exit"],
+                    },
+                    "state": None,
+                }
             if dst.get("ok"):
                 filled = dst.get("filled") or {}
                 if (

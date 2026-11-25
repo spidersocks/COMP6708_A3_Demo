@@ -138,8 +138,12 @@ def score_intents(
             why="centre_facts.is_severe_weather_intent · fixed 1.0 hard veto",
         )
 
+    dialogue_active = dialogue_svc.is_active(session_id)
+    booking_abort = dialogue_active and dialogue_svc.is_booking_abort(message)
     cancel_active = cancel_svc.is_active(session_id)
-    if cancel_active or cancel_svc.is_cancel_request(message):
+    # Mid-booking "cancel that" / "don't want anymore" is abandon-book, not cancel-class
+    fresh_cancel = cancel_svc.is_cancel_request(message) and not booking_abort
+    if cancel_active or fresh_cancel:
         _award(
             "cancel_dialogue",
             0.95,
@@ -153,9 +157,10 @@ def score_intents(
         debug["cancel_active"] = cancel_active
 
     leave_booking = dialogue_svc.should_yield_to_rag(session_id, message)
-    dialogue_active = dialogue_svc.is_active(session_id)
     if leave_booking and dialogue_active:
         debug["left_booking"] = True
+    if booking_abort:
+        debug["booking_abort"] = True
 
     dialogue_hit = (
         (not leave_booking)
@@ -620,7 +625,9 @@ def _build_rules_evaluated(
     leave_booking = dialogue_svc.should_yield_to_rag(session_id, message)
     dialogue_active = dialogue_svc.is_active(session_id)
     cancel_active = cancel_svc.is_active(session_id)
-    cancel_request = cancel_svc.is_cancel_request(message)
+    cancel_request = cancel_svc.is_cancel_request(message) and not (
+        dialogue_active and dialogue_svc.is_booking_abort(message)
+    )
     structured_owner = [
         k
         for k in _PRIORITY

@@ -35,6 +35,57 @@ def test_fresh_holiday_signup_is_not_ejected():
     assert bd.should_yield_to_rag(sid, "Book the holiday class this week") is False
 
 
+def test_abandon_mid_identity_stops_booking_not_cancel():
+    sid = "abandon-" + uuid.uuid4().hex[:8]
+    bd.save_state(
+        sid,
+        {
+            "stage": "need_identity",
+            "phone": "+85290009999",
+            "parent_name": "",
+            "child_name": "",
+            "course_key": "trial",
+        },
+    )
+    msg = "Actually I don't want to anymore. Cancel that"
+    assert bd.is_booking_abort(msg)
+    assert bd.should_yield_to_rag(sid, msg) is False
+    out = bd.handle_turn(
+        session_id=sid,
+        message=msg,
+        phone="+85290009999",
+        parent_name="",
+        child_name_hint="",
+    )
+    assert (out.get("trace_booking") or {}).get("stage") == "cancelled"
+    assert "stopped the booking" in (out.get("answer") or "").lower()
+    assert "won't cancel" not in (out.get("answer") or "").lower()
+    assert bd.is_active(sid) is False
+    # Must not route to cancel-class dialogue
+    assert (
+        decide_intent(msg, lang="en", session_id=sid).route != "cancel_dialogue"
+    )
+
+
+def test_phonics_faq_yields_out_of_sticky_identity():
+    sid = "faq-" + uuid.uuid4().hex[:8]
+    bd.save_state(
+        sid,
+        {
+            "stage": "need_identity",
+            "phone": "+85290009999",
+            "parent_name": "",
+            "child_name": "",
+            "course_key": "trial",
+        },
+    )
+    msg = "Tell me about your phonics courses"
+    assert bd._is_booking_refine(msg) is False
+    assert bd.should_yield_to_rag(sid, msg) is True
+    d = decide_intent(msg, lang="en", session_id=sid)
+    assert d.route != "booking_dialogue"
+
+
 def test_tryout_is_booking_request():
     assert bd.is_booking_request("Hello I want to try out phonics for my child")
     assert bd.is_tryout_request("I'd love to try a phonics class")

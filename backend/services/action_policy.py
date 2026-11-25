@@ -221,11 +221,14 @@ def classify_turn(
         "(even with no word 'book').\n"
         "availability — they only want the open seat times, not a policy answer. "
         "Waiting lists, fees, and \"is a trial required\" are answer.\n"
-        "cancel — they want to drop, move off, or undo a class already held.\n"
+        "cancel — they want to drop, move off, or undo a class already held on the register. "
+        "Do NOT use cancel for abandoning an in-progress booking chat "
+        "(\"don't want to anymore\", \"cancel that\" with no held class) — that is answer.\n"
         "hours — open/closed times or a specific day's opening, not a class seat.\n"
         "weather — typhoon, rainstorm, or signal and whether class runs.\n"
         "escalate — they want a human, manager, or urgent safety follow-up.\n"
         "A policy question about whether a trial is required is answer, not book.\n"
+        "\"Tell me about phonics/programmes/fees\" is answer, even if a booking chat was open.\n"
         'JSON: {"act":"answer|book|availability|cancel|hours|weather|escalate",'
         '"confidence":0.0,"reason":"short"}\n\n'
         f"{_history_block(history_preview)}"

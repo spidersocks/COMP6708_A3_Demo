@@ -246,6 +246,9 @@ def track_booking_slots(
         "If the parent says they want a programme, put it in course_key (phonics/trial/…) only — "
         "never copy the programme title into child_name. "
         "\"His/Her name is Marcus\" → child_name=Marcus; \"My name is James\" → parent_name=James.\n"
+        "continue_booking: true if they are still booking (giving names, times, yes/confirm). "
+        "false if they abandon (\"don't want anymore\", \"cancel that\" with no held class), "
+        "or ask an unrelated FAQ (\"tell me about phonics\", fees, hours) — then leave slots null.\n"
         "course_key: phonics|mandarin|writing|playgroup|math|trial|null; "
         "weekday 0=Mon..6=Sun|null; window tomorrow|this_week|next_week|null.\n"
         "Return null for any slot the message and recent chat do not support.\n"
@@ -254,7 +257,8 @@ def track_booking_slots(
         f"Still missing (prefer filling these): {miss or ['any stated']}\n"
         f"{('Recent chat:\n' + history_preview.strip()[-600:] + '\n') if (history_preview or '').strip() else ''}"
         'JSON: {"parent_name":..,"child_name":..,"course_key":..,"weekday":..,'
-        '"window":..,"teacher_hint":..,"confidence":0-1,"notes":"short"}\n'
+        '"window":..,"teacher_hint":..,"continue_booking":true|false,'
+        '"confidence":0-1,"notes":"short"}\n'
         f"Parent: {message}\n"
     )
     parsed = cheap_llm.complete_json(prompt, max_tokens=140, role="booking_dst")
@@ -274,10 +278,32 @@ def track_booking_slots(
             teacher = None
     parent = _clean_person_slot(parsed.get("parent_name"))
     child = _clean_person_slot(parsed.get("child_name"))
+    cont_raw = parsed.get("continue_booking")
+    if isinstance(cont_raw, bool):
+        continue_booking: Optional[bool] = cont_raw
+    elif isinstance(cont_raw, str) and cont_raw.strip().lower() in {"true", "false"}:
+        continue_booking = cont_raw.strip().lower() == "true"
+    else:
+        continue_booking = None
     try:
         conf = float(parsed.get("confidence") or 0)
     except (TypeError, ValueError):
         conf = 0.0
+    # Explicit exit — even with empty slots / low confidence
+    if continue_booking is False:
+        return {
+            **empty,
+            "called": True,
+            "ok": True,
+            "continue_booking": False,
+            "confidence": conf,
+            "filled": {},
+            "raw": parsed,
+            "reason": "exit_booking",
+            "notes": str(parsed.get("notes") or "")[:160],
+            "missing_asked": miss,
+            "prior": prior_compact,
+        }
     filled = {
         "parent_name": parent,
         "child_name": child,
@@ -293,6 +319,7 @@ def track_booking_slots(
             **empty,
             "called": True,
             "ok": False,
+            "continue_booking": continue_booking,
             "confidence": conf,
             "filled": {},
             "raw": parsed,
@@ -303,6 +330,7 @@ def track_booking_slots(
     return {
         "ok": True,
         "called": True,
+        "continue_booking": True if continue_booking is None else continue_booking,
         "filled": filled,
         "confidence": conf,
         "notes": str(parsed.get("notes") or "")[:160],
