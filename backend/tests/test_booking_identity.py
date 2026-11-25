@@ -38,6 +38,29 @@ def test_new_parent_asks_for_real_names_not_my():
     assert not ((out.get("state") or {}).get("child_name") or "").strip()
 
 
+def test_new_parent_ui_hint_does_not_stick_david():
+    """Demo UI may send a prior resolved child_name; blank WhatsApp must ignore it."""
+    sid = "test-hint-david-" + uuid.uuid4().hex[:8]
+    out = bd.handle_turn(
+        session_id=sid,
+        message="I'd like to book a phonics class",
+        phone="+85290009999",
+        parent_name="",
+        child_name_hint="David",
+    )
+    st = out.get("state") or {}
+    answer = (out.get("answer") or "").lower()
+    assert (st.get("child_name") or "").strip() == ""
+    assert "david" not in answer
+    assert (out.get("trace_booking") or {}).get("stage") in {
+        "need_identity",
+        "need_parent",
+        "need_child",
+        "need_course",
+        "need_when",
+    }
+
+
 def test_parse_identity_kid_possessive():
     got = bd._parse_identity(
         "My name is Jeff. My kid's name is Chester. I want to book a math lesson"

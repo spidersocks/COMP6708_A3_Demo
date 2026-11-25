@@ -412,7 +412,9 @@ def handle_turn(
     known = [c["child_name"] for c in family.get("children") or []]
     mentioned = families.extract_child_mention(text, known)
     if not mentioned and child_name_hint and not state.get("child_name"):
-        mentioned = child_name_hint
+        # Same rule as booking: UI child hint only when this WhatsApp is on families.csv
+        if family.get("matched"):
+            mentioned = child_name_hint
 
     # Cheap-LLM DST when roster/regex did not resolve the child (or course filter)
     cancel_dst: Optional[Dict[str, Any]] = None
@@ -444,7 +446,7 @@ def handle_turn(
         resolved = families.resolve_child(
             phone=state.get("phone") or "",
             mentioned_name=mentioned,
-            fallback_child=child_name_hint,
+            fallback_child=child_name_hint if family.get("matched") else "",
         )
         if not resolved["ok"]:
             names = ", ".join(c["child_name"] for c in resolved.get("candidates") or [])

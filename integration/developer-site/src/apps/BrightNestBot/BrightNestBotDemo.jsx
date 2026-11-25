@@ -43,7 +43,7 @@ const PARENT_PROFILES = [
     id: "jason",
     label: "Existing parent",
     short: "Jason Chan",
-    blurb: "Known family · bookings on file",
+    blurb: "Known family",
     parentName: "Existing Parent",
     childName: "Jason Chan",
     phone: "+852 9000 0000",
@@ -53,7 +53,7 @@ const PARENT_PROFILES = [
     id: "new",
     label: "New parent",
     short: "No child yet",
-    blurb: "Blank WhatsApp · nothing on file",
+    blurb: "Nothing on file",
     parentName: "",
     childName: "",
     phone: "+852 9000 9999",
@@ -63,6 +63,7 @@ const PARENT_PROFILES = [
 
 /** Survives site reload; cleared on Reset so the gate returns only then. */
 const PARENT_PICK_KEY = "bn_parent_picked";
+const SESSION_KEY_LEGACY = "bn_bot_session_id";
 
 function readPickedProfileId() {
   try {
@@ -77,13 +78,63 @@ function profileById(id) {
   return PARENT_PROFILES.find((p) => p.id === id) || PARENT_PROFILES[0];
 }
 
-function getOrCreateSessionId() {
-  let id = localStorage.getItem("bn_bot_session_id");
+function sessionKeyFor(profileId) {
+  return `${SESSION_KEY_LEGACY}:${profileId || "jason"}`;
+}
+
+/** Jason keeps localStorage (reload OK). New parent uses sessionStorage so a
+ *  refresh cannot revive a prior booking identity (e.g. sticky "David"). */
+function sessionStoreFor(profileId) {
+  return profileId === "new" ? sessionStorage : localStorage;
+}
+
+function getOrCreateSessionId(profileId = "jason") {
+  const key = sessionKeyFor(profileId);
+  const store = sessionStoreFor(profileId);
+  let id = null;
+  try {
+    id = store.getItem(key);
+    // Migrate legacy single-key sessions onto the Jason profile once.
+    if (!id && profileId === "jason") {
+      id = localStorage.getItem(SESSION_KEY_LEGACY);
+      if (id) {
+        store.setItem(key, id);
+        localStorage.removeItem(SESSION_KEY_LEGACY);
+      }
+    }
+  } catch {
+    id = null;
+  }
   if (!id) {
     id = "web:" + Math.random().toString(36).slice(2, 10) + Date.now();
-    localStorage.setItem("bn_bot_session_id", id);
+    try {
+      store.setItem(key, id);
+    } catch {
+      /* ignore */
+    }
   }
   return id;
+}
+
+function readSessionId(profileId = "jason") {
+  try {
+    return (
+      sessionStoreFor(profileId).getItem(sessionKeyFor(profileId)) ||
+      (profileId === "jason" ? localStorage.getItem(SESSION_KEY_LEGACY) : null)
+    );
+  } catch {
+    return null;
+  }
+}
+
+function clearAllDemoSessions() {
+  try {
+    localStorage.removeItem(SESSION_KEY_LEGACY);
+    localStorage.removeItem(sessionKeyFor("jason"));
+    sessionStorage.removeItem(sessionKeyFor("new"));
+  } catch {
+    /* ignore */
+  }
 }
 
 function formatTime(d = new Date()) {
@@ -109,8 +160,8 @@ function sheetWhen(iso) {
 
 const mailWhen = sheetWhen;
 
-function shortSessionLabel() {
-  const id = localStorage.getItem("bn_bot_session_id");
+function shortSessionLabel(profileId = readPickedProfileId() || "jason") {
+  const id = readSessionId(profileId);
   if (!id) return "web:new";
   return id.length > 20 ? `${id.slice(0, 18)}…` : id;
 }
@@ -244,6 +295,8 @@ export default function BrightNestBotDemo() {
   );
   const [sessionLabel, setSessionLabel] = useState(() => shortSessionLabel());
   const [trace, setTrace] = useState(null);
+  /** Bumps only when a bot answer lands — drives one camera fit, not every chat append. */
+  const [turnSerial, setTurnSerial] = useState(0);
   const [apiOnline, setApiOnline] = useState(null);
   const [schedule, setSchedule] = useState(null);
   const [scheduleTeacherId, setScheduleTeacherId] = useState("all");
@@ -351,12 +404,28 @@ export default function BrightNestBotDemo() {
     } catch {
       /* ignore */
     }
+    // New parent always starts a clean backend session — never inherit a prior
+    // booking identity (David, etc.) from an earlier demo pass.
+    if (profile.id === "new") {
+      const prev = readSessionId("new");
+      try {
+        sessionStorage.removeItem(sessionKeyFor("new"));
+      } catch {
+        /* ignore */
+      }
+      if (prev) {
+        fetch(`${API_BASE}/chat/history/${encodeURIComponent(prev)}`, {
+          method: "DELETE",
+        }).catch(() => {});
+      }
+    }
     setProfileId(profile.id);
     setParentName(profile.parentName);
     setChildName(profile.childName);
     setPhone(profile.phone);
     setParentGateOpen(false);
-    // Keep chat + session until System Reset — profile only changes who we speak as.
+    setSessionLabel(shortSessionLabel(profile.id));
+    // Keep chat visible until System Reset — identity + session are profile-scoped.
     setError(null);
     refreshFamilies();
     refreshSchedule();
@@ -414,11 +483,12 @@ export default function BrightNestBotDemo() {
   }, [inputMessage]);
 
   function handleReset() {
-    const sid = localStorage.getItem("bn_bot_session_id");
+    const sids = [readSessionId("jason"), readSessionId("new")].filter(Boolean);
     const finish = () => {
       setChatHistory([]);
       setError(null);
       setTrace(null);
+      setTurnSerial(0);
       setAdminTodos([]);
       setStaffMessages([]);
       setSelectedMsgId(null);
@@ -428,33 +498,31 @@ export default function BrightNestBotDemo() {
       setSelectedFamilyPhone(null);
       familiesBaselineRef.current = false;
       setSeenFamilyPhones(new Set());
-      localStorage.removeItem("bn_bot_session_id");
+      clearAllDemoSessions();
       try {
         localStorage.removeItem(PARENT_PICK_KEY);
       } catch {
         /* ignore */
       }
+      setProfileId("jason");
+      setParentName("");
+      setChildName("");
+      setPhone("");
       setParentGateOpen(true);
-      setSessionLabel(shortSessionLabel());
+      setSessionLabel("web:new");
       refreshAdminTodos();
       refreshStaffMessages();
       refreshFamilies({ markSeen: true });
       refreshSchedule();
     };
-    if (sid) {
-      fetch(`${API_BASE}/chat/history/${encodeURIComponent(sid)}`, {
-        method: "DELETE",
-      })
-        .catch(() => {})
-        .finally(finish);
-    } else {
-      // Still clear admin to-dos for a clean demo even without a session id
-      fetch(`${API_BASE}/chat/history/${encodeURIComponent("demo-reset")}`, {
-        method: "DELETE",
-      })
-        .catch(() => {})
-        .finally(finish);
-    }
+    const targets = sids.length ? sids : ["demo-reset"];
+    Promise.all(
+      targets.map((sid) =>
+        fetch(`${API_BASE}/chat/history/${encodeURIComponent(sid)}`, {
+          method: "DELETE",
+        }).catch(() => {})
+      )
+    ).finally(finish);
   }
 
   async function sendMessage(raw) {
@@ -467,7 +535,7 @@ export default function BrightNestBotDemo() {
     setIsLoading(true);
     setError(null);
     setInputMessage("");
-    setSessionLabel(shortSessionLabel());
+    setSessionLabel(shortSessionLabel(profileId));
 
     try {
       const res = await fetch(`${API_BASE}/chat`, {
@@ -475,16 +543,18 @@ export default function BrightNestBotDemo() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: trimmed,
-          session_id: getOrCreateSessionId(),
+          session_id: getOrCreateSessionId(profileId),
           debug: true,
           phone,
           parent_name: parentName,
-          child_name: childName,
+          // Never send a learned name as a hint for the blank new-parent profile —
+          // that re-seeded booking DST (sticky "David"). Jason may send sheet hint.
+          child_name: profileId === "jason" ? childName : "",
         }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setSessionLabel(shortSessionLabel());
+      setSessionLabel(shortSessionLabel(profileId));
       const nextTrace = data.trace ? { ...data.trace } : {};
       if (!nextTrace.staff_message && data.debug?.staff_message) {
         nextTrace.staff_message = data.debug.staff_message;
@@ -493,6 +563,7 @@ export default function BrightNestBotDemo() {
         nextTrace.admin_todo = data.debug.admin_todo;
       }
       setTrace(Object.keys(nextTrace).length ? nextTrace : null);
+      if (Object.keys(nextTrace).length) setTurnSerial((n) => n + 1);
       const hitTodo = Boolean(nextTrace.admin_todo);
       const hitBoss =
         Boolean(nextTrace.staff_message) || nextTrace.route === "staff_escalation";
@@ -509,12 +580,14 @@ export default function BrightNestBotDemo() {
         }
         setStaffTab("mail");
       }
-      // Keep form identity in sync when dialogue resolves a child
-      const resolvedChild =
-        data.trace?.booking?.child_name || data.trace?.cancel?.child_name;
-      if (resolvedChild) setChildName(resolvedChild);
-      const resolvedParent = data.trace?.booking?.parent_name;
-      if (resolvedParent) setParentName(resolvedParent);
+      // Jason strip tracks sheet child; new parent strip stays blank (no sticky hint).
+      if (profileId === "jason") {
+        const resolvedChild =
+          data.trace?.booking?.child_name || data.trace?.cancel?.child_name;
+        if (resolvedChild) setChildName(resolvedChild);
+        const resolvedParent = data.trace?.booking?.parent_name;
+        if (resolvedParent) setParentName(resolvedParent);
+      }
       setChatHistory((prev) => [
         ...prev,
         {
@@ -552,7 +625,11 @@ export default function BrightNestBotDemo() {
 
   const isDisabled = parentGateOpen || isLoading || !inputMessage.trim();
   const showEmpty = chatHistory.length === 0 && !isLoading;
-  const turnKey = String(trace?.latency_ms ?? "idle");
+  // Stable per bot answer only — never tie to chatHistory.length (that re-fit on send
+  // and fought wheel/pinch zoom with a snap-back).
+  const turnKey = !trace || turnSerial < 1
+    ? "idle"
+    : `${turnSerial}:${trace.route || "x"}:${trace.latency_ms ?? 0}`;
 
   const selectedMsg = useMemo(() => {
     if (!staffMessages.length) return null;
@@ -691,7 +768,7 @@ export default function BrightNestBotDemo() {
         <div className="bn-brand-block">
           <img src={LOGO_SRC} alt="" className="bn-mark" />
           <div>
-            <p className="bn-eyebrow">COMP6708 A3 · technical demo</p>
+            <p className="bn-eyebrow">COMP6708 A3</p>
             <h1>
               BrightNest <span>Learning Centre</span>
             </h1>
@@ -716,19 +793,16 @@ export default function BrightNestBotDemo() {
             <div className="bn-phone-bar">
               <img src={LOGO_SRC} alt="BrightNest" />
               <div>
-                <strong>Parent chat</strong>
-                <small>messaging surface</small>
+                <strong>BrightNest</strong>
+                <small>WhatsApp</small>
               </div>
             </div>
 
             {parentGateOpen ? (
               <div className="bn-parent-gate" role="dialog" aria-label="Choose parent identity">
-                <p className="bn-parent-gate-kicker">Start a WhatsApp thread</p>
-                <h2>Who are you messaging as?</h2>
-                <p className="bn-parent-gate-copy">
-                  Pick a known demo family or a blank new parent. Chat stays locked until you choose.
-                  Reloading the page keeps your last choice; Reset brings this picker back.
-                </p>
+                <p className="bn-parent-gate-kicker">Parent chat</p>
+                <h2>Who’s messaging?</h2>
+                <p className="bn-parent-gate-copy">Choose a parent to continue.</p>
                 <div className="bn-parent-gate-actions">
                   {PARENT_PROFILES.map((p) => (
                     <button
@@ -749,7 +823,7 @@ export default function BrightNestBotDemo() {
                 </div>
               </div>
             ) : (
-              <div className="bn-profile-switch" role="group" aria-label="Existing parent profile">
+              <div className="bn-profile-switch" role="group" aria-label="Parent profile">
                 {PARENT_PROFILES.map((p) => (
                   <button
                     key={p.id}
@@ -834,9 +908,7 @@ export default function BrightNestBotDemo() {
                 className="bn-textarea"
                 value={inputMessage}
                 onChange={(e) => setInputMessage(e.target.value)}
-                placeholder={
-                  parentGateOpen ? "Choose a parent above to unlock chat…" : "Message as a parent…"
-                }
+                placeholder={parentGateOpen ? "Select a parent…" : "Message…"}
                 disabled={parentGateOpen || isLoading}
                 rows={1}
                 onKeyDown={(e) => {
@@ -1017,7 +1089,7 @@ export default function BrightNestBotDemo() {
                 }
               >
                 <p className="bn-staff-swipe-hint" aria-hidden="true">
-                  Swipe for apps
+                  Swipe
                 </p>
                 {staffTab === "calendar" ? (
                   <MyCalendar
@@ -1044,7 +1116,7 @@ export default function BrightNestBotDemo() {
                             value="BrightNest — Follow-up sheet"
                             aria-label="Spreadsheet title"
                           />
-                          <small>SheetPro · Parents never see this</small>
+                          <small>Staff only</small>
                         </div>
                       </div>
                       <div className="bn-sheet-share">
@@ -1105,8 +1177,7 @@ export default function BrightNestBotDemo() {
                             <tr>
                               <td className="bn-sheet-rownum">1</td>
                               <td colSpan={7} className="bn-sheet-empty">
-                                No open follow-ups. New rows appear when the assistant
-                                couldn’t answer from centre materials.
+                                No open follow-ups
                               </td>
                             </tr>
                           ) : (
@@ -1166,7 +1237,7 @@ export default function BrightNestBotDemo() {
                                     type="text"
                                     defaultValue={infoCell}
                                     key={`${t.id}-${infoCell}`}
-                                    placeholder="What should staff do next…"
+                                    placeholder="Next step…"
                                     onFocus={() =>
                                       selectSheetCell(`E${row}`, infoCell || "—")
                                     }
@@ -1265,10 +1336,7 @@ export default function BrightNestBotDemo() {
                           ) : null}
                         </div>
                         {staffMessages.length === 0 ? (
-                          <p className="bn-mail-empty">
-                            Your Primary tab is empty. New mail arrives when a parent
-                            asks for staff, is upset, or raises a safety concern.
-                          </p>
+                          <p className="bn-mail-empty">No messages</p>
                         ) : (
                           staffMessages.map((m) => {
                             const active = selectedMsg?.id === m.id;
@@ -1386,7 +1454,7 @@ export default function BrightNestBotDemo() {
                         <img src={FAMILIES_ICON} alt="" className="bn-families-logo" />
                         <div>
                           <strong>Families</strong>
-                          <small>WhatsApp number → parent → kids → upcoming classes</small>
+                          <small>Roster</small>
                         </div>
                       </div>
                       <button
@@ -1400,7 +1468,7 @@ export default function BrightNestBotDemo() {
                     <div className="bn-families-layout">
                       <div className="bn-families-list" role="listbox" aria-label="Families">
                         {familiesRoster.length === 0 ? (
-                          <p className="bn-empty">No families on the sheet yet.</p>
+                          <p className="bn-empty">No families</p>
                         ) : (
                           familiesRoster.map((f) => {
                             const active = selectedFamilyPhone === f.phone;
@@ -1435,7 +1503,7 @@ export default function BrightNestBotDemo() {
                             familiesRoster[0];
                           if (!fam) {
                             return (
-                              <p className="bn-empty">Select a family to inspect records.</p>
+                              <p className="bn-empty">Select a family</p>
                             );
                           }
                           return (
@@ -1464,7 +1532,7 @@ export default function BrightNestBotDemo() {
                                     Upcoming ({child.upcoming_count || 0})
                                   </h4>
                                   {(child.upcoming || []).length === 0 ? (
-                                    <p className="bn-empty">No upcoming classes on file.</p>
+                                    <p className="bn-empty">No upcoming classes</p>
                                   ) : (
                                     <ul className="bn-families-upcoming">
                                       {(child.upcoming || []).slice(0, 12).map((u, i) => (

@@ -985,8 +985,10 @@ def handle_turn(
     known = [c["child_name"] for c in family.get("children") or []]
     mentioned = families.extract_child_mention(text, known)
     if not mentioned and child_name_hint and not state.get("child_name"):
-        # UI hint only for known demo families — never invent a child from a blank new parent
-        if family.get("matched") or families._is_plausible_person_name(child_name_hint):  # noqa: SLF001
+        # UI hint ONLY for sheet-matched families (e.g. Jason). Never re-inject a
+        # name the demo UI learned mid-flow onto a blank new-parent number — that
+        # made "David" stick across turns/refreshes for +852 9000 9999.
+        if family.get("matched"):
             mentioned = child_name_hint
 
     steps: List[str] = []
