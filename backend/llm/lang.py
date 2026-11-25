@@ -1,35 +1,128 @@
+"""Language / Chinese-variant detection for BrightNest replies.
+
+Decision:
+  1) CJK vs Latin letter ratio → en vs Chinese
+  2) Among Chinese, majority of *distinctive* Simplified vs Traditional chars
+  3) Ties / no distinctive chars → zh-HK (Hong Kong default)
+  4) Optional Accept-Language override for zh-Hans / zh-Hant
+
+Distinctive characters are one-to-one simp↔trad variants. A previous bulk list
+omitted high-frequency particles (吗/嗎, 课/課, …), so short Simplified asks
+like「你有中文课吗？」falsely tied and defaulted to zh-HK.
+"""
+from __future__ import annotations
+
 import re
 import unicodedata
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-# --- Constants for Chinese Variant Detection ---
-
-# Simplified characters with distinct forms (300+)
-SIMP_ONLY = set(
-    "爱摆备笔边参仓产长车虫从电东风发丰复个关广国过华画汇会几夹监见荐将节尽进举据开"
-    "乐离礼丽两灵丽龙楼录陆妈买卖门们难鸟农齐气迁亲穷区权让认赛杀师时识属双说丝肃"
-    "岁孙态体条铁听厅头图团为卫稳问无务戏习系显献乡写兴选学寻压严业医义艺阴隐应营"
-    "拥优邮鱼与云杂灾郑执质专种众钟筑庄装壮贝呗狈绷毙毕宾补惨灿蚕层搀谗馋缠忏偿厂"
-    "彻尘衬称惩迟冲丑出处础处触辞聪丛担胆导灯邓敌籴递点淀电冬斗独吨夺堕儿矾范飞坟"
-    "奋粪凤肤妇复盖赶个巩沟构购谷顾刮关观柜汉号合轰后胡壶沪护划怀坏欢环还回伙获击"
-    "鸡积极际继家价艰歼拣硷舰姜浆桨奖讲酱胶阶疖洁借仅惊竞旧剧惧卷开克垦恳夸块亏困"
-    "腊蜡兰拦栏烂累台垒类里礼隶帘联怜炼练粮疗辽了猎临邻岭庐芦炉陆驴乱么霉蒙梦面庙"
-    "蔑亩恼脑拟酿疟盘辟苹凭扑仆朴启签千牵纤窍窃寝庆琼秋曲权劝确让扰热认洒伞丧扫涩"
-    "晒伤舍沈声胜湿实适势兽书术树帅松苏虽随态坛叹誊体粜铁听厅头图涂团椭洼袜网卫稳"
-    "务雾牺习系戏虾吓咸显宪县响向协胁亵衅兴须悬选旋压盐阳养痒样钥药爷叶医亿忆应拥"
-    "佣踊忧优邮余御吁郁誉渊园远愿跃运酝杂赃脏凿枣灶斋毡战赵折这征症证只致制钟肿种"
-    "众昼朱烛筑庄桩妆装壮准浊总钻"
+# Explicit high-frequency pairs the bulk lists historically missed.
+_EXTRA_PAIRS: Tuple[Tuple[str, str], ...] = (
+    ("吗", "嗎"),
+    ("么", "麼"),
+    ("课", "課"),
+    ("对", "對"),
+    ("语", "語"),
+    ("读", "讀"),
+    ("写", "寫"),  # also in bulk; safe
+    ("请", "請"),
+    ("现", "現"),
+    ("钱", "錢"),
+    ("贵", "貴"),
+    ("费", "費"),
+    ("报", "報"),
+    ("页", "頁"),
+    ("觉", "覺"),
+    ("来", "來"),
+    ("话", "話"),
+    ("据", "據"),
+    ("号", "號"),
+    ("达", "達"),
+    ("过", "過"),
+    ("还", "還"),
+    ("这", "這"),
+    ("为", "為"),
+    ("会", "會"),
+    ("个", "個"),
+    ("们", "們"),
+    ("学", "學"),
+    ("习", "習"),
+    ("听", "聽"),
+    ("说", "說"),
+    ("时", "時"),
+    ("长", "長"),
+    ("书", "書"),
+    ("门", "門"),
+    ("问", "問"),
+    ("开", "開"),
+    ("关", "關"),
+    ("车", "車"),
+    ("东", "東"),
+    ("买", "買"),
+    ("卖", "賣"),
+    ("点", "點"),
+    ("电", "電"),
+    ("网", "網"),
+    ("后", "後"),
+    ("发", "發"),
+    ("见", "見"),
+    ("国", "國"),
+    ("从", "從"),
+    ("爱", "愛"),
+    ("儿", "兒"),
+    ("两", "兩"),
+    ("万", "萬"),
+    ("与", "與"),
+    ("乐", "樂"),
+    ("区", "區"),
+    ("医", "醫"),
+    ("华", "華"),
+    ("单", "單"),
+    ("卖", "賣"),
+    ("卫", "衛"),
+    ("历", "歷"),
+    ("压", "壓"),
+    ("厅", "廳"),
+    ("厉", "厲"),
+    ("双", "雙"),
+    ("发", "髮"),  # hair — second mapping; handled by set add
+    ("叶", "葉"),
+    ("叹", "嘆"),
+    ("严", "嚴"),
+    ("喽", "嘍"),
+    ("吗", "嗎"),
 )
 
-# Traditional equivalents with distinct forms (400+)
-TRAD_ONLY = set(
+# Shared glyphs that must never count as distinctive (even if a pair tries).
+_SHARED_BAN: Set[str] = set(
+    "的一是不了人我在有他上去大到以要就也可你生能而子那得于着下自之年成事"
+    "面同方前心看没和她它我们您谁什么哪怎此其每很最已又也还只都"
+    "家台干才托折才米目耳手足口日日月山水火土木金石"
+)
+
+# Legacy bulk (recall). Gaps filled by _EXTRA_PAIRS.
+_LEGACY_SIMP = (
+    "爱摆备笔边参仓产长车虫从电东风发丰复个关广国过华画汇会几夹监见荐将节尽进举据开"
+    "乐离礼丽两灵龙楼录陆妈买卖门们难鸟农齐气迁亲穷区权让认赛杀师时识属双说丝肃"
+    "岁孙态体条铁听厅头图团为卫稳问无务戏习系显献乡写兴选学寻压严业医义艺阴隐应营"
+    "拥优邮鱼与云杂灾郑执质专种众钟筑庄装壮贝呗狈绷毙毕宾补惨灿蚕层搀谗馋缠忏偿厂"
+    "彻尘衬称惩迟冲丑出处础处触辞聪丛担胆导灯邓敌籴递点淀冬斗独吨夺堕儿矾范飞坟"
+    "奋粪凤肤妇盖赶巩沟构购谷顾刮观柜汉号轰胡壶沪护划怀坏欢环回伙获击"
+    "鸡积极际继价艰歼拣硷舰姜浆桨奖讲酱胶阶疖洁借仅惊竞旧剧惧卷克垦恳夸块亏困"
+    "腊蜡兰拦栏烂累垒类里隶帘联怜炼练粮疗辽猎临邻岭庐芦炉驴乱霉蒙梦庙"
+    "蔑亩恼脑拟酿疟盘辟苹凭扑仆朴启签千牵纤窍窃寝庆琼秋曲劝确扰热洒伞丧扫涩"
+    "晒伤舍沈声胜湿实适势兽书术树帅松苏虽随坛叹誊粜涂椭洼袜网雾牺虾吓咸显宪县响向协胁亵衅须悬选旋盐阳养痒样钥药爷叶亿忆"
+    "佣踊忧余吁郁誉渊园远跃运酝赃脏凿枣灶斋毡战赵折这征症证只致制肿"
+    "众昼朱烛桩妆准浊总钻"
+)
+_LEGACY_TRAD = (
     "愛罷備筆邊參倉產長車蟲從電東風髮發豐復複個關廣國過華畫匯彙會幾夾監見薦將節盡儘進"
     "舉據開樂離禮麗兩靈劉龍樓錄陸媽買賣門們難鳥農齊氣遷親窮區權讓認賽殺師時識屬雙說絲"
     "肅歲孫態體條鐵聽廳頭圖團為衛穩問無務戲習係繫顯獻鄉寫興選學尋壓嚴業醫義藝陰隱應營"
     "擁優郵魚與雲雜災鄭執質專種眾鐘鍾築莊裝壯貝唄狽綳繃斃畢賓補慘燦蠶層攙讒饞纏懺償廠"
-    "徹塵襯稱懲遲沖衝醜齣礎處觸辭聰叢擔膽導燈鄧敵糴遞點澱電鼕鬥獨噸奪墮兒礬範飛墳奮糞"
-    "鳳膚婦復複蓋趕個鞏溝構購穀顧颳關觀櫃漢號閤轟後鬍壺滬護劃懷壞歡環還迴夥獲擊雞積極"
-    "際繼傢價艱殲揀鹼艦薑漿槳獎講醬膠階癤潔藉僅驚競舊劇懼捲開剋墾懇誇塊虧睏臘蠟蘭攔欄"
+    "徹塵襯稱懲遲沖衝醜齣礎處觸辭聰叢擔膽導燈鄧敵糴遞點澱鼕鬥獨噸奪墮兒礬範飛墳奮糞"
+    "鳳膚婦蓋趕鞏溝構購穀顧颳觀櫃漢號閤轟後鬍壺滬護劃懷壞歡環還迴夥獲擊雞積極"
+    "際繼傢價艱殲揀鹼艦薑漿槳獎講醬膠階癤潔藉僅驚競舊劇懼捲剋墾懇誇塊虧睏臘蠟蘭攔欄"
     "爛纍壘類裏禮隸簾聯憐煉練糧療遼瞭獵臨鄰嶺廬蘆爐陸驢亂麼黴濛懞矇夢麵廟衊畝惱腦擬釀"
     "瘧盤闢蘋憑撲僕樸啟簽籤韆牽縴竅竊寢慶瓊鞦麴權勸確讓擾熱認灑傘喪掃澀曬傷捨瀋聲勝濕"
     "實適勢獸書術樹帥鬆蘇雖隨臺檯颱態壇罎嘆謄體糶鐵聽廳頭圖塗團糰橢窪襪網衛穩務霧犧習"
@@ -38,33 +131,50 @@ TRAD_ONLY = set(
     "築莊樁妝裝壯準濁總鑽"
 )
 
-# --- Normalization and Character Analysis Functions ---
+
+def _build_variant_sets() -> Tuple[Set[str], Set[str]]:
+    simp: Set[str] = set()
+    trad: Set[str] = set()
+    for s, t in _EXTRA_PAIRS:
+        if not s or not t or s == t:
+            continue
+        if s in _SHARED_BAN or t in _SHARED_BAN:
+            continue
+        simp.add(s)
+        trad.add(t)
+    for ch in _LEGACY_SIMP:
+        if ch not in _SHARED_BAN and ch not in trad:
+            simp.add(ch)
+    for ch in _LEGACY_TRAD:
+        if ch not in _SHARED_BAN and ch not in simp:
+            trad.add(ch)
+    both = (simp & trad) | _SHARED_BAN
+    simp -= both
+    trad -= both
+    return simp, trad
+
+
+SIMP_ONLY, TRAD_ONLY = _build_variant_sets()
+
 
 def _normalize_text(text: str) -> str:
-    """
-    Performs comprehensive text normalization for analysis.
-    - Converts to lowercase.
-    - Normalizes Unicode to handle different character forms (e.g., full-width to half-width).
-    - Replaces various whitespace characters with a standard space.
-    """
     if not text:
         return ""
-    normalized = unicodedata.normalize('NFKC', text).lower()
-    normalized = re.sub(r'\s+', ' ', normalized).strip()
+    normalized = unicodedata.normalize("NFKC", text).lower()
+    normalized = re.sub(r"\s+", " ", normalized).strip()
     return normalized
 
+
 def _is_cjk(char: str) -> bool:
-    """
-    Checks if a character is within the CJK Unicode ranges.
-    """
-    return any([
-        0x4E00 <= ord(char) <= 0x9FFF,   # CJK Unified Ideographs
-        0x3400 <= ord(char) <= 0x4DBF,   # CJK Unified Ideographs Extension A
-        0x20000 <= ord(char) <= 0x2A6DF, # CJK Unified Ideographs Extension B
-    ])
+    o = ord(char)
+    return (
+        0x4E00 <= o <= 0x9FFF
+        or 0x3400 <= o <= 0x4DBF
+        or 0x20000 <= o <= 0x2A6DF
+    )
+
 
 def _char_counts(text: str) -> Dict[str, int]:
-    """Count script buckets used by the language heuristic."""
     counts = {
         "cjk": 0,
         "latin": 0,
@@ -93,72 +203,42 @@ def _char_counts(text: str) -> Dict[str, int]:
     return counts
 
 
-def _get_cjk_ratio(text: str) -> float:
-    """
-    Calculates the ratio of CJK characters to total alphabetic characters.
-    """
-    counts = _char_counts(text)
-    letter_count = counts["cjk"] + counts["latin"]
-    if letter_count == 0:
-        return 0.0
-    return counts["cjk"] / letter_count
-
-
 def _get_chinese_variant_scored(text: str) -> Tuple[str, Dict[str, Any]]:
-    """Traditional vs Simplified with explicit majority counts."""
     trad_score = 0
     simp_score = 0
+    hits: List[str] = []
     for char in text:
         if char in TRAD_ONLY:
             trad_score += 1
+            if len(hits) < 24:
+                hits.append(f"{char}=trad")
         elif char in SIMP_ONLY:
             simp_score += 1
-    if trad_score > simp_score:
-        return "zh-HK", {
-            "trad_only": trad_score,
-            "simp_only": simp_score,
-            "winner": "trad_only",
-            "tie_break": None,
-        }
-    if simp_score > trad_score:
-        return "zh-CN", {
-            "trad_only": trad_score,
-            "simp_only": simp_score,
-            "winner": "simp_only",
-            "tie_break": None,
-        }
-    return "zh-HK", {
+            if len(hits) < 24:
+                hits.append(f"{char}=simp")
+    detail: Dict[str, Any] = {
         "trad_only": trad_score,
         "simp_only": simp_score,
-        "winner": "tie",
-        "tie_break": "default_zh-HK",
+        "hits": hits,
     }
+    if trad_score > simp_score:
+        return "zh-HK", {**detail, "winner": "trad_only", "tie_break": None}
+    if simp_score > trad_score:
+        return "zh-CN", {**detail, "winner": "simp_only", "tie_break": None}
+    return "zh-HK", {**detail, "winner": "tie", "tie_break": "default_zh-HK"}
+
 
 def _prefer_variant_from_accept_language(header: Optional[str]) -> Optional[str]:
-    """
-    Parses Accept-Language to prefer zh-HK (Traditional) or zh-CN (Simplified) when explicitly indicated.
-    Defaults to Traditional if only 'zh' is present without script/region.
-    """
     if not header:
         return None
     h = header.lower()
-    # Explicit script/region hints
     if "zh-hant" in h or "zh-tw" in h or "zh-hk" in h:
         return "zh-HK"
     if "zh-hans" in h or "zh-cn" in h or "zh-sg" in h:
         return "zh-CN"
-    # Ambiguous 'zh' -> prefer Traditional (Hong Kong default)
     if "zh" in h:
         return "zh-HK"
     return None
-
-def _get_chinese_variant(text: str) -> str:
-    """
-    Determine Traditional vs Simplified based on distinctive character counts.
-    IMPORTANT: Ties and 'no distinctive chars' default to Traditional (zh-HK) for Hong Kong deployment.
-    """
-    variant, _ = _get_chinese_variant_scored(text)
-    return variant
 
 
 CJK_THRESHOLD = 0.3
@@ -232,6 +312,8 @@ def explain_language_code(
             f"CJK ratio {cjk_ratio:.2f} ≥ {CJK_THRESHOLD} · "
             f"trad {variant_counts['trad_only']} vs simp {variant_counts['simp_only']}"
         )
+        if variant_counts.get("hits"):
+            why += f" · {', '.join(variant_counts['hits'][:6])}"
         if variant_counts.get("tie_break"):
             why += " · tie → zh-HK"
         return {
@@ -251,57 +333,9 @@ def explain_language_code(
     }
 
 
-# --- Main Detection Logic ---
-
 def get_language_code(
     user_message: str,
-    accept_language_header: Optional[str] = None
+    accept_language_header: Optional[str] = None,
 ) -> str:
-    """
-    Determines the language code ('en', 'zh-CN', 'zh-HK') for a given message.
-
-    Changes:
-    - Default ambiguous Chinese to Traditional (zh-HK) instead of Simplified.
-    - Respect Accept-Language when it explicitly specifies zh-Hans/zh-CN vs zh-Hant/zh-HK/zh-TW.
-    - If Accept-Language only says 'zh', prefer Traditional (zh-HK).
-    """
+    """Return 'en' | 'zh-CN' | 'zh-HK' for a parent message."""
     return explain_language_code(user_message, accept_language_header)["decision"]
-
-# --- Demonstration and Testing ---
-
-if __name__ == "__main__":
-    print("--- Running Language Detection Tests ---")
-
-    test_cases = [
-        # English cases
-        ("Hello, how are you today?", "en"),
-        ("This is a test.", "en"),
-        ("thanks", "en"),
-        # Chinese cases (Simplified distinctive)
-        ("请问这里的信息正确吗？", "zh-CN"),
-        ("我的电脑坏了，需要修理。", "zh-CN"),
-        # Chinese cases (Traditional distinctive)
-        ("請問這裏的資料正確嗎？", "zh-HK"),
-        ("這是一個繁體字的句子。", "zh-HK"),
-        # Ambiguous Chinese (common characters only) should default to Traditional
-        ("好的", "zh-HK"),
-        ("可以吗", "zh-CN"),  # contains “吗”(吗=简体 distinctive) -> zh-CN
-        ("可以嗎", "zh-HK"),  # contains “嗎”(繁體 distinctive) -> zh-HK
-        # Mixed language cases
-        ("I love to eat 蛋挞 and drink 奶茶.", "en"),  # Primarily English
-        ("我的名字是 David, nice to meet you.", "zh-CN"),  # Primarily Chinese
-        # Accept-Language disambiguation
-        ("好的", "zh-CN"),  # With header zh-CN we expect zh-CN
-    ]
-
-    for i, (message, expected) in enumerate(test_cases, start=1):
-        if i == len(test_cases):  # last case: force header
-            detected_lang = get_language_code(message, accept_language_header="zh-CN,zh;q=0.9")
-        else:
-            detected_lang = get_language_code(message)
-        status = "✅ PASSED" if detected_lang == expected else f"❌ FAILED (Got {detected_lang})"
-        print(f"Test {i}: '{message[:30]}...' -> Expected: {expected}, {status}")
-
-    print("\n--- Notes ---")
-    print("- Ambiguous Chinese now defaults to zh-HK (Traditional) to suit Hong Kong deployment.")
-    print("- Accept-Language with zh-Hant/zh-HK/zh-TW forces zh-HK; zh-Hans/zh-CN/zh-SG forces zh-CN; bare 'zh' prefers zh-HK.")

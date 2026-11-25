@@ -1736,7 +1736,7 @@ function NodeDetail({
       const langSteps = [
         "Match each printable char to a set: CJK · Latin · digits · other",
         "CJK ratio = CJK ÷ (CJK + Latin)",
-        `If ratio ≥ ${det.cjk_threshold ?? 0.3}, majority of trad-only vs simp-only distinctive chars picks zh-HK / zh-CN (tie → zh-HK)`,
+        `If ratio ≥ ${det.cjk_threshold ?? 0.3}, majority of trad-only vs simp-only distinctive chars picks zh-HK / zh-CN (true ties only → zh-HK; 吗/课 etc. count as Simplified)`,
         "Otherwise → en (or Accept-Language / client override)",
       ];
       return (
