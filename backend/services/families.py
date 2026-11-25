@@ -6,6 +6,10 @@ from typing import Any, Dict, List, Optional
 
 from services import schedule_sheets as sheets
 
+# Demo UI "New parent" WhatsApp — must stay unmatched forever. Writing Sean/David
+# onto this number made Reset useless: every later escalation/todo inherited them.
+DEMO_BLANK_PARENT_PHONES = frozenset({"85290009999"})
+
 
 def _norm_phone(phone: str) -> str:
     digits = re.sub(r"\D+", "", phone or "")
@@ -16,12 +20,19 @@ def _norm_phone(phone: str) -> str:
     return digits
 
 
+def is_demo_blank_parent(phone: str) -> bool:
+    return _norm_phone(phone) in DEMO_BLANK_PARENT_PHONES
+
+
 def _read_families() -> List[Dict[str, str]]:
     sheets.seed_sheets_if_needed()
     return sheets._read_csv(sheets.sheets_dir() / "families.csv")  # noqa: SLF001
 
 
 def list_family_by_phone(phone: str) -> Dict[str, Any]:
+    # Sentinel demo number is never "on file", even if a stale row exists.
+    if is_demo_blank_parent(phone):
+        return {"phone": phone, "parent_name": "", "children": [], "matched": False}
     want = _norm_phone(phone)
     rows = [r for r in _read_families() if _norm_phone(r.get("phone", "")) == want]
     if not rows:
@@ -63,6 +74,9 @@ def ensure_family_on_sheet(
     child_s = (child_name or "").strip()
     if not phone_s or not child_s:
         return False
+    # Never promote the blank demo parent onto the roster sheet.
+    if is_demo_blank_parent(phone_s):
+        return False
     want = _norm_phone(phone_s)
     sheets.seed_sheets_if_needed()
     path = sheets.sheets_dir() / "families.csv"
@@ -88,6 +102,19 @@ def ensure_family_on_sheet(
     )
     sheets._write_csv(path, fieldnames, rows)  # noqa: SLF001
     return True
+
+
+def clear_demo_blank_parent_families() -> int:
+    """Remove any roster rows for the demo New Parent WhatsApp (Reset)."""
+    sheets.seed_sheets_if_needed()
+    path = sheets.sheets_dir() / "families.csv"
+    fieldnames = ["phone", "parent_name", "child_name", "preferred_courses", "notes"]
+    rows = sheets._read_csv(path)  # noqa: SLF001
+    kept = [r for r in rows if not is_demo_blank_parent(r.get("phone") or "")]
+    removed = len(rows) - len(kept)
+    if removed:
+        sheets._write_csv(path, fieldnames, kept)  # noqa: SLF001
+    return removed
 
 
 def list_all_families(*, days_ahead: int = 21) -> Dict[str, Any]:

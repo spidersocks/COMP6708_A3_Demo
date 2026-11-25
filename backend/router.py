@@ -556,11 +556,25 @@ def chat(req: ChatRequest) -> ChatResponse:
     }
 
     def _family_names() -> tuple[str, str]:
+        """Identity for SheetPro / MailBox rows.
+
+        Known families (Jason): UI hint + families.csv.
+        Demo blank New Parent (+852 9000 9999): NEVER trust sticky UI hints or
+        stale roster rows — only live booking-dialogue state for this session.
+        """
         fam: Dict[str, Any] = {}
         try:
             fam = families.list_family_by_phone(phone) or {}
         except Exception:
             fam = {}
+
+        # Sentinel new-parent number must not inherit Sean/David from a prior book.
+        if families.is_demo_blank_parent(phone):
+            st = dialogue_svc.get_state(session_id) or {}
+            p = (st.get("parent_name") or "").strip()
+            c = (st.get("child_name") or "").strip()
+            return p, c
+
         p = parent_name or fam.get("parent_name") or ""
         c = child_name
         if not c:
@@ -1561,18 +1575,8 @@ def chat(req: ChatRequest) -> ChatResponse:
             result.get("citations") or [],
             rag_debug.get("gap_reason") or "knowledge_gap",
         )
-        # Enrich identity from the family sheet when the request omitted names
-        fam = {}
-        try:
-            fam = families.list_family_by_phone(phone) or {}
-        except Exception:
-            fam = {}
-        todo_parent = parent_name or fam.get("parent_name") or ""
-        todo_child = child_name
-        if not todo_child:
-            kids = fam.get("children") or []
-            if len(kids) == 1:
-                todo_child = kids[0].get("child_name") or ""
+        # Same identity rules as SheetPro / MailBox — no sticky blank-parent names
+        todo_parent, todo_child = _family_names()
         # Demo bias: keep a useful model answer whenever we have one.
         # Only soft-refuse when retrieval was empty — never overwrite a fluent reply
         # just because lexical overlap looked weak.
@@ -1757,6 +1761,8 @@ def reset_history(session_id: str):
     msgs_cleared = staff_messages.clear_messages()
     chat_bookings_cleared = sheets.clear_chat_bookings()
     sqlite_bookings_cleared = booking_svc.clear_sqlite_bookings()
+    # Drop any Sean/David (etc.) rows that chat booking wrote onto the blank demo number
+    families_cleared = families.clear_demo_blank_parent_families()
     return {
         "ok": True,
         "session_id": session_id,
@@ -1764,6 +1770,7 @@ def reset_history(session_id: str):
         "staff_messages_cleared": msgs_cleared,
         "chat_bookings_cleared": chat_bookings_cleared,
         "sqlite_bookings_cleared": sqlite_bookings_cleared,
+        "demo_blank_families_cleared": families_cleared,
     }
 
 

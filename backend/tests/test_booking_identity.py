@@ -61,6 +61,31 @@ def test_new_parent_ui_hint_does_not_stick_david():
     }
 
 
+def test_demo_blank_parent_never_matches_stale_roster_row():
+    """A Sean/David row left on +852 9000 9999 must not make the number 'known'."""
+    # Poison the sheet the way chat booking used to
+    families.ensure_family_on_sheet(
+        phone="+852 9000 9999",
+        parent_name="Sean",
+        child_name="David",
+        notes="should be ignored",
+    )
+    # ensure_family must refuse the sentinel number
+    assert families.is_demo_blank_parent("+852 9000 9999")
+    fam = families.list_family_by_phone("+852 9000 9999")
+    assert fam.get("matched") is False
+    assert not (fam.get("parent_name") or "").strip()
+    assert not (fam.get("children") or [])
+    # Cleanup helper removes any leaked rows
+    families.clear_demo_blank_parent_families()
+    rows = [
+        r
+        for r in families._read_families()  # noqa: SLF001
+        if families.is_demo_blank_parent(r.get("phone") or "")
+    ]
+    assert rows == []
+
+
 def test_parse_identity_kid_possessive():
     got = bd._parse_identity(
         "My name is Jeff. My kid's name is Chester. I want to book a math lesson"
