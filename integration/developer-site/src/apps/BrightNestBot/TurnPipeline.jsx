@@ -1101,22 +1101,7 @@ function ChannelHit({ hit, index, highlight = false }) {
         {hit.source ? <span className="bn-hit-src">{hit.source}</span> : null}
         {highlight && tokens.length ? (
           <p className="bn-hit-snip bn-hit-why">
-            Matched:{" "}
-            {tokens.slice(0, 12).map((t, i) => {
-              const c = tokenScoreLookup(tokenScores, t);
-              const label =
-                c != null && !Number.isNaN(c)
-                  ? `${t} ${c >= 0 ? "+" : ""}${c.toFixed(2)}`
-                  : t;
-              return (
-                <span key={`m-${t}-${i}`}>
-                  {i ? " · " : ""}
-                  <TokHit tip={formatTokenContrib(t, c)} contrib={c}>
-                    {label}
-                  </TokHit>
-                </span>
-              );
-            })}
+            Matched: {tokens.slice(0, 12).join(" · ")}
             {tokens.length > 12 ? "…" : ""}
           </p>
         ) : null}
