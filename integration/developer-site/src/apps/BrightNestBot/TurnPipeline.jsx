@@ -987,8 +987,63 @@ function RagHit({ hit, index }) {
   );
 }
 
+/** Look up a BM25 token's contribution (tokens are lowercased Latin / raw CJK). */
+function tokenScoreLookup(tokenScores, surface) {
+  if (!tokenScores || surface == null) return null;
+  const raw = String(surface);
+  if (Object.prototype.hasOwnProperty.call(tokenScores, raw)) {
+    return Number(tokenScores[raw]);
+  }
+  const lower = raw.toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(tokenScores, lower)) {
+    return Number(tokenScores[lower]);
+  }
+  return null;
+}
+
+function formatTokenContrib(token, value) {
+  if (value == null || Number.isNaN(value)) return `${token}: no score`;
+  const n = Number(value);
+  const signed = n >= 0 ? `+${n.toFixed(4)}` : n.toFixed(4);
+  return `${token} · BM25 ${signed}`;
+}
+
+/** Highlighted BM25 token with a fixed-position score tip (avoids overflow clip). */
+function TokHit({ children, tip, contrib }) {
+  const [pos, setPos] = useState(null);
+  const hasScore = contrib != null && !Number.isNaN(contrib);
+  return (
+    <>
+      <mark
+        className={`bn-tok-hit${hasScore ? " has-score" : ""}`}
+        title={tip}
+        onMouseEnter={(e) => {
+          if (!hasScore) return;
+          const r = e.currentTarget.getBoundingClientRect();
+          setPos({ x: r.left + r.width / 2, y: r.top });
+        }}
+        onMouseLeave={() => setPos(null)}
+      >
+        {children}
+      </mark>
+      {pos
+        ? createPortal(
+            <span
+              className="bn-tok-tip"
+              role="tooltip"
+              style={{ left: pos.x, top: pos.y }}
+            >
+              {tip}
+            </span>,
+            document.body
+          )
+        : null}
+    </>
+  );
+}
+
 /** Highlight BM25 tokens as whole terms — never substring "i" inside "with". */
-function highlightTokens(text, tokens) {
+function highlightTokens(text, tokens, tokenScores = null) {
   const body = text || "";
   const toks = (tokens || [])
     .map((t) => String(t || "").trim())
@@ -1002,21 +1057,23 @@ function highlightTokens(text, tokens) {
     return `\\b${esc}\\b`;
   });
   const re = new RegExp(`(${parts.join("|")})`, "gi");
-  return body.split(re).map((part, i) =>
-    i % 2 === 1 ? (
-      <mark key={`tok-${i}`} className="bn-tok-hit">
+  return body.split(re).map((part, i) => {
+    if (i % 2 !== 1) return <span key={`t-${i}`}>{part}</span>;
+    const contrib = tokenScoreLookup(tokenScores, part);
+    const tip = formatTokenContrib(String(part).toLowerCase(), contrib);
+    return (
+      <TokHit key={`tok-${i}`} tip={tip} contrib={contrib}>
         {part}
-      </mark>
-    ) : (
-      <span key={`t-${i}`}>{part}</span>
-    )
-  );
+      </TokHit>
+    );
+  });
 }
 
 function ChannelHit({ hit, index, highlight = false }) {
   const [open, setOpen] = useState(false);
   const body = hit.text || hit.snippet || "";
   const tokens = hit.matched_tokens || hit.query_tokens || [];
+  const tokenScores = hit.token_scores || null;
   const kind =
     hit.channel === "sparse" || highlight
       ? "BM25"
@@ -1041,15 +1098,32 @@ function ChannelHit({ hit, index, highlight = false }) {
           {labeled ? <code title={`${kind} channel score`}>{labeled}</code> : null}
         </div>
         {hit.source ? <span className="bn-hit-src">{hit.source}</span> : null}
-            {highlight && tokens.length ? (
+        {highlight && tokens.length ? (
           <p className="bn-hit-snip bn-hit-why">
-            Matched: {tokens.slice(0, 12).join(" · ")}
+            Matched:{" "}
+            {tokens.slice(0, 12).map((t, i) => {
+              const c = tokenScoreLookup(tokenScores, t);
+              const label =
+                c != null && !Number.isNaN(c)
+                  ? `${t} ${c >= 0 ? "+" : ""}${c.toFixed(2)}`
+                  : t;
+              return (
+                <span key={`m-${t}-${i}`}>
+                  {i ? " · " : ""}
+                  <TokHit tip={formatTokenContrib(t, c)} contrib={c}>
+                    {label}
+                  </TokHit>
+                </span>
+              );
+            })}
             {tokens.length > 12 ? "…" : ""}
           </p>
         ) : null}
         {!open && body ? (
           <p className="bn-hit-snip">
-            {highlight ? highlightTokens(body.slice(0, 220), tokens) : body.slice(0, 220)}
+            {highlight
+              ? highlightTokens(body.slice(0, 220), tokens, tokenScores)
+              : body.slice(0, 220)}
           </p>
         ) : null}
         <span className="bn-hit-expand-hint">
@@ -1058,7 +1132,7 @@ function ChannelHit({ hit, index, highlight = false }) {
       </button>
       {open && body ? (
         <pre className="bn-hit-full">
-          {highlight ? highlightTokens(body, tokens) : body}
+          {highlight ? highlightTokens(body, tokens, tokenScores) : body}
         </pre>
       ) : null}
     </li>

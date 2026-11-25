@@ -266,6 +266,33 @@ class SparseIndex:
         n = self._df.get(term, 0)
         return math.log(1.0 + (self._N - n + 0.5) / (n + 0.5))
 
+    def _term_contrib(self, term: str, tf: Counter, dl: int) -> float:
+        """One Okapi BM25 addend for ``term`` given doc term-freqs and length."""
+        if term not in tf:
+            return 0.0
+        freq = tf[term]
+        denom = freq + self.k1 * (1.0 - self.b + self.b * dl / (self._avgdl or 1.0))
+        return self._idf(term) * (freq * (self.k1 + 1.0)) / (denom or 1.0)
+
+    def token_contributions(
+        self, question: str, *, doc_index: int
+    ) -> Tuple[float, Dict[str, float]]:
+        """Total BM25 score + per-query-token contribution for an indexed doc."""
+        q_toks = tokenize(question)
+        if not q_toks or doc_index < 0 or doc_index >= self._N:
+            return 0.0, {}
+        tf = Counter(self._tok_docs[doc_index])
+        dl = self._doc_len[doc_index] or 1
+        score = 0.0
+        contrib: Dict[str, float] = {}
+        for t in q_toks:
+            if t not in tf:
+                continue
+            c = self._term_contrib(t, tf, dl)
+            score += c
+            contrib[t] = contrib.get(t, 0.0) + c
+        return score, contrib
+
     def query(
         self,
         question: str,
@@ -278,27 +305,19 @@ class SparseIndex:
         q_toks = tokenize(question)
         if not q_toks:
             return []
-        scores: List[Tuple[float, int]] = []
+        scores: List[Tuple[float, int, Dict[str, float]]] = []
         lang = (language or "").strip()
         for i in range(self._N):
             if lang:
                 meta_lang = str((self._metas[i] or {}).get("language") or "")
                 if meta_lang and meta_lang != lang:
                     continue
-            tf = Counter(self._tok_docs[i])
-            dl = self._doc_len[i] or 1
-            score = 0.0
-            for t in q_toks:
-                if t not in tf:
-                    continue
-                freq = tf[t]
-                denom = freq + self.k1 * (1.0 - self.b + self.b * dl / (self._avgdl or 1.0))
-                score += self._idf(t) * (freq * (self.k1 + 1.0)) / (denom or 1.0)
+            score, contrib = self.token_contributions(question, doc_index=i)
             if score > 0:
-                scores.append((score, i))
+                scores.append((score, i, contrib))
         scores.sort(key=lambda x: x[0], reverse=True)
         out: List[Dict[str, Any]] = []
-        for score, i in scores[:top_k]:
+        for score, i, contrib in scores[:top_k]:
             out.append(
                 {
                     "id": self._ids[i],
@@ -306,6 +325,8 @@ class SparseIndex:
                     "metadata": self._metas[i],
                     "score": float(score),
                     "channel": "sparse",
+                    # Per-token addends that sum to ``score`` (inspector hover).
+                    "token_scores": {k: float(v) for k, v in contrib.items()},
                 }
             )
         return out
@@ -341,6 +362,15 @@ def _channel_preview(
             matched = sorted(q_set & doc_toks, key=lambda t: (-len(t), t))
             row["query_tokens"] = sorted(set(q_toks), key=lambda t: (-len(t), t))
             row["matched_tokens"] = matched
+            raw_scores = h.get("token_scores") or {}
+            if isinstance(raw_scores, dict):
+                row["token_scores"] = {
+                    t: float(raw_scores[t])
+                    for t in matched
+                    if t in raw_scores and raw_scores[t] is not None
+                }
+            else:
+                row["token_scores"] = {}
         preview.append(row)
     return preview
 

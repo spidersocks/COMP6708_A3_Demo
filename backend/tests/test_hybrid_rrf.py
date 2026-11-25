@@ -79,6 +79,30 @@ def test_bm25_prefers_keyword_doc():
     assert hits[0]["metadata"]["source"] == "clevercal.md"
 
 
+def test_bm25_token_scores_sum_to_hit_score():
+    idx = SparseIndex()
+    idx.rebuild(
+        [
+            {
+                "id": "phonic",
+                "text": "Phonics programmes build early reading skills for children.",
+                "metadata": {"source": "phonics.md", "language": "en"},
+            },
+            {
+                "id": "other",
+                "text": "Centre opening hours and holiday closures.",
+                "metadata": {"source": "hours.md", "language": "en"},
+            },
+        ]
+    )
+    hits = idx.query("phonics reading programmes", top_k=1, language="en")
+    assert hits
+    scores = hits[0].get("token_scores") or {}
+    assert "phonics" in scores
+    assert scores["phonics"] > 0
+    assert abs(sum(scores.values()) - float(hits[0]["score"])) < 1e-9
+
+
 def test_channel_pack_takes_dense_then_sparse_supplements():
     dense = [
         {
